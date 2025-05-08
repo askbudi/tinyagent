@@ -48,5 +48,14 @@ class MCPClient:
         return resp.content
 
     async def close(self):
-        # Clean up subprocess and streams
-        await self.exit_stack.aclose()
+        """Clean up subprocess and streams."""
+        if self.exit_stack:
+            try:
+                await self.exit_stack.aclose()
+            except (RuntimeError, asyncio.CancelledError) as e:
+                # Log the error but don't re-raise it
+                print(f"Error during client cleanup: {e}")
+            finally:
+                # Always reset these regardless of success or failure
+                self.session = None
+                self.exit_stack = AsyncExitStack()

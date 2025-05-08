@@ -27,8 +27,10 @@ class TinyAgent:
             api_key: The API key for the model provider
             system_prompt: Custom system prompt for the agent
         """
-        # Create the MCPClient
-        self.mcp_client = MCPClient()
+        # Instead of a single MCPClient, keep multiple:
+        self.mcp_clients: List[MCPClient] = []
+        # Map from tool_name -> MCPClient instance
+        self.tool_to_client: Dict[str, MCPClient] = {}
         
         # LiteLLM configuration
         self.model = model
@@ -46,8 +48,8 @@ class TinyAgent:
             )
         }]
         
-        # Available tools (will be populated after connecting to MCP servers)
-        self.available_tools = []
+        # This list now accumulates tools from *all* connected MCP servers:
+        self.available_tools: List[Dict[str, Any]] = []
         
         # Control flow tools
         self.exit_loop_tools = [
@@ -86,24 +88,28 @@ class TinyAgent:
             command: The command to run the server
             args: List of arguments for the server
         """
-        await self.mcp_client.connect(command, args)
+        # 1) Create and connect a brand-new client
+        client = MCPClient()
+        await client.connect(command, args)
+        self.mcp_clients.append(client)
         
-        # Get available tools from the server and format them for LiteLLM
-        resp = await self.mcp_client.session.list_tools()
+        # 2) List tools on *this* server
+        resp = await client.session.list_tools()
         
-        tool_descriptions = []
+        # 3) For each tool, record its schema + map name->client
         for tool in resp.tools:
-            tool_descriptions.append({
+            fn_meta = {
                 "type": "function",
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
                     "parameters": tool.inputSchema
                 }
-            })
+            }
+            self.available_tools.append(fn_meta)
+            self.tool_to_client[tool.name] = client
         
-        logger.info(f"Added {len(tool_descriptions)} tools from MCP server")
-        self.available_tools.extend(tool_descriptions)
+        logger.info(f"Connected to {command} {args!r}, added {len(resp.tools)} tools")
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
         """
@@ -198,24 +204,28 @@ class TinyAgent:
                                 self.messages.append(tool_message)
                                 return f"I need more information: {question}"
                             else:
-                                # Call the actual tool using MCPClient
-                                try:
-                                    content_list = await self.mcp_client.call_tool(tool_name, tool_args)
-                                    
-                                    # Safely extract text from the content
-                                    if content_list:
-                                        # Try different ways to extract the content
-                                        if hasattr(content_list[0], 'text'):
-                                            tool_message["content"] = content_list[0].text
-                                        elif isinstance(content_list[0], dict) and 'text' in content_list[0]:
-                                            tool_message["content"] = content_list[0]['text']
+                                # **New**: dispatch to the proper MCPClient
+                                client = self.tool_to_client.get(tool_name)
+                                if not client:
+                                    tool_message["content"] = f"No MCP server registered for tool '{tool_name}'"
+                                else:
+                                    try:
+                                        content_list = await client.call_tool(tool_name, tool_args)
+                                        
+                                        # Safely extract text from the content
+                                        if content_list:
+                                            # Try different ways to extract the content
+                                            if hasattr(content_list[0], 'text'):
+                                                tool_message["content"] = content_list[0].text
+                                            elif isinstance(content_list[0], dict) and 'text' in content_list[0]:
+                                                tool_message["content"] = content_list[0]['text']
+                                            else:
+                                                tool_message["content"] = str(content_list)
                                         else:
-                                            tool_message["content"] = str(content_list)
-                                    else:
-                                        tool_message["content"] = "Tool returned no content"
-                                except Exception as e:
-                                    logger.error(f"Error calling tool {tool_name}: {str(e)}")
-                                    tool_message["content"] = f"Error executing tool {tool_name}: {str(e)}"
+                                            tool_message["content"] = "Tool returned no content"
+                                    except Exception as e:
+                                        logger.error(f"Error calling tool {tool_name}: {str(e)}")
+                                        tool_message["content"] = f"Error executing tool {tool_name}: {str(e)}"
                         except Exception as e:
                             # If any error occurs during tool call processing, make sure we still have a tool response
                             logger.error(f"Unexpected error processing tool call {tool_call_id}: {str(e)}")
@@ -243,5 +253,10 @@ class TinyAgent:
 
     
     async def close(self):
-        """Clean up resources."""
-        await self.mcp_client.close()
+        """Clean up *all* MCP clients."""
+        for client in self.mcp_clients:
+            try:
+                await client.close()
+            except RuntimeError as e:
+                logger.error(f"Error closing MCP client: {str(e)}")
+                # Continue closing other clients even if one fails
