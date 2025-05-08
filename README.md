@@ -16,12 +16,12 @@ This is a tiny agent that uses MCP and LiteLLM to interact with a model. You hav
 
 ### Using pip
 ```bash
-pip install tinyagent
+pip install tinyagent-py
 ```
 
 ### Using uv
 ```bash
-uv pip install tinyagent
+uv pip install tinyagent-py
 ```
 
 ## Usage
