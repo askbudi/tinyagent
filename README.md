@@ -1,7 +1,7 @@
 
 # tinyagent
 Tiny Agent: 100 lines Agent with MCP
-![TinyAgent Logo](https://raw.githubusercontent.com/askbudi/tinyagent/main/public/Tiny Agent.png)
+![TinyAgent Logo](https://raw.githubusercontent.com/askbudi/tinyagent/main/public/logo.png)
 
 
 
