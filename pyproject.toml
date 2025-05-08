@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinyagent"
+version = "0.0.1"
+description = "Tiny Agent with MCP Client"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "mcp",
+  "litellm",
+  "openai"
+  # add whatever else you need…
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  
+  
+]
