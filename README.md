@@ -1,4 +1,3 @@
-
 # tinyagent
 Tiny Agent: 100 lines Agent with MCP
 ![TinyAgent Logo](https://raw.githubusercontent.com/askbudi/tinyagent/main/public/logo.png)
@@ -62,3 +61,87 @@ I need accommodation in Toronto between 15th to 20th of May. Give me 5 options f
 """)
 await test_agent(task, model="gpt-4.1-mini")
 ```
+
+## How the TinyAgent Hook System Works
+
+TinyAgent is designed to be **extensible** via a simple, event-driven hook (callback) system. This allows you to add custom logic, logging, UI, memory, or any other behavior at key points in the agent's lifecycle.
+
+### How Hooks Work
+
+- **Hooks** are just callables (functions or classes with `__call__`) that receive events from the agent.
+- You register hooks using `agent.add_callback(hook)`.
+- Hooks are called with:  
+  `event_name, agent, **kwargs`
+- Events include:  
+  - `"agent_start"`: Agent is starting a new run
+  - `"message_add"`: A new message is added to the conversation
+  - `"llm_start"`: LLM is about to be called
+  - `"llm_end"`: LLM call finished
+  - `"agent_end"`: Agent is done (final result)
+  - (MCPClient also emits `"tool_start"` and `"tool_end"` for tool calls)
+
+Hooks can be **async** or regular functions. If a hook is a class with an async `__call__`, it will be awaited.
+
+#### Example: Adding a Custom Hook
+
+```python
+def my_logger_hook(event_name, agent, **kwargs):
+    print(f"[{event_name}] {kwargs}")
+
+agent.add_callback(my_logger_hook)
+```
+
+#### Example: Async Hook
+
+```python
+async def my_async_hook(event_name, agent, **kwargs):
+    if event_name == "agent_end":
+        print("Agent finished with result:", kwargs.get("result"))
+
+agent.add_callback(my_async_hook)
+```
+
+#### Example: Class-based Hook
+
+```python
+class MyHook:
+    async def __call__(self, event_name, agent, **kwargs):
+        if event_name == "llm_start":
+            print("LLM is starting...")
+
+agent.add_callback(MyHook())
+```
+
+### How to Extend the Hook System
+
+- **Create your own hook**: Write a function or class as above.
+- **Register it**: Use `agent.add_callback(your_hook)`.
+- **Listen for events**: Check `event_name` and use `**kwargs` for event data.
+- **See examples**: Each official hook (see below) includes a `run_example()` in its file.
+
+---
+
+## List of Available Hooks
+
+You can import and use these hooks from `tinyagent.hooks`:
+
+| Hook Name                | Description                                      | Example Import                                  |
+|--------------------------|--------------------------------------------------|-------------------------------------------------|
+| `LoggingManager`         | Granular logging control for all modules         | `from tinyagent.hooks.logging_manager import LoggingManager` |
+| `RichUICallback`         | Rich terminal UI (with [rich](https://github.com/Textualize/rich)) | `from tinyagent.hooks.rich_ui_callback import RichUICallback` |
+
+To see more details and usage, check the docstrings and `run_example()` in each hook file.
+
+---
+
+## Contributing Hooks
+
+- Place new hooks in the `tinyagent/hooks/` directory.
+- Add an example usage as `async def run_example()` in the same file.
+- Use `"gpt-4.1-mini"` as the default model in examples.
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
