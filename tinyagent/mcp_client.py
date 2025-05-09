@@ -16,12 +16,15 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class MCPClient:
-    def __init__(self):
+    def __init__(self, logger: Optional[logging.Logger] = None):
         self.session = None
         self.exit_stack = AsyncExitStack()
+        self.logger = logger or logging.getLogger(__name__)
         
         # Simplified callback system
         self.callbacks: List[callable] = []
+        
+        self.logger.debug("MCPClient initialized")
 
     def add_callback(self, callback: callable) -> None:
         """
@@ -114,3 +117,47 @@ class MCPClient:
                 # Always reset these regardless of success or failure
                 self.session = None
                 self.exit_stack = AsyncExitStack()
+
+async def run_example():
+    """Example usage of MCPClient with proper logging."""
+    import sys
+    from tinyagent.hooks.logging_manager import LoggingManager
+    
+    # Create and configure logging manager
+    log_manager = LoggingManager(default_level=logging.INFO)
+    log_manager.set_levels({
+        'tinyagent.mcp_client': logging.DEBUG,  # Debug for this module
+        'tinyagent.tiny_agent': logging.INFO,
+    })
+    
+    # Configure a console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    log_manager.configure_handler(
+        console_handler,
+        format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    
+    # Get module-specific logger
+    mcp_logger = log_manager.get_logger('tinyagent.mcp_client')
+    
+    mcp_logger.debug("Starting MCPClient example")
+    
+    # Create client with our logger
+    client = MCPClient(logger=mcp_logger)
+    
+    try:
+        # Connect to a simple echo server
+        await client.connect("python", ["-m", "mcp.examples.echo_server"])
+        
+        # List available tools
+        await client.list_tools()
+        
+        # Call the echo tool
+        result = await client.call_tool("echo", {"message": "Hello, MCP!"})
+        mcp_logger.info(f"Echo result: {result}")
+        
+    finally:
+        # Clean up
+        await client.close()
+        mcp_logger.debug("Example completed")

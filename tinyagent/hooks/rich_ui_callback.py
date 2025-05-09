@@ -13,24 +13,24 @@ from rich.status import Status
 from rich.text import Text
 from rich.box import HEAVY
 
-# Set up logging
-logger = logging.getLogger(__name__)
+
 
 class Timer:
     """Simple timer to track elapsed time."""
     
-    def __init__(self):
+    def __init__(self, logger=None):
         self.start_time = None
         self.end_time = None
+        self.logger = logger or logging.getLogger(__name__)
     
     def start(self):
         self.start_time = time.time()
         self.end_time = None
-        logger.debug("Timer started")
+        self.logger.debug("Timer started")
     
     def stop(self):
         self.end_time = time.time()
-        logger.debug(f"Timer stopped. Total elapsed: {self.elapsed:.2f}s")
+        self.logger.debug(f"Timer stopped. Total elapsed: {self.elapsed:.2f}s")
     
     @property
     def elapsed(self) -> float:
@@ -41,9 +41,10 @@ class Timer:
         return end - self.start_time
 
 
-def create_panel(content, title, border_style="blue"):
+def create_panel(content, title, border_style="blue", logger=None):
     """Create a rich panel with consistent styling."""
-    logger.debug(f"Creating panel with title: {title}")
+    log = logger or logging.getLogger(__name__)
+    log.debug(f"Creating panel with title: {title}")
     return Panel(
         content, 
         title=title, 
@@ -79,6 +80,7 @@ class RichUICallback:
         show_thinking: bool = True,
         show_tool_calls: bool = True,
         tags_to_include_in_markdown: Set[str] = {"think", "thinking"},
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize the Rich UI callback.
@@ -90,6 +92,7 @@ class RichUICallback:
             show_thinking: Whether to show the thinking process
             show_tool_calls: Whether to show tool calls
             tags_to_include_in_markdown: Tags to include in markdown rendering
+            logger: Optional logger to use
         """
         self.console = console or Console()
         self.markdown = markdown
@@ -97,10 +100,11 @@ class RichUICallback:
         self.show_thinking = show_thinking
         self.show_tool_calls = show_tool_calls
         self.tags_to_include_in_markdown = tags_to_include_in_markdown
+        self.logger = logger or logging.getLogger(__name__)
         
         # State tracking
         self.live = None
-        self.timer = Timer()
+        self.timer = Timer(logger=self.logger)
         self.panels = []
         self.status = None
         self.thinking_content = ""
@@ -111,7 +115,7 @@ class RichUICallback:
         self.assistant_text_responses = []  # Store text responses from assistant
         self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
-        logger.debug("RichUICallback initialized")
+        self.logger.debug("RichUICallback initialized")
         
     async def __call__(self, event_name: str, agent: Any, **kwargs: Any) -> None:
         """
@@ -122,7 +126,7 @@ class RichUICallback:
             agent: The TinyAgent instance
             **kwargs: Additional event data
         """
-        logger.debug(f"Event received: {event_name}")
+        self.logger.debug(f"Event received: {event_name}")
         
         if event_name == "agent_start":
             await self._handle_agent_start(agent, **kwargs)
@@ -137,12 +141,12 @@ class RichUICallback:
         
         # Update the UI if we have an active live display
         if self.live:
-            logger.debug("Updating display")
+            self.logger.debug("Updating display")
             self._update_display()
     
     async def _handle_agent_start(self, agent: Any, **kwargs: Any) -> None:
         """Handle the agent_start event."""
-        logger.debug("Handling agent_start event")
+        self.logger.debug("Handling agent_start event")
         self.timer.start()
         self.panels = []
         self.thinking_content = ""
@@ -153,7 +157,7 @@ class RichUICallback:
         
         # Store the user input for display
         self.current_user_input = kwargs.get("user_input", "")
-        logger.debug(f"User input: {self.current_user_input}")
+        self.logger.debug(f"User input: {self.current_user_input}")
         
         # Initialize the live display with auto_refresh 
         self.live = Live(
@@ -161,7 +165,7 @@ class RichUICallback:
             auto_refresh=True,
             refresh_per_second=4,
         )
-        logger.debug("Starting live display")
+        self.logger.debug("Starting live display")
         self.live.start()
         
         # Add the initial status
@@ -170,7 +174,7 @@ class RichUICallback:
         
         # Add user message panel if enabled
         if self.show_message and self.current_user_input:
-            logger.debug("Adding user message panel")
+            self.logger.debug("Adding user message panel")
             message_panel = create_panel(
                 content=Text(self.current_user_input, style="green"),
                 title="User Message",
@@ -183,12 +187,12 @@ class RichUICallback:
     async def _handle_message_add(self, agent: Any, **kwargs: Any) -> None:
         """Handle the message_add event."""
         message = kwargs.get("message", {})
-        logger.debug(f"Handling message_add event: {message.get('role', 'unknown')}")
+        self.logger.debug(f"Handling message_add event: {message.get('role', 'unknown')}")
         
         # Process tool calls in assistant messages
         if message.get("role") == "assistant":
             if "tool_calls" in message:
-                logger.debug(f"Processing {len(message.get('tool_calls', []))} tool calls")
+                self.logger.debug(f"Processing {len(message.get('tool_calls', []))} tool calls")
                 for tool_call in message.get("tool_calls", []):
                     function_info = tool_call.get("function", {})
                     tool_name = function_info.get("name", "unknown")
@@ -211,11 +215,11 @@ class RichUICallback:
                         "result": None  # Will be filled when tool response comes
                     })
                     
-                    logger.debug(f"Added tool call: {tool_name}")
+                    self.logger.debug(f"Added tool call: {tool_name}")
             elif "content" in message and message.get("content"):
                 # This is a text response from the assistant
                 self.assistant_text_responses.append(message.get("content", ""))
-                logger.debug(f"Added assistant text response: {message.get('content', '')[:50]}...")
+                self.logger.debug(f"Added assistant text response: {message.get('content', '')[:50]}...")
         
         # Process tool responses
         if message.get("role") == "tool":
@@ -228,21 +232,21 @@ class RichUICallback:
                 for tool_detail in self.tool_call_details:
                     if tool_detail["id"] == tool_call_id:
                         tool_detail["result"] = content
-                        logger.debug(f"Updated tool call {tool_call_id} with result")
+                        self.logger.debug(f"Updated tool call {tool_call_id} with result")
                         break
             
             # Also keep the old format for backward compatibility
             self.tool_calls.append(f"{tool_name} result: {content}")
-            logger.debug(f"Added tool result: {tool_name}")
+            self.logger.debug(f"Added tool result: {tool_name}")
     
     async def _handle_llm_start(self, agent: Any, **kwargs: Any) -> None:
         """Handle the llm_start event."""
-        logger.debug("Handling llm_start event")
+        self.logger.debug("Handling llm_start event")
         # Nothing specific to do here, the status is already showing "Thinking..."
     
     async def _handle_llm_end(self, agent: Any, **kwargs: Any) -> None:
         """Handle the llm_end event."""
-        logger.debug("Handling llm_end event")
+        self.logger.debug("Handling llm_end event")
         response = kwargs.get("response", {})
         
         # Extract thinking content if available (from response.choices[0].message.content)
@@ -250,9 +254,9 @@ class RichUICallback:
             message = response.choices[0].message
             if hasattr(message, "content") and message.content:
                 self.thinking_content = message.content
-                logger.debug(f"Extracted thinking content: {self.thinking_content[:50]}...")
+                self.logger.debug(f"Extracted thinking content: {self.thinking_content[:50]}...")
         except (AttributeError, IndexError) as e:
-            logger.debug(f"Could not extract thinking content: {e}")
+            self.logger.debug(f"Could not extract thinking content: {e}")
             
         # Track token usage if available
         try:
@@ -261,16 +265,16 @@ class RichUICallback:
                 self.token_usage["prompt_tokens"] += usage.prompt_tokens
                 self.token_usage["completion_tokens"] += usage.completion_tokens
                 self.token_usage["total_tokens"] += usage.total_tokens
-                logger.debug(f"Updated token usage: {self.token_usage}")
+                self.logger.debug(f"Updated token usage: {self.token_usage}")
         except (AttributeError, TypeError) as e:
-            logger.debug(f"Could not extract token usage: {e}")
+            self.logger.debug(f"Could not extract token usage: {e}")
     
     async def _handle_agent_end(self, agent: Any, **kwargs: Any) -> None:
         """Handle the agent_end event."""
-        logger.debug("Handling agent_end event")
+        self.logger.debug("Handling agent_end event")
         self.timer.stop()
         self.response_content = kwargs.get("result", "")
-        logger.debug(f"Final response: {self.response_content[:50]}...")
+        self.logger.debug(f"Final response: {self.response_content[:50]}...")
         
         # Remove the status panel
         self.panels = [p for p in self.panels if not isinstance(p, Status)]
@@ -279,7 +283,7 @@ class RichUICallback:
         if self.response_content:
             content = self.response_content
             if self.markdown:
-                logger.debug("Converting response to markdown")
+                self.logger.debug("Converting response to markdown")
                 escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
                 content = Markdown(escaped_content)
             
@@ -294,13 +298,13 @@ class RichUICallback:
         
 
         self.live.stop()
-        logger.debug("Live display stopped")
+        self.logger.debug("Live display stopped")
 
     
     def _update_display(self) -> None:
         """Update the live display with current panels."""
         if not self.live:
-            logger.debug("No live display to update")
+            self.logger.debug("No live display to update")
             return
         
         # Start with a fresh list of panels in the specified order
@@ -319,7 +323,7 @@ class RichUICallback:
         # 3. Tool Calls summary (if we have tool calls)
         if self.show_tool_calls and self.tool_calls:
             # Create the tool calls summary panel
-            logger.debug(f"Creating tool calls summary panel with {len(self.tool_calls)} calls")
+            self.logger.debug(f"Creating tool calls summary panel with {len(self.tool_calls)} calls")
             tool_calls_content = Text()
             for i, tool_call in enumerate(self.tool_calls):
                 if "result:" not in tool_call:  # Only show the calls, not results
@@ -337,7 +341,7 @@ class RichUICallback:
         for i, response in enumerate(self.assistant_text_responses):
             content = response
             if self.markdown:
-                logger.debug("Converting assistant response to markdown")
+                self.logger.debug("Converting assistant response to markdown")
                 escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
                 content = Markdown(escaped_content)
             
@@ -388,7 +392,7 @@ class RichUICallback:
         
         # 7. Thinking panel (if we have thinking content)
         if self.show_thinking and self.thinking_content:
-            logger.debug("Adding thinking panel")
+            self.logger.debug("Adding thinking panel")
             thinking_panel = create_panel(
                 content=Text(self.thinking_content),
                 title=f"Response ({self.timer.elapsed:.1f}s)",
@@ -400,7 +404,7 @@ class RichUICallback:
         if self.response_content:
             content = self.response_content
             if self.markdown:
-                logger.debug("Converting response to markdown")
+                self.logger.debug("Converting response to markdown")
                 escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
                 content = Markdown(escaped_content)
             
@@ -412,44 +416,67 @@ class RichUICallback:
             ordered_panels.append(response_panel)
         
         try:
-            logger.debug(f"Updating live display with {len(ordered_panels)} panels")
+            self.logger.debug(f"Updating live display with {len(ordered_panels)} panels")
             self.live.update(Group(*ordered_panels))
         except Exception as e:
-            logger.error(f"Error updating display: {e}")
+            self.logger.error(f"Error updating display: {e}")
 
 
 async def run_example():
     """Example usage of RichUICallback with TinyAgent."""
     import os
+    import sys
     from tinyagent import TinyAgent
+    from tinyagent.hooks.logging_manager import LoggingManager
     
-    # Configure logging
-    logging.basicConfig(level=logging.DEBUG)
+    # Create and configure logging manager
+    log_manager = LoggingManager(default_level=logging.INFO)
+    log_manager.set_levels({
+        'tinyagent.hooks.rich_ui_callback': logging.DEBUG,  # Debug for this module
+        'tinyagent.tiny_agent': logging.INFO,               # Info for TinyAgent
+        'tinyagent.mcp_client': logging.INFO,               # Info for MCPClient
+    })
+    
+    # Configure a console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    log_manager.configure_handler(
+        console_handler,
+        format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    
+    # Get module-specific loggers
+    ui_logger = log_manager.get_logger('tinyagent.hooks.rich_ui_callback')
+    agent_logger = log_manager.get_logger('tinyagent.tiny_agent')
+    mcp_logger = log_manager.get_logger('tinyagent.mcp_client')
+    
+    ui_logger.debug("Starting RichUICallback example")
     
     # Get API key from environment
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("Please set the OPENAI_API_KEY environment variable")
+        ui_logger.error("Please set the OPENAI_API_KEY environment variable")
         return
     
-    # Initialize the agent
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key)
+    # Initialize the agent with our logger
+    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
     
-    # Add the Rich UI callback
+    # Add the Rich UI callback with our logger
     rich_ui = RichUICallback(
         markdown=True,
         show_message=True,
         show_thinking=True,
         show_tool_calls=True,
+        logger=ui_logger  # Pass DEBUG level logger to RichUICallback
     )
     agent.add_callback(rich_ui)
     
     # Run the agent with a user query
     user_input = "What is the capital of France and what's the population this year?"
-    print(f"Running agent with input: {user_input}")
+    ui_logger.info(f"Running agent with input: {user_input}")
     result = await agent.run(user_input)
     
-    print(f"Final result: {result}")
+    ui_logger.info(f"Final result: {result}")
     
     # Clean up
     await agent.close()

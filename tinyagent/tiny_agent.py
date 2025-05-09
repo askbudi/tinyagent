@@ -19,7 +19,8 @@ class TinyAgent:
     This agent is literally just a while loop on top of MCPClient.
     """
     
-    def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None, system_prompt: Optional[str] = None):
+    def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None, 
+                system_prompt: Optional[str] = None, logger: Optional[logging.Logger] = None):
         """
         Initialize the Tiny Agent.
         
@@ -27,7 +28,11 @@ class TinyAgent:
             model: The model to use with LiteLLM
             api_key: The API key for the model provider
             system_prompt: Custom system prompt for the agent
+            logger: Optional logger to use
         """
+        # Set up logger
+        self.logger = logger or logging.getLogger(__name__)
+        
         # Instead of a single MCPClient, keep multiple:
         self.mcp_clients: List[MCPClient] = []
         # Map from tool_name -> MCPClient instance
@@ -83,6 +88,8 @@ class TinyAgent:
                 }
             }
         ]
+        
+        self.logger.debug("TinyAgent initialized")
     
     def add_callback(self, callback: callable) -> None:
         """
@@ -103,20 +110,20 @@ class TinyAgent:
         """
         for callback in self.callbacks:
             try:
-                logger.debug(f"Running callback: {callback}")
+                self.logger.debug(f"Running callback: {callback}")
                 if asyncio.iscoroutinefunction(callback):
-                    logger.debug(f"Callback is a coroutine function")
+                    self.logger.debug(f"Callback is a coroutine function")
                     await callback(event_name, self, **kwargs)
                 else:
                     # Check if the callback is a class with an async __call__ method
                     if hasattr(callback, '__call__') and asyncio.iscoroutinefunction(callback.__call__):
-                        logger.debug(f"Callback is a class with an async __call__ method")  
+                        self.logger.debug(f"Callback is a class with an async __call__ method")  
                         await callback(event_name, self, **kwargs)
                     else:
-                        logger.debug(f"Callback is a regular function")
+                        self.logger.debug(f"Callback is a regular function")
                         callback(event_name, self, **kwargs)
             except Exception as e:
-                logger.error(f"Error in callback for {event_name}: {str(e)}")
+                self.logger.error(f"Error in callback for {event_name}: {str(e)}")
     
     async def connect_to_server(self, command: str, args: List[str]) -> None:
         """
@@ -152,7 +159,7 @@ class TinyAgent:
             self.available_tools.append(fn_meta)
             self.tool_to_client[tool.name] = client
         
-        logger.info(f"Connected to {command} {args!r}, added {len(resp.tools)} tools")
+        self.logger.info(f"Connected to {command} {args!r}, added {len(resp.tools)} tools")
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
         """
@@ -183,7 +190,7 @@ class TinyAgent:
             
             # Call LLM with messages and tools
             try:
-                logger.info(f"Calling LLM with {len(self.messages)} messages and {len(all_tools)} tools")
+                self.logger.info(f"Calling LLM with {len(self.messages)} messages and {len(all_tools)} tools")
                 
                 # Notify LLM start
                 await self._run_callbacks("llm_start", messages=self.messages, tools=all_tools)
@@ -200,7 +207,7 @@ class TinyAgent:
                 
                 # Process the response - properly handle the object
                 response_message = response.choices[0].message
-                logger.debug(f"🔥🔥🔥🔥🔥🔥 Response : {response_message}")
+                self.logger.debug(f"🔥🔥🔥🔥🔥🔥 Response : {response_message}")
                 
                 # Create a proper message dictionary from the response object's attributes
                 assistant_message = {
@@ -222,7 +229,7 @@ class TinyAgent:
                 # Process tool calls if they exist
                 if has_tool_calls:
                     tool_calls = response_message.tool_calls
-                    logger.info(f"Tool calls detected: {len(tool_calls)}")
+                    self.logger.info(f"Tool calls detected: {len(tool_calls)}")
                     
                     # Process each tool call one by one
                     for tool_call in tool_calls:
@@ -243,7 +250,7 @@ class TinyAgent:
                             try:
                                 tool_args = json.loads(function_info.arguments)
                             except json.JSONDecodeError:
-                                logger.error(f"Could not parse tool arguments: {function_info.arguments}")
+                                self.logger.error(f"Could not parse tool arguments: {function_info.arguments}")
                                 tool_args = {}
                             
                             # Handle control flow tools
@@ -281,11 +288,11 @@ class TinyAgent:
                                         else:
                                             tool_message["content"] = "Tool returned no content"
                                     except Exception as e:
-                                        logger.error(f"Error calling tool {tool_name}: {str(e)}")
+                                        self.logger.error(f"Error calling tool {tool_name}: {str(e)}")
                                         tool_message["content"] = f"Error executing tool {tool_name}: {str(e)}"
                         except Exception as e:
                             # If any error occurs during tool call processing, make sure we still have a tool response
-                            logger.error(f"Unexpected error processing tool call {tool_call_id}: {str(e)}")
+                            self.logger.error(f"Unexpected error processing tool call {tool_call_id}: {str(e)}")
                             tool_message["content"] = f"Error processing tool call: {str(e)}"
                         
                         # Always add the tool message to ensure each tool call has a response
@@ -309,7 +316,7 @@ class TinyAgent:
                     return result
                 
             except Exception as e:
-                logger.error(f"Error in agent loop: {str(e)}")
+                self.logger.error(f"Error in agent loop: {str(e)}")
                 result = f"Error: {str(e)}"
                 await self._run_callbacks("agent_end", result=result, error=str(e))
                 return result
@@ -321,5 +328,65 @@ class TinyAgent:
             try:
                 await client.close()
             except RuntimeError as e:
-                logger.error(f"Error closing MCP client: {str(e)}")
+                self.logger.error(f"Error closing MCP client: {str(e)}")
                 # Continue closing other clients even if one fails
+
+async def run_example():
+    """Example usage of TinyAgent with proper logging."""
+    import os
+    import sys
+    from tinyagent.hooks.logging_manager import LoggingManager
+    from tinyagent.hooks.rich_ui_callback import RichUICallback
+    
+    # Create and configure logging manager
+    log_manager = LoggingManager(default_level=logging.INFO)
+    log_manager.set_levels({
+        'tinyagent.tiny_agent': logging.DEBUG,  # Debug for this module
+        'tinyagent.mcp_client': logging.INFO,
+        'tinyagent.hooks.rich_ui_callback': logging.INFO,
+    })
+    
+    # Configure a console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    log_manager.configure_handler(
+        console_handler,
+        format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    
+    # Get module-specific loggers
+    agent_logger = log_manager.get_logger('tinyagent.tiny_agent')
+    ui_logger = log_manager.get_logger('tinyagent.hooks.rich_ui_callback')
+    mcp_logger = log_manager.get_logger('tinyagent.mcp_client')
+    
+    agent_logger.debug("Starting TinyAgent example")
+    
+    # Get API key from environment
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        agent_logger.error("Please set the OPENAI_API_KEY environment variable")
+        return
+    
+    # Initialize the agent with our logger
+    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
+    
+    # Add the Rich UI callback with our logger
+    rich_ui = RichUICallback(
+        markdown=True,
+        show_message=True,
+        show_thinking=True,
+        show_tool_calls=True,
+        logger=ui_logger
+    )
+    agent.add_callback(rich_ui)
+    
+    # Run the agent with a user query
+    user_input = "What is the capital of France?"
+    agent_logger.info(f"Running agent with input: {user_input}")
+    result = await agent.run(user_input)
+    
+    agent_logger.info(f"Final result: {result}")
+    
+    # Clean up
+    await agent.close()
+    agent_logger.debug("Example completed")
