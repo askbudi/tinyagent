@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from .mcp_client import MCPClient
+import asyncio
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -18,7 +19,7 @@ class TinyAgent:
     This agent is literally just a while loop on top of MCPClient.
     """
     
-    def __init__(self, model: str = "gpt-4o", api_key: Optional[str] = None, system_prompt: Optional[str] = None):
+    def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None, system_prompt: Optional[str] = None):
         """
         Initialize the Tiny Agent.
         
@@ -31,6 +32,9 @@ class TinyAgent:
         self.mcp_clients: List[MCPClient] = []
         # Map from tool_name -> MCPClient instance
         self.tool_to_client: Dict[str, MCPClient] = {}
+        
+        # Simplified hook system - single list of callbacks
+        self.callbacks: List[callable] = []
         
         # LiteLLM configuration
         self.model = model
@@ -80,6 +84,40 @@ class TinyAgent:
             }
         ]
     
+    def add_callback(self, callback: callable) -> None:
+        """
+        Add a callback function to the agent.
+        
+        Args:
+            callback: A function that accepts (event_name, agent, **kwargs)
+        """
+        self.callbacks.append(callback)
+    
+    async def _run_callbacks(self, event_name: str, **kwargs) -> None:
+        """
+        Run all registered callbacks for an event.
+        
+        Args:
+            event_name: The name of the event
+            **kwargs: Additional data for the event
+        """
+        for callback in self.callbacks:
+            try:
+                logger.debug(f"Running callback: {callback}")
+                if asyncio.iscoroutinefunction(callback):
+                    logger.debug(f"Callback is a coroutine function")
+                    await callback(event_name, self, **kwargs)
+                else:
+                    # Check if the callback is a class with an async __call__ method
+                    if hasattr(callback, '__call__') and asyncio.iscoroutinefunction(callback.__call__):
+                        logger.debug(f"Callback is a class with an async __call__ method")  
+                        await callback(event_name, self, **kwargs)
+                    else:
+                        logger.debug(f"Callback is a regular function")
+                        callback(event_name, self, **kwargs)
+            except Exception as e:
+                logger.error(f"Error in callback for {event_name}: {str(e)}")
+    
     async def connect_to_server(self, command: str, args: List[str]) -> None:
         """
         Connect to an MCP server and fetch available tools.
@@ -90,6 +128,11 @@ class TinyAgent:
         """
         # 1) Create and connect a brand-new client
         client = MCPClient()
+        
+        # Pass our callbacks to the client
+        for callback in self.callbacks:
+            client.add_callback(callback)
+        
         await client.connect(command, args)
         self.mcp_clients.append(client)
         
@@ -122,8 +165,12 @@ class TinyAgent:
         Returns:
             The final agent response
         """
+        # Notify start
+        await self._run_callbacks("agent_start", user_input=user_input)
+        
         # Add user message to conversation
         self.messages.append({"role": "user", "content": user_input})
+        await self._run_callbacks("message_add", message=self.messages[-1])
         
         # Initialize loop control variables
         num_turns = 0
@@ -137,12 +184,19 @@ class TinyAgent:
             # Call LLM with messages and tools
             try:
                 logger.info(f"Calling LLM with {len(self.messages)} messages and {len(all_tools)} tools")
+                
+                # Notify LLM start
+                await self._run_callbacks("llm_start", messages=self.messages, tools=all_tools)
+                
                 response = await litellm.acompletion(
                     model=self.model,
                     messages=self.messages,
                     tools=all_tools,
                     tool_choice="auto"
                 )
+                
+                # Notify LLM end
+                await self._run_callbacks("llm_end", response=response)
                 
                 # Process the response - properly handle the object
                 response_message = response.choices[0].message
@@ -163,6 +217,7 @@ class TinyAgent:
                 
                 # Add the properly formatted assistant message to conversation
                 self.messages.append(assistant_message)
+                await self._run_callbacks("message_add", message=assistant_message)
                 
                 # Process tool calls if they exist
                 if has_tool_calls:
@@ -196,12 +251,14 @@ class TinyAgent:
                                 # Add a response for this tool call before returning
                                 tool_message["content"] = "Task has been completed successfully."
                                 self.messages.append(tool_message)
+                                await self._run_callbacks("agent_end", result="Task completed.")
                                 return "Task completed."
                             elif tool_name == "ask_question":
                                 question = tool_args.get("question", "Could you provide more details?")
                                 # Add a response for this tool call before returning
                                 tool_message["content"] = f"Question asked: {question}"
                                 self.messages.append(tool_message)
+                                await self._run_callbacks("agent_end", result=f"I need more information: {question}")
                                 return f"I need more information: {question}"
                             else:
                                 # **New**: dispatch to the proper MCPClient
@@ -233,23 +290,29 @@ class TinyAgent:
                         
                         # Always add the tool message to ensure each tool call has a response
                         self.messages.append(tool_message)
+                        await self._run_callbacks("message_add", message=tool_message)
                     
                     next_turn_should_call_tools = False
                 else:
                     # No tool calls in this message
                     if next_turn_should_call_tools and num_turns > 0:
                         # If we expected tool calls but didn't get any, we're done
+                        await self._run_callbacks("agent_end", result=assistant_message["content"] or "")
                         return assistant_message["content"] or ""
                     
                     next_turn_should_call_tools = True
                 
                 num_turns += 1
                 if num_turns >= max_turns:
-                    return "Max turns reached. Task incomplete."
+                    result = "Max turns reached. Task incomplete."
+                    await self._run_callbacks("agent_end", result=result)
+                    return result
                 
             except Exception as e:
                 logger.error(f"Error in agent loop: {str(e)}")
-                return f"Error: {str(e)}"
+                result = f"Error: {str(e)}"
+                await self._run_callbacks("agent_end", result=result, error=str(e))
+                return result
 
     
     async def close(self):
