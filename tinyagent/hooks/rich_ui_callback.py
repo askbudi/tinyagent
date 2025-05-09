@@ -79,7 +79,6 @@ class RichUICallback:
         show_thinking: bool = True,
         show_tool_calls: bool = True,
         tags_to_include_in_markdown: Set[str] = {"think", "thinking"},
-        jupyter: bool = False
     ):
         """
         Initialize the Rich UI callback.
@@ -91,7 +90,6 @@ class RichUICallback:
             show_thinking: Whether to show the thinking process
             show_tool_calls: Whether to show tool calls
             tags_to_include_in_markdown: Tags to include in markdown rendering
-            jupyter: Whether running in Jupyter notebook environment
         """
         self.console = console or Console()
         self.markdown = markdown
@@ -99,7 +97,6 @@ class RichUICallback:
         self.show_thinking = show_thinking
         self.show_tool_calls = show_tool_calls
         self.tags_to_include_in_markdown = tags_to_include_in_markdown
-        self.jupyter = jupyter
         
         # State tracking
         self.live = None
@@ -109,7 +106,10 @@ class RichUICallback:
         self.thinking_content = ""
         self.response_content = ""
         self.tool_calls = []
+        self.tool_call_details = []  # Store detailed tool call info with inputs and outputs
         self.current_user_input = ""
+        self.assistant_text_responses = []  # Store text responses from assistant
+        self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
         logger.debug("RichUICallback initialized")
         
@@ -148,12 +148,14 @@ class RichUICallback:
         self.thinking_content = ""
         self.response_content = ""
         self.tool_calls = []
+        self.tool_call_details = []
+        self.assistant_text_responses = []
         
         # Store the user input for display
         self.current_user_input = kwargs.get("user_input", "")
         logger.debug(f"User input: {self.current_user_input}")
         
-        # Initialize the live display with auto_refresh for Jupyter
+        # Initialize the live display with auto_refresh 
         self.live = Live(
             console=self.console, 
             auto_refresh=True,
@@ -184,25 +186,52 @@ class RichUICallback:
         logger.debug(f"Handling message_add event: {message.get('role', 'unknown')}")
         
         # Process tool calls in assistant messages
-        if message.get("role") == "assistant" and "tool_calls" in message:
-            logger.debug(f"Processing {len(message.get('tool_calls', []))} tool calls")
-            for tool_call in message.get("tool_calls", []):
-                function_info = tool_call.get("function", {})
-                tool_name = function_info.get("name", "unknown")
-                args = function_info.get("arguments", "{}")
-                
-                try:
-                    formatted_args = json.dumps(json.loads(args), indent=2)
-                except:
-                    formatted_args = args
-                
-                self.tool_calls.append(f"{tool_name}({formatted_args})")
-                logger.debug(f"Added tool call: {tool_name}")
+        if message.get("role") == "assistant":
+            if "tool_calls" in message:
+                logger.debug(f"Processing {len(message.get('tool_calls', []))} tool calls")
+                for tool_call in message.get("tool_calls", []):
+                    function_info = tool_call.get("function", {})
+                    tool_name = function_info.get("name", "unknown")
+                    args = function_info.get("arguments", "{}")
+                    tool_id = tool_call.get("id", "unknown")
+                    
+                    try:
+                        formatted_args = json.dumps(json.loads(args), indent=2)
+                    except:
+                        formatted_args = args
+                    
+                    # Add to simple tool calls list (for the summary panel)
+                    self.tool_calls.append(f"{tool_name}({formatted_args})")
+                    
+                    # Add to detailed tool call info
+                    self.tool_call_details.append({
+                        "id": tool_id,
+                        "name": tool_name,
+                        "arguments": formatted_args,
+                        "result": None  # Will be filled when tool response comes
+                    })
+                    
+                    logger.debug(f"Added tool call: {tool_name}")
+            elif "content" in message and message.get("content"):
+                # This is a text response from the assistant
+                self.assistant_text_responses.append(message.get("content", ""))
+                logger.debug(f"Added assistant text response: {message.get('content', '')[:50]}...")
         
         # Process tool responses
         if message.get("role") == "tool":
             tool_name = message.get("name", "unknown")
             content = message.get("content", "")
+            tool_call_id = message.get("tool_call_id", None)
+            
+            # Update the corresponding tool call detail with the result
+            if tool_call_id:
+                for tool_detail in self.tool_call_details:
+                    if tool_detail["id"] == tool_call_id:
+                        tool_detail["result"] = content
+                        logger.debug(f"Updated tool call {tool_call_id} with result")
+                        break
+            
+            # Also keep the old format for backward compatibility
             self.tool_calls.append(f"{tool_name} result: {content}")
             logger.debug(f"Added tool result: {tool_name}")
     
@@ -224,6 +253,17 @@ class RichUICallback:
                 logger.debug(f"Extracted thinking content: {self.thinking_content[:50]}...")
         except (AttributeError, IndexError) as e:
             logger.debug(f"Could not extract thinking content: {e}")
+            
+        # Track token usage if available
+        try:
+            usage = response.usage
+            if usage:
+                self.token_usage["prompt_tokens"] += usage.prompt_tokens
+                self.token_usage["completion_tokens"] += usage.completion_tokens
+                self.token_usage["total_tokens"] += usage.total_tokens
+                logger.debug(f"Updated token usage: {self.token_usage}")
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"Could not extract token usage: {e}")
     
     async def _handle_agent_end(self, agent: Any, **kwargs: Any) -> None:
         """Handle the agent_end event."""
@@ -252,26 +292,10 @@ class RichUICallback:
         
         self._update_display()
         
-        # In Jupyter or terminal, we want to keep the final output visible
-        # but still clean up resources
+
         self.live.stop()
         logger.debug("Live display stopped")
-        return
-        if self.live:
-            logger.debug("Finalizing display")
-            await asyncio.sleep(0.1)  # Give a moment for the display to update
-            
-            # Render the final state without stopping the live display
-            final_output = Group(*self.panels)
-            
-            # Stop the live display to clean up resources
-            self.live.stop()
-            
-            # Print the final state directly to the console
-            self.console.print(final_output)
-            
-            # Clean up the live display reference
-            self.live = None
+
     
     def _update_display(self) -> None:
         """Update the live display with current panels."""
@@ -279,35 +303,117 @@ class RichUICallback:
             logger.debug("No live display to update")
             return
         
-        current_panels = self.panels.copy()
+        # Start with a fresh list of panels in the specified order
+        ordered_panels = []
         
-        # Add thinking panel if we have thinking content
+        # 1. Status (if exists)
+        status_panel = next((p for p in self.panels if isinstance(p, Status)), None)
+        if status_panel:
+            ordered_panels.append(status_panel)
+        
+        # 2. User Message (if exists)
+        user_message_panel = next((p for p in self.panels if isinstance(p, Panel) and "User Message" in p.title), None)
+        if user_message_panel:
+            ordered_panels.append(user_message_panel)
+        
+        # 3. Tool Calls summary (if we have tool calls)
+        if self.show_tool_calls and self.tool_calls:
+            # Create the tool calls summary panel
+            logger.debug(f"Creating tool calls summary panel with {len(self.tool_calls)} calls")
+            tool_calls_content = Text()
+            for i, tool_call in enumerate(self.tool_calls):
+                if "result:" not in tool_call:  # Only show the calls, not results
+                    tool_calls_content.append(f"• {tool_call}\n")
+            
+            if tool_calls_content:
+                tool_calls_panel = create_panel(
+                    content=tool_calls_content,
+                    title="Tool Calls Summary",
+                    border_style="yellow"
+                )
+                ordered_panels.append(tool_calls_panel)
+        
+        # 4. Assistant Text Responses
+        for i, response in enumerate(self.assistant_text_responses):
+            content = response
+            if self.markdown:
+                logger.debug("Converting assistant response to markdown")
+                escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
+                content = Markdown(escaped_content)
+            
+            response_panel = create_panel(
+                content=content,
+                title=f"Assistant Response {i+1}",
+                border_style="blue"
+            )
+            ordered_panels.append(response_panel)
+        
+        # 5. Token Usage Panel
+        if any(self.token_usage.values()):
+            token_content = Text()
+            token_content.append(f"Prompt Tokens: {self.token_usage['prompt_tokens']}\n", style="cyan")
+            token_content.append(f"Completion Tokens: {self.token_usage['completion_tokens']}\n", style="green")
+            token_content.append(f"Total Tokens: {self.token_usage['total_tokens']}", style="bold magenta")
+            
+            token_panel = create_panel(
+                content=token_content,
+                title="Token Usage",
+                border_style="bright_blue"
+            )
+            ordered_panels.append(token_panel)
+        
+        # 6. Detailed Tool Calls
+        if self.show_tool_calls:
+            for tool_detail in self.tool_call_details:
+                tool_name = tool_detail["name"]
+                arguments = tool_detail["arguments"]
+                result = tool_detail["result"]
+                
+                tool_content = Text()
+                tool_content.append("Input:\n", style="bold")
+                tool_content.append(f"{arguments}\n\n")
+                
+                if result is not None:
+                    tool_content.append("Output:\n", style="bold")
+                    tool_content.append(f"{result}")
+                else:
+                    tool_content.append("Waiting for response...", style="italic")
+                
+                tool_panel = create_panel(
+                    content=tool_content,
+                    title=f"Tool: {tool_name}",
+                    border_style="yellow"
+                )
+                ordered_panels.append(tool_panel)
+        
+        # 7. Thinking panel (if we have thinking content)
         if self.show_thinking and self.thinking_content:
             logger.debug("Adding thinking panel")
             thinking_panel = create_panel(
                 content=Text(self.thinking_content),
-                title=f"Thinking ({self.timer.elapsed:.1f}s)",
+                title=f"Response ({self.timer.elapsed:.1f}s)",
                 border_style="green"
             )
-            current_panels.append(thinking_panel)
+            ordered_panels.append(thinking_panel)
         
-        # Add tool calls panel if we have tool calls
-        if self.show_tool_calls and self.tool_calls:
-            logger.debug(f"Adding tool calls panel with {len(self.tool_calls)} calls")
-            tool_calls_content = Text()
-            for tool_call in self.tool_calls:
-                tool_calls_content.append(f"• {tool_call}\n")
+        # 8. Final response panel (if we have a response)
+        if self.response_content:
+            content = self.response_content
+            if self.markdown:
+                logger.debug("Converting response to markdown")
+                escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
+                content = Markdown(escaped_content)
             
-            tool_calls_panel = create_panel(
-                content=tool_calls_content,
-                title="Tool Calls",
-                border_style="yellow"
+            response_panel = create_panel(
+                content=content,
+                title=f"Response ({self.timer.elapsed:.1f}s)",
+                border_style="blue"
             )
-            current_panels.append(tool_calls_panel)
+            ordered_panels.append(response_panel)
         
         try:
-            logger.debug(f"Updating live display with {len(current_panels)} panels")
-            self.live.update(Group(*current_panels))
+            logger.debug(f"Updating live display with {len(ordered_panels)} panels")
+            self.live.update(Group(*ordered_panels))
         except Exception as e:
             logger.error(f"Error updating display: {e}")
 
@@ -329,18 +435,17 @@ async def run_example():
     # Initialize the agent
     agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key)
     
-    # Add the Rich UI callback with Jupyter mode for notebook environments
+    # Add the Rich UI callback
     rich_ui = RichUICallback(
         markdown=True,
         show_message=True,
         show_thinking=True,
         show_tool_calls=True,
-        jupyter=True  # Set to True when running in Jupyter
     )
     agent.add_callback(rich_ui)
     
     # Run the agent with a user query
-    user_input = "What is the capital of France and what's the population?"
+    user_input = "What is the capital of France and what's the population this year?"
     print(f"Running agent with input: {user_input}")
     result = await agent.run(user_input)
     
