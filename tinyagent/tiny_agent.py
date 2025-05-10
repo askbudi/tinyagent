@@ -130,13 +130,17 @@ class TinyAgent:
             except Exception as e:
                 self.logger.error(f"Error in callback for {event_name}: {str(e)}")
     
-    async def connect_to_server(self, command: str, args: List[str]) -> None:
+    async def connect_to_server(self, command: str, args: List[str], 
+                               include_tools: Optional[List[str]] = None, 
+                               exclude_tools: Optional[List[str]] = None) -> None:
         """
         Connect to an MCP server and fetch available tools.
         
         Args:
             command: The command to run the server
             args: List of arguments for the server
+            include_tools: Optional list of tool name patterns to include (if provided, only matching tools will be added)
+            exclude_tools: Optional list of tool name patterns to exclude (matching tools will be skipped)
         """
         # 1) Create and connect a brand-new client
         client = MCPClient()
@@ -152,7 +156,21 @@ class TinyAgent:
         resp = await client.session.list_tools()
         
         # 3) For each tool, record its schema + map name->client
+        added_tools = 0
         for tool in resp.tools:
+            # Apply filtering logic
+            tool_name = tool.name
+            
+            # Skip if not in include list (when include list is provided)
+            if include_tools and not any(pattern in tool_name for pattern in include_tools):
+                self.logger.debug(f"Skipping tool {tool_name} - not in include list")
+                continue
+                
+            # Skip if in exclude list
+            if exclude_tools and any(pattern in tool_name for pattern in exclude_tools):
+                self.logger.debug(f"Skipping tool {tool_name} - matched exclude pattern")
+                continue
+            
             fn_meta = {
                 "type": "function",
                 "function": {
@@ -163,8 +181,9 @@ class TinyAgent:
             }
             self.available_tools.append(fn_meta)
             self.tool_to_client[tool.name] = client
+            added_tools += 1
         
-        self.logger.info(f"Connected to {command} {args!r}, added {len(resp.tools)} tools")
+        self.logger.info(f"Connected to {command} {args!r}, added {added_tools} tools (filtered from {len(resp.tools)} available)")
         self.logger.debug(f"{command} {args!r} Available tools: {self.available_tools}")
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
