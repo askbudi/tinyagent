@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import logging
+import tiktoken  # Add tiktoken import for token counting
 from typing import Any, Dict, List, Optional, Set, Union
 
 from rich.console import Console, Group
@@ -115,7 +116,25 @@ class RichUICallback:
         self.assistant_text_responses = []  # Store text responses from assistant
         self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
+        # Initialize tiktoken encoder for token counting
+        try:
+            self.encoder = tiktoken.get_encoding("o200k_base")
+            self.logger.debug("Initialized tiktoken encoder with o200k_base encoding")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize tiktoken encoder: {e}")
+            self.encoder = None
+        
         self.logger.debug("RichUICallback initialized")
+    
+    def count_tokens(self, text: str) -> int:
+        """Count tokens in a string using tiktoken."""
+        if not self.encoder or not text:
+            return 0
+        try:
+            return len(self.encoder.encode(text))
+        except Exception as e:
+            self.logger.error(f"Error counting tokens: {e}")
+            return 0
         
     async def __call__(self, event_name: str, agent: Any, **kwargs: Any) -> None:
         """
@@ -204,6 +223,9 @@ class RichUICallback:
                     except:
                         formatted_args = args
                     
+                    # Count tokens in the tool call
+                    token_count = self.count_tokens(f"{tool_name}({formatted_args})")
+                    
                     # Add to simple tool calls list (for the summary panel)
                     self.tool_calls.append(f"{tool_name}({formatted_args})")
                     
@@ -212,32 +234,40 @@ class RichUICallback:
                         "id": tool_id,
                         "name": tool_name,
                         "arguments": formatted_args,
-                        "result": None  # Will be filled when tool response comes
+                        "result": None,  # Will be filled when tool response comes
+                        "token_count": token_count  # Store token count
                     })
                     
-                    self.logger.debug(f"Added tool call: {tool_name}")
+                    self.logger.debug(f"Added tool call: {tool_name} ({token_count} tokens)")
             elif "content" in message and message.get("content"):
                 # This is a text response from the assistant
-                self.assistant_text_responses.append(message.get("content", ""))
-                self.logger.debug(f"Added assistant text response: {message.get('content', '')[:50]}...")
+                content = message.get("content", "")
+                token_count = self.count_tokens(content)
+                self.assistant_text_responses.append({
+                    "content": content,
+                    "token_count": token_count
+                })
+                self.logger.debug(f"Added assistant text response: {content[:50]}... ({token_count} tokens)")
         
         # Process tool responses
         if message.get("role") == "tool":
             tool_name = message.get("name", "unknown")
             content = message.get("content", "")
             tool_call_id = message.get("tool_call_id", None)
+            token_count = self.count_tokens(content)
             
             # Update the corresponding tool call detail with the result
             if tool_call_id:
                 for tool_detail in self.tool_call_details:
                     if tool_detail["id"] == tool_call_id:
                         tool_detail["result"] = content
-                        self.logger.debug(f"Updated tool call {tool_call_id} with result")
+                        tool_detail["result_token_count"] = token_count
+                        self.logger.debug(f"Updated tool call {tool_call_id} with result ({token_count} tokens)")
                         break
             
             # Also keep the old format for backward compatibility
             self.tool_calls.append(f"{tool_name} result: {content}")
-            self.logger.debug(f"Added tool result: {tool_name}")
+            self.logger.debug(f"Added tool result: {tool_name} ({token_count} tokens)")
     
     async def _handle_llm_start(self, agent: Any, **kwargs: Any) -> None:
         """Handle the llm_start event."""
@@ -296,7 +326,6 @@ class RichUICallback:
         
         self._update_display()
         
-
         self.live.stop()
         self.logger.debug("Live display stopped")
 
@@ -338,8 +367,10 @@ class RichUICallback:
                 ordered_panels.append(tool_calls_panel)
         
         # 4. Assistant Text Responses
-        for i, response in enumerate(self.assistant_text_responses):
-            content = response
+        for i, response_data in enumerate(self.assistant_text_responses):
+            content = response_data["content"]
+            token_count = response_data["token_count"]
+            
             if self.markdown:
                 self.logger.debug("Converting assistant response to markdown")
                 escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
@@ -351,6 +382,14 @@ class RichUICallback:
                 border_style="blue"
             )
             ordered_panels.append(response_panel)
+            
+            # Add token count panel with purple border
+            token_panel = create_panel(
+                content=Text(f"Token count: {token_count}", style="bold"),
+                title="Tokens",
+                border_style="purple"
+            )
+            ordered_panels.append(token_panel)
         
         # 5. Token Usage Panel
         if any(self.token_usage.values()):
@@ -372,6 +411,8 @@ class RichUICallback:
                 tool_name = tool_detail["name"]
                 arguments = tool_detail["arguments"]
                 result = tool_detail["result"]
+                input_token_count = tool_detail.get("token_count", 0)
+                result_token_count = tool_detail.get("result_token_count", 0)
                 
                 tool_content = Text()
                 tool_content.append("Input:\n", style="bold")
@@ -389,6 +430,20 @@ class RichUICallback:
                     border_style="yellow"
                 )
                 ordered_panels.append(tool_panel)
+                
+                # Add token count panel with purple border
+                token_content = Text()
+                token_content.append(f"Input tokens: {input_token_count}\n", style="cyan")
+                if result is not None:
+                    token_content.append(f"Output tokens: {result_token_count}\n", style="green")
+                token_content.append(f"Total tokens: {input_token_count + result_token_count}", style="bold")
+                
+                token_panel = create_panel(
+                    content=token_content,
+                    title="Tokens",
+                    border_style="purple"
+                )
+                ordered_panels.append(token_panel)
         
         # 7. Thinking panel (if we have thinking content)
         if self.show_thinking and self.thinking_content:
@@ -399,6 +454,15 @@ class RichUICallback:
                 border_style="green"
             )
             ordered_panels.append(thinking_panel)
+            
+            # Add token count panel for thinking content
+            thinking_token_count = self.count_tokens(self.thinking_content)
+            token_panel = create_panel(
+                content=Text(f"Token count: {thinking_token_count}", style="bold"),
+                title="Tokens",
+                border_style="purple"
+            )
+            ordered_panels.append(token_panel)
         
         # 8. Final response panel (if we have a response)
         if self.response_content:
@@ -414,6 +478,15 @@ class RichUICallback:
                 border_style="blue"
             )
             ordered_panels.append(response_panel)
+            
+            # Add token count panel for final response
+            response_token_count = self.count_tokens(self.response_content)
+            token_panel = create_panel(
+                content=Text(f"Token count: {response_token_count}", style="bold"),
+                title="Tokens",
+                border_style="purple"
+            )
+            ordered_panels.append(token_panel)
         
         try:
             self.logger.debug(f"Updating live display with {len(ordered_panels)} panels")

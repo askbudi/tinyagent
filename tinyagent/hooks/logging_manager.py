@@ -21,16 +21,17 @@ class LoggingManager:
         self.module_loggers: Dict[str, logging.Logger] = {}
         self.module_levels: Dict[str, int] = {}
         
-        # Configure root logger but don't change existing handlers
+        # Grab the root logger
         self.root_logger = logging.getLogger()
+        self.external_logger_levels: Dict[str, int] = {}
         
-        # Store original levels of external loggers to restore later if needed
-        self.external_logger_levels = {}
-        
-        # Silence all non-tinyagent loggers by default if requested
         if silence_others:
-            # Set root logger to WARNING to silence everything by default
+            # 1) store its original level
             self.root_logger_original_level = self.root_logger.level
+            # 2) strip away _any_ existing handlers (e.g. from basicConfig in libs)
+            for h in list(self.root_logger.handlers):
+                self.root_logger.removeHandler(h)
+            # 3) raise level so that only WARNING+ pass through by default
             self.root_logger.setLevel(logging.WARNING)
         
     def get_logger(self, module_name: str) -> logging.Logger:

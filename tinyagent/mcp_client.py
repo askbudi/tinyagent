@@ -12,7 +12,6 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class MCPClient:
@@ -107,12 +106,17 @@ class MCPClient:
 
     async def close(self):
         """Clean up subprocess and streams."""
+        if self.session:
+            try:
+                await self.session.close()
+            except Exception as e:
+                self.logger.error(f"Error closing session: {e}")
         if self.exit_stack:
             try:
                 await self.exit_stack.aclose()
             except (RuntimeError, asyncio.CancelledError) as e:
                 # Log the error but don't re-raise it
-                print(f"Error during client cleanup: {e}")
+                self.logger.error(f"Error during client cleanup: {e}")
             finally:
                 # Always reset these regardless of success or failure
                 self.session = None

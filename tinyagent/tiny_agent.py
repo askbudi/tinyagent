@@ -5,9 +5,9 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple
 from .mcp_client import MCPClient
 import asyncio
+import tiktoken  # Add tiktoken import for token counting
 
-# Set up logging
-logging.basicConfig(level=logging.DEBUG)
+# Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
 
@@ -20,7 +20,7 @@ class TinyAgent:
     """
     
     def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None, 
-                system_prompt: Optional[str] = None, logger: Optional[logging.Logger] = None):
+                system_prompt: Optional[str] = None, temperature: float = 0.0, logger: Optional[logging.Logger] = None,model_kwargs: Optional[Dict[str, Any]] = {}):
         """
         Initialize the Tiny Agent.
         
@@ -44,8 +44,13 @@ class TinyAgent:
         # LiteLLM configuration
         self.model = model
         self.api_key = api_key
+        self.temperature = temperature
+        if model in ["o1", "o1-preview","o3","o4-mini"]:
+            self.temperature = 1
         if api_key:
             litellm.api_key = api_key
+        
+        self.model_kwargs = model_kwargs
             
         # Conversation state
         self.messages = [{
@@ -160,6 +165,7 @@ class TinyAgent:
             self.tool_to_client[tool.name] = client
         
         self.logger.info(f"Connected to {command} {args!r}, added {len(resp.tools)} tools")
+        self.logger.debug(f"{command} {args!r} Available tools: {self.available_tools}")
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
         """
@@ -199,7 +205,9 @@ class TinyAgent:
                     model=self.model,
                     messages=self.messages,
                     tools=all_tools,
-                    tool_choice="auto"
+                    tool_choice="auto",
+                    temperature=self.temperature,
+                    **self.model_kwargs
                 )
                 
                 # Notify LLM end
@@ -209,26 +217,37 @@ class TinyAgent:
                 response_message = response.choices[0].message
                 self.logger.debug(f"🔥🔥🔥🔥🔥🔥 Response : {response_message}")
                 
-                # Create a proper message dictionary from the response object's attributes
-                assistant_message = {
-                    "role": "assistant",
-                    "content": response_message.content if hasattr(response_message, "content") else ""
-                }
-                
-                # Check if the message has tool_calls attribute and it's not empty
-                has_tool_calls = hasattr(response_message, "tool_calls") and response_message.tool_calls
-                
+                # Extract both content and any tool_calls
+                content = getattr(response_message, "content", "") or ""
+                tool_calls = getattr(response_message, "tool_calls", []) or []
+                has_tool_calls = bool(tool_calls)
+
+                # If there's textual content, emit it as its own assistant message
+                if content:
+                    content_msg = {
+                        "role": "assistant",
+                        "content": content
+                    }
+                    self.messages.append(content_msg)
+                    await self._run_callbacks("message_add", message=content_msg)
+
+                # Now emit the "assistant" message that carries the function call (or, if no calls, the content)
                 if has_tool_calls:
-                    # Add tool_calls to the message if present
-                    assistant_message["tool_calls"] = response_message.tool_calls
-                
-                # Add the properly formatted assistant message to conversation
-                self.messages.append(assistant_message)
-                await self._run_callbacks("message_add", message=assistant_message)
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": "",            # split off above
+                        "tool_calls": tool_calls
+                    }
+                else:
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": content
+                    }
+                self.messages.append(assistant_msg)
+                await self._run_callbacks("message_add", message=assistant_msg)
                 
                 # Process tool calls if they exist
                 if has_tool_calls:
-                    tool_calls = response_message.tool_calls
                     self.logger.info(f"Tool calls detected: {len(tool_calls)}")
                     
                     # Process each tool call one by one
@@ -275,7 +294,7 @@ class TinyAgent:
                                 else:
                                     try:
                                         content_list = await client.call_tool(tool_name, tool_args)
-                                        
+                                        self.logger.debug(f"Tool {tool_name} returned: {content_list}")
                                         # Safely extract text from the content
                                         if content_list:
                                             # Try different ways to extract the content
@@ -304,8 +323,8 @@ class TinyAgent:
                     # No tool calls in this message
                     if next_turn_should_call_tools and num_turns > 0:
                         # If we expected tool calls but didn't get any, we're done
-                        await self._run_callbacks("agent_end", result=assistant_message["content"] or "")
-                        return assistant_message["content"] or ""
+                        await self._run_callbacks("agent_end", result=assistant_msg["content"] or "")
+                        return assistant_msg["content"] or ""
                     
                     next_turn_should_call_tools = True
                 
