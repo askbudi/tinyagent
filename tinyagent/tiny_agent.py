@@ -2,16 +2,126 @@
 import litellm
 import json
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable, Union, Type, get_type_hints
 from .mcp_client import MCPClient
 import asyncio
 import tiktoken  # Add tiktoken import for token counting
+import inspect
+import functools
 
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
 
+def tool(name: Optional[str] = None, description: Optional[str] = None, 
+         schema: Optional[Dict[str, Any]] = None):
+    """
+    Decorator to convert a Python function or class into a tool for TinyAgent.
+    
+    Args:
+        name: Optional custom name for the tool (defaults to function/class name)
+        description: Optional description (defaults to function/class docstring)
+        schema: Optional JSON schema for the tool parameters (auto-generated if not provided)
+        
+    Returns:
+        Decorated function or class with tool metadata
+    """
+    def decorator(func_or_class):
+        # Determine if we're decorating a function or class
+        is_class = inspect.isclass(func_or_class)
+        
+        # Get the name (use provided name or function/class name)
+        tool_name = name or func_or_class.__name__
+        
+        # Get the description (use provided description or docstring)
+        tool_description = description or inspect.getdoc(func_or_class) or f"Tool based on {tool_name}"
+        
+        # Generate schema if not provided
+        tool_schema = schema or {}
+        if not tool_schema:
+            if is_class:
+                # For classes, look at the __init__ method
+                init_method = func_or_class.__init__
+                tool_schema = _generate_schema_from_function(init_method)
+            else:
+                # For functions, use the function itself
+                tool_schema = _generate_schema_from_function(func_or_class)
+        
+        # Attach metadata to the function or class
+        func_or_class._tool_metadata = {
+            "name": tool_name,
+            "description": tool_description,
+            "schema": tool_schema,
+            "is_class": is_class
+        }
+        
+        return func_or_class
+    
+    return decorator
 
+def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
+    """
+    Generate a JSON schema for a function based on its signature and type hints.
+    
+    Args:
+        func: The function to analyze
+        
+    Returns:
+        A JSON schema object for the function parameters
+    """
+    # Get function signature and type hints
+    sig = inspect.signature(func)
+    type_hints = get_type_hints(func)
+    
+    # Skip 'self' parameter for methods
+    params = {
+        name: param for name, param in sig.parameters.items() 
+        if name != 'self' and name != 'cls'
+    }
+    
+    # Build properties dictionary
+    properties = {}
+    required = []
+    
+    for name, param in params.items():
+        # Get parameter type
+        param_type = type_hints.get(name, Any)
+        
+        # Create property schema
+        prop_schema = {"description": ""}
+        
+        # Map Python types to JSON schema types
+        if param_type == str:
+            prop_schema["type"] = "string"
+        elif param_type == int:
+            prop_schema["type"] = "integer"
+        elif param_type == float:
+            prop_schema["type"] = "number"
+        elif param_type == bool:
+            prop_schema["type"] = "boolean"
+        elif param_type == list or param_type == List:
+            prop_schema["type"] = "array"
+        elif param_type == dict or param_type == Dict:
+            prop_schema["type"] = "object"
+        else:
+            prop_schema["type"] = "string"  # Default to string for complex types
+        
+        properties[name] = prop_schema
+        
+        # Check if parameter is required
+        if param.default == inspect.Parameter.empty:
+            required.append(name)
+    
+    # Build the final schema
+    schema = {
+        "type": "object",
+        "properties": properties
+    }
+    
+    if required:
+        schema["required"] = required
+    
+    return schema
 
 class TinyAgent:
     """
@@ -93,6 +203,10 @@ class TinyAgent:
                 }
             }
         ]
+        
+        # Add a list to store custom tools (functions and classes)
+        self.custom_tools: List[Dict[str, Any]] = []
+        self.custom_tool_handlers: Dict[str, Any] = {}
         
         self.logger.debug("TinyAgent initialized")
     
@@ -185,6 +299,87 @@ class TinyAgent:
         
         self.logger.info(f"Connected to {command} {args!r}, added {added_tools} tools (filtered from {len(resp.tools)} available)")
         self.logger.debug(f"{command} {args!r} Available tools: {self.available_tools}")
+    
+    def add_tool(self, tool_func_or_class: Any) -> None:
+        """
+        Add a custom tool (function or class) to the agent.
+        
+        Args:
+            tool_func_or_class: A function or class decorated with @tool
+        """
+        # Check if the tool has the required metadata
+        if not hasattr(tool_func_or_class, '_tool_metadata'):
+            raise ValueError("Tool must be decorated with @tool decorator")
+        
+        metadata = tool_func_or_class._tool_metadata
+        
+        # Create tool schema
+        tool_schema = {
+            "type": "function",
+            "function": {
+                "name": metadata["name"],
+                "description": metadata["description"],
+                "parameters": metadata["schema"]
+            }
+        }
+        
+        # Add to available tools
+        self.custom_tools.append(tool_schema)
+        self.available_tools.append(tool_schema)
+        
+        # Store the handler (function or class)
+        self.custom_tool_handlers[metadata["name"]] = tool_func_or_class
+        
+        self.logger.info(f"Added custom tool: {metadata['name']}")
+    
+    def add_tools(self, tools: List[Any]) -> None:
+        """
+        Add multiple custom tools to the agent.
+        
+        Args:
+            tools: List of functions or classes decorated with @tool
+        """
+        for tool_func_or_class in tools:
+            self.add_tool(tool_func_or_class)
+    
+    async def _execute_custom_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
+        """
+        Execute a custom tool and return its result.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            tool_args: Arguments for the tool
+            
+        Returns:
+            String result from the tool
+        """
+        handler = self.custom_tool_handlers.get(tool_name)
+        if not handler:
+            return f"Error: Tool '{tool_name}' not found"
+        
+        try:
+            # Check if it's a class or function
+            metadata = handler._tool_metadata
+            
+            if metadata["is_class"]:
+                # Instantiate the class and call it
+                instance = handler(**tool_args)
+                if hasattr(instance, "__call__"):
+                    result = instance()
+                else:
+                    result = instance
+            else:
+                # Call the function directly
+                result = handler(**tool_args)
+            
+            # Handle async functions
+            if asyncio.iscoroutine(result):
+                result = await result
+                
+            return str(result)
+        except Exception as e:
+            self.logger.error(f"Error executing custom tool {tool_name}: {str(e)}")
+            return f"Error executing tool {tool_name}: {str(e)}"
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
         """
@@ -306,28 +501,32 @@ class TinyAgent:
                                 await self._run_callbacks("agent_end", result=f"I need more information: {question}")
                                 return f"I need more information: {question}"
                             else:
-                                # **New**: dispatch to the proper MCPClient
-                                client = self.tool_to_client.get(tool_name)
-                                if not client:
-                                    tool_message["content"] = f"No MCP server registered for tool '{tool_name}'"
+                                # Check if it's a custom tool first
+                                if tool_name in self.custom_tool_handlers:
+                                    tool_message["content"] = await self._execute_custom_tool(tool_name, tool_args)
                                 else:
-                                    try:
-                                        content_list = await client.call_tool(tool_name, tool_args)
-                                        self.logger.debug(f"Tool {tool_name} returned: {content_list}")
-                                        # Safely extract text from the content
-                                        if content_list:
-                                            # Try different ways to extract the content
-                                            if hasattr(content_list[0], 'text'):
-                                                tool_message["content"] = content_list[0].text
-                                            elif isinstance(content_list[0], dict) and 'text' in content_list[0]:
-                                                tool_message["content"] = content_list[0]['text']
+                                    # Dispatch to the proper MCPClient
+                                    client = self.tool_to_client.get(tool_name)
+                                    if not client:
+                                        tool_message["content"] = f"No MCP server registered for tool '{tool_name}'"
+                                    else:
+                                        try:
+                                            content_list = await client.call_tool(tool_name, tool_args)
+                                            self.logger.debug(f"Tool {tool_name} returned: {content_list}")
+                                            # Safely extract text from the content
+                                            if content_list:
+                                                # Try different ways to extract the content
+                                                if hasattr(content_list[0], 'text'):
+                                                    tool_message["content"] = content_list[0].text
+                                                elif isinstance(content_list[0], dict) and 'text' in content_list[0]:
+                                                    tool_message["content"] = content_list[0]['text']
+                                                else:
+                                                    tool_message["content"] = str(content_list)
                                             else:
-                                                tool_message["content"] = str(content_list)
-                                        else:
-                                            tool_message["content"] = "Tool returned no content"
-                                    except Exception as e:
-                                        self.logger.error(f"Error calling tool {tool_name}: {str(e)}")
-                                        tool_message["content"] = f"Error executing tool {tool_name}: {str(e)}"
+                                                tool_message["content"] = "Tool returned no content"
+                                        except Exception as e:
+                                            self.logger.error(f"Error calling tool {tool_name}: {str(e)}")
+                                            tool_message["content"] = f"Error executing tool {tool_name}: {str(e)}"
                         except Exception as e:
                             # If any error occurs during tool call processing, make sure we still have a tool response
                             self.logger.error(f"Unexpected error processing tool call {tool_call_id}: {str(e)}")
@@ -368,6 +567,36 @@ class TinyAgent:
             except RuntimeError as e:
                 self.logger.error(f"Error closing MCP client: {str(e)}")
                 # Continue closing other clients even if one fails
+
+    def as_tool(self, name: Optional[str] = None, description: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Convert this TinyAgent instance into a tool that can be used by another TinyAgent.
+        
+        Args:
+            name: Optional custom name for the tool (defaults to "TinyAgentTool")
+            description: Optional description (defaults to a generic description)
+            
+        Returns:
+            A tool function that can be added to another TinyAgent
+        """
+        tool_name = name or f"TinyAgentTool_{id(self)}"
+        tool_description = description or f"A tool that uses a TinyAgent with model {self.model} to solve tasks"
+        
+        @tool(name=tool_name, description=tool_description)
+        async def agent_tool(query: str, max_turns: int = 5) -> str:
+            """
+            Run this TinyAgent with the given query.
+            
+            Args:
+                query: The task or question to process
+                max_turns: Maximum number of turns (default: 5)
+                
+            Returns:
+                The agent's response
+            """
+            return await self.run(query, max_turns=max_turns)
+        
+        return agent_tool
 
 async def run_example():
     """Example usage of TinyAgent with proper logging."""
