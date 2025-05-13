@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 import tiktoken
 from tinyagent import TinyAgent
+import gradio as gr
+from gradio import ChatMessage
 
 # Check if gradio is available
 try:
@@ -351,9 +353,9 @@ class GradioCallback:
                 output_tokens = tool_detail.get("result_token_count", 0)
                 
                 # Special handling for final_answer and ask_question tools
-                if tool_name in ["final_answer", "ask_question"] and result is not None:
+                #if tool_name in ["final_answer", "ask_question"] and result is not None:
                     # Don't add these as tool calls, they'll be shown as regular messages
-                    continue
+                    #continue
                 
                 # Create collapsible tool call section using Gradio's markdown format
                 parts.append(f"\n\n<details><summary>🛠️ **Tool: {tool_name}** ({result_status}) - {input_tokens+output_tokens} tokens</summary>")
@@ -386,70 +388,113 @@ class GradioCallback:
     async def interact_with_agent(self, user_input_processed, chatbot_history):
         """
         Process user input, interact with the agent, and stream updates to Gradio UI.
-
-        Args:
-            user_input_processed: User's message (potentially with file info)
-            chatbot_history: The current list of messages from gr.Chatbot
-
-        Yields:
-            Tuple[List[Dict], str]: Updated chatbot history and token usage text
+        Each tool call and response will be shown as a separate message.
         """
         self.logger.info(f"Starting interaction for: {user_input_processed[:50]}...")
-
-        # 1. Add user message to chatbot history
-        chatbot_history.append({"role": "user", "content": user_input_processed})
-        # 2. Add placeholder for assistant response
-        chatbot_history.append({"role": "assistant", "content": "..."})
-
-        # Initial yield to show user message and placeholder
+ 
+        # 1. Add user message to chatbot history as a ChatMessage
+        chatbot_history.append(
+            ChatMessage(role="user", content=user_input_processed)
+        )
+ 
+        # Initial yield to show user message
         yield chatbot_history, self._get_token_usage_text()
-
-        # Create a task for the agent in the current event loop
-        # This is where the issue is - we need to ensure we're using the same event loop
-        # that the MCP client was initialized with
+ 
+        # Kick off the agent in the background
         loop = asyncio.get_event_loop()
-        self.logger.debug(f"Using event loop for agent task: {loop}")
         agent_task = asyncio.create_task(self.current_agent.run(user_input_processed))
-        
-        # 5. Loop while agent is running, updating UI periodically
-        update_interval = 0.3 # seconds
-        min_yield_interval = 0.2 # Minimum time between yields to avoid flooding Gradio
-        
+ 
+        displayed_tool_calls = set()
+        displayed_text_responses = set()
+        thinking_message_added = False
+        update_interval = 0.3
+        min_yield_interval = 0.2
+ 
         while not agent_task.done():
-            current_time = time.time()
-            # Throttle UI updates
-            if current_time - self.last_update_yield_time >= min_yield_interval:
-                # Build assistant message content from current callback state
-                assistant_content = self._build_current_assistant_message()
-                chatbot_history[-1]["content"] = assistant_content # Update placeholder
-                
-                # Get token usage text
+            now = time.time()
+            if now - self.last_update_yield_time >= min_yield_interval:
+                sorted_tool_details = sorted(self.tool_call_details, key=lambda x: x.get("timestamp", 0))
+                sorted_text_responses = sorted(self.assistant_text_responses, key=lambda x: x.get("timestamp", 0))
+ 
+                # → New assistant text chunks
+                for resp in sorted_text_responses:
+                    content = resp["content"]
+                    if content not in displayed_text_responses:
+                        chatbot_history.append(
+                            ChatMessage(role="assistant", content=content)
+                        )
+                        displayed_text_responses.add(content)
+                        self.logger.debug(f"Added new text response: {content[:50]}...")
+ 
+                # → Thinking placeholder (optional)
+                if self.show_thinking and self.thinking_content \
+                   and not thinking_message_added \
+                   and not displayed_text_responses:
+                    thinking_msg = (
+                        "Working on it...\n\n"
+                        "```"
+                        f"{self.thinking_content}"
+                        "```"
+                    )
+                    chatbot_history.append(
+                        ChatMessage(role="assistant", content=thinking_msg)
+                    )
+                    thinking_message_added = True
+                    self.logger.debug("Added thinking message")
+ 
+                # → **NEW**: emit one ChatMessage per completed tool call
+                if self.show_tool_calls:
+                    for tool in sorted_tool_details:
+                        tid = tool["id"]
+                        tname = tool["name"]
+                        # skip special tools—they get rendered as normal assistant messages
+                        #if tname in ("final_answer", "ask_question"):
+                        #    continue
+                        # only once, and only once result is in
+                        if tid not in displayed_tool_calls and tool.get("result") is not None:
+                            in_tok  = tool.get("token_count", 0)
+                            out_tok = tool.get("result_token_count", 0)
+                            tot_tok = in_tok + out_tok
+                            # accordion content
+                            body = (
+                                f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
+                                f"**Output:** ({out_tok} tokens)\n```json\n{tool['result']}\n```\n"
+                            )
+                            # build ChatMessage with metadata.title = accordion header
+                            msg = ChatMessage(
+                                role="assistant",
+                                content=body,
+                                metadata={
+                                    "title": f"🛠️ {tname} — {tot_tok} tokens",
+                                    "status": "done"
+                                }
+                            )
+                            chatbot_history.append(msg)
+                            displayed_tool_calls.add(tid)
+                            self.logger.debug(f"Added tool call message: {tname}")
+ 
+                # yield updated history + token usage
                 token_text = self._get_token_usage_text()
-                
                 yield chatbot_history, token_text
-                self.last_update_yield_time = current_time
-            
-            # Short await to allow other tasks to run
+                self.last_update_yield_time = now
+ 
             await asyncio.sleep(update_interval)
-        
-        # 6. Agent finished, get final result
+ 
+        # once the agent_task is done, add its final result if any
         try:
-            final_result_text = await agent_task
-            self.logger.info("Agent task completed successfully.")
+            final_text = await agent_task
         except Exception as e:
-            self.logger.error(f"Error during agent execution: {e}", exc_info=True)
-            final_result_text = f"An error occurred: {e}"
-            self.is_running = False # Ensure flag is reset on error
-
-        # Format the final response including tool calls, thinking, tokens if enabled
-        final_formatted_response = self._format_response(final_result_text)
-        chatbot_history[-1]["content"] = final_formatted_response
-
-        # Final token usage update
-        token_text = self._get_token_usage_text()
-
-        self.logger.debug("Yielding final state.")
-        yield chatbot_history, token_text
+            final_text = f"Error: {e}"
+            self.is_running = False
+ 
+        if final_text not in displayed_text_responses:
+            chatbot_history.append(
+                ChatMessage(role="assistant", content=final_text)
+            )
+            self.logger.debug(f"Added final result: {final_text[:50]}...")
+ 
+        # final token usage
+        yield chatbot_history, self._get_token_usage_text()
 
     def _format_response(self, response_text):
         """
