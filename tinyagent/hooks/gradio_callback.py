@@ -384,14 +384,17 @@ class GradioCallback:
         # Initial yield to show user message and placeholder
         yield chatbot_history, self._get_token_usage_text()
 
-        # 3. Run agent in background task
-        # Agent run will trigger callbacks (_handle_... methods) which update self state
+        # Create a task for the agent in the current event loop
+        # This is where the issue is - we need to ensure we're using the same event loop
+        # that the MCP client was initialized with
+        loop = asyncio.get_event_loop()
+        self.logger.debug(f"Using event loop for agent task: {loop}")
         agent_task = asyncio.create_task(self.current_agent.run(user_input_processed))
-
-        # 4. Loop while agent is running, updating UI periodically
+        
+        # 5. Loop while agent is running, updating UI periodically
         update_interval = 0.3 # seconds
         min_yield_interval = 0.2 # Minimum time between yields to avoid flooding Gradio
-
+        
         while not agent_task.done():
             current_time = time.time()
             # Throttle UI updates
@@ -399,16 +402,17 @@ class GradioCallback:
                 # Build assistant message content from current callback state
                 assistant_content = self._build_current_assistant_message()
                 chatbot_history[-1]["content"] = assistant_content # Update placeholder
-
+                
                 # Get token usage text
                 token_text = self._get_token_usage_text()
-
+                
                 yield chatbot_history, token_text
                 self.last_update_yield_time = current_time
-
-            await asyncio.sleep(update_interval) # Check periodically
-
-        # 5. Agent finished, get final result and update UI one last time
+            
+            # Short await to allow other tasks to run
+            await asyncio.sleep(update_interval)
+        
+        # 6. Agent finished, get final result
         try:
             final_result_text = await agent_task
             self.logger.info("Agent task completed successfully.")
@@ -426,8 +430,6 @@ class GradioCallback:
 
         self.logger.debug("Yielding final state.")
         yield chatbot_history, token_text
-
-        # Note: Button re-enabling happens in the .then() chain in create_app
 
     def _format_response(self, response_text):
         """
@@ -604,8 +606,8 @@ class GradioCallback:
                         # 3. Run the main interaction loop (this yields updates)
                         fn=self.interact_with_agent,
                         inputs=[processed_input_state, self._chatbot_component],
-                        outputs=[self._chatbot_component, self._token_usage_component] # Update chat and tokens
-                        # queue=True # Run in background, default
+                        outputs=[self._chatbot_component, self._token_usage_component], # Update chat and tokens
+                        queue=True # Explicitly enable queue for this async generator
                     ).then(
                         # 4. Re-enable the button after interaction finishes
                         fn=lambda: gr.Button(interactive=True),
@@ -630,8 +632,8 @@ class GradioCallback:
                         # 3. Run the main interaction loop (this yields updates)
                         fn=self.interact_with_agent,
                         inputs=[processed_input_state, self._chatbot_component],
-                        outputs=[self._chatbot_component, self._token_usage_component] # Update chat and tokens
-                        # queue=True # Run in background, default
+                        outputs=[self._chatbot_component, self._token_usage_component], # Update chat and tokens
+                        queue=True # Explicitly enable queue for this async generator
                     ).then(
                         # 4. Re-enable the button after interaction finishes
                         fn=lambda: gr.Button(interactive=True),
@@ -686,12 +688,34 @@ class GradioCallback:
              self.logger.info("GradioCallback automatically added to the agent.")
 
         app = self.create_app(agent, title, description)
-        # Add debug=True for more Gradio internal logging if needed
-        # launch_kwargs = {"share": share, "debug": True}
-        launch_kwargs = {"share": share}
+        
+        # Use the same event loop for Gradio
+        launch_kwargs = {
+            "share": share,
+            "prevent_thread_lock": True  # This is crucial - allows the main event loop to continue running
+        }
         launch_kwargs.update(kwargs) # Allow overriding share/debug etc.
-        app.launch(**launch_kwargs)
-        return app # Return the app instance
+        
+        # Get the current event loop
+        loop = asyncio.get_event_loop()
+        self.logger.debug(f"Using event loop for Gradio: {loop}")
+        
+        app.queue()
+        return app.launch(**launch_kwargs) # Return the app instance
+
+
+from tinyagent.tiny_agent import tool
+@tool(name="get_weather",description="Get the weather for a given city.")
+def get_weather(city: str)->str:
+    """Get the weather for a given city.
+    Args:
+        city: The city to get the weather for
+
+    Returns:
+        The weather for the given city
+    """
+
+    return f"The weather in {city} is sunny."
 
 async def run_example():
     """Example usage of GradioCallback with TinyAgent."""
@@ -699,13 +723,14 @@ async def run_example():
     import sys
     import tempfile
     import shutil
-    from tinyagent import TinyAgent # Assuming TinyAgent is importable
-    from tinyagent.hooks.logging_manager import LoggingManager # Assuming LoggingManager exists
+    import asyncio
+    from tinyagent import TinyAgent  # Assuming TinyAgent is importable
+    from tinyagent.hooks.logging_manager import LoggingManager  # Assuming LoggingManager exists
 
     # --- Logging Setup (Simplified) ---
     log_manager = LoggingManager(default_level=logging.INFO)
     log_manager.set_levels({
-        'tinyagent.hooks.gradio_callback': logging.DEBUG, # Debug GradioCallback
+        'tinyagent.hooks.gradio_callback': logging.DEBUG,
         'tinyagent.tiny_agent': logging.DEBUG,
         'tinyagent.mcp_client': logging.DEBUG,
     })
@@ -713,7 +738,7 @@ async def run_example():
     log_manager.configure_handler(
         console_handler,
         format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.DEBUG # Handler level
+        level=logging.DEBUG
     )
     ui_logger = log_manager.get_logger('tinyagent.hooks.gradio_callback')
     agent_logger = log_manager.get_logger('tinyagent.tiny_agent')
@@ -729,19 +754,14 @@ async def run_example():
     upload_folder = tempfile.mkdtemp(prefix="gradio_uploads_")
     ui_logger.info(f"Created temporary upload folder: {upload_folder}")
 
+    # Ensure we're using a single event loop for everything
+    loop = asyncio.get_event_loop()
+    ui_logger.debug(f"Using event loop: {loop}")
+
     # Initialize the agent
     agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
 
-    # Connect to servers (as per contribution guide)
-    try:
-        ui_logger.info("Connecting to MCP servers...")
-        await agent.connect_to_server("npx",["-y","@openbnb/mcp-server-airbnb","--ignore-robots-txt"])
-        await agent.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
-        ui_logger.info("Connected to MCP servers.")
-    except Exception as e:
-        ui_logger.error(f"Failed to connect to MCP servers: {e}", exc_info=True)
-        # Decide if you want to continue without servers or exit
-        # return
+    agent.add_tool(get_weather)
 
     # Create the Gradio callback
     gradio_ui = GradioCallback(
@@ -750,20 +770,58 @@ async def run_example():
         show_tool_calls=True,
         logger=ui_logger # Pass the specific logger
     )
+    agent.add_callback(gradio_ui)
 
-    # Launch the Gradio interface
-    # The launch method now adds the callback to the agent automatically if needed.
+    # Connect to MCP servers
+    try:
+        ui_logger.info("Connecting to MCP servers...")
+        # Use standard MCP servers as per contribution guide
+        await agent.connect_to_server("npx",["-y","@openbnb/mcp-server-airbnb","--ignore-robots-txt"])
+        await agent.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+        ui_logger.info("Connected to MCP servers.")
+    except Exception as e:
+        ui_logger.error(f"Failed to connect to MCP servers: {e}", exc_info=True)
+        # Continue without servers - we still have the local get_weather tool
+
+    # Create the Gradio app but don't launch it yet
+    #app = gradio_ui.create_app(
+    #    agent,
+    #    title="TinyAgent Chat Interface",
+    #    description="Chat with TinyAgent. Try asking: 'Plan a trip to Toronto for 7 days in the next month.'",
+    #)
+    
+    # Configure the queue without extra parameters
+    #app.queue()
+    
+    # Launch the app in a way that doesn't block our event loop
     ui_logger.info("Launching Gradio interface...")
     try:
+        # Launch without blocking
+        #app.launch(
+        #    share=False,
+        #    prevent_thread_lock=True,  # Critical to not block our event loop
+        #    show_error=True
+        #)
         gradio_ui.launch(
             agent,
             title="TinyAgent Chat Interface",
             description="Chat with TinyAgent. Try asking: 'Plan a trip to Toronto for 7 days in the next month.'",
-            share=False # Set to True for public link if needed
+            share=False,
+            prevent_thread_lock=True,  # Critical to not block our event loop
+            show_error=True
         )
-        # The script will block here until the Gradio server is closed (Ctrl+C)
+        ui_logger.info("Gradio interface launched (non-blocking).")
+        
+        # Keep the main event loop running to handle both Gradio and MCP operations
+        # This is the key part - we need to keep our main event loop running
+        # but also allow it to process both Gradio and MCP client operations
+        while True:
+            await asyncio.sleep(1)  # More efficient than an Event().wait()
+            
+    except KeyboardInterrupt:
+        ui_logger.info("Received keyboard interrupt, shutting down...")
     except Exception as e:
-         ui_logger.error(f"Failed to launch Gradio app: {e}", exc_info=True)
+        ui_logger.error(f"Failed to launch or run Gradio app: {e}", exc_info=True)
     finally:
         # Clean up
         ui_logger.info("Cleaning up resources...")

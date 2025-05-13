@@ -180,9 +180,14 @@ class TinyAgent:
             {
                 "type": "function",
                 "function": {
-                    "name": "task_complete",
+                    "name": "final_answer",
                     "description": "Call this tool when the task given by the user is complete",
-                    "parameters": {"type": "object", "properties": {}}
+                    "parameters": {"type": "object", "properties": {"content": {
+                                "type": "string",
+                                "description": "Your final answer to the user's problem, user only sees the content of this field. "
+                            }}}
+                            ,
+                        "required": ["content"]
                 }
             },
             {
@@ -487,12 +492,12 @@ class TinyAgent:
                                 tool_args = {}
                             
                             # Handle control flow tools
-                            if tool_name == "task_complete":
+                            if tool_name == "final_answer":
                                 # Add a response for this tool call before returning
-                                tool_message["content"] = "Task has been completed successfully."
+                                tool_message["content"] = tool_args.get("content", "Task completed without final answer.!!!")
                                 self.messages.append(tool_message)
                                 await self._run_callbacks("agent_end", result="Task completed.")
-                                return "Task completed."
+                                return tool_message["content"] 
                             elif tool_name == "ask_question":
                                 question = tool_args.get("question", "Could you provide more details?")
                                 # Add a response for this tool call before returning
@@ -511,6 +516,8 @@ class TinyAgent:
                                         tool_message["content"] = f"No MCP server registered for tool '{tool_name}'"
                                     else:
                                         try:
+                                            self.logger.debug(f"Calling tool {tool_name} with args: {tool_args}")
+                                            self.logger.debug(f"Client: {client}")
                                             content_list = await client.call_tool(tool_name, tool_args)
                                             self.logger.debug(f"Tool {tool_name} returned: {content_list}")
                                             # Safely extract text from the content
