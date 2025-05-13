@@ -129,9 +129,51 @@ You can import and use these hooks from `tinyagent.hooks`:
 |--------------------------|--------------------------------------------------|-------------------------------------------------|
 | `LoggingManager`         | Granular logging control for all modules         | `from tinyagent.hooks.logging_manager import LoggingManager` |
 | `RichUICallback`         | Rich terminal UI (with [rich](https://github.com/Textualize/rich)) | `from tinyagent.hooks.rich_ui_callback import RichUICallback` |
+| `GradioCallback` | Interactive browser-based chat UI: file uploads, live thinking, tool calls, token stats | `from tinyagent.hooks.gradio_callback import GradioCallback`         |
 
 To see more details and usage, check the docstrings and `run_example()` in each hook file.
 
+## Using the GradioCallback Hook
+
+The `GradioCallback` hook lets you spin up a full-featured web chat interface for your agent in just a few lines. You get:
+
+Features:
+- **Browser-based chat** with streaming updates  
+- **File uploads** (\*.pdf, \*.docx, \*.txt) that the agent can reference  
+- **Live “thinking” view** so you see intermediate thoughts  
+- **Collapsible tool-call sections** showing inputs & outputs  
+- **Real-time token usage** (prompt, completion, total)  
+- **Toggleable display options** for thinking & tool calls  
+- **Non-blocking launch** for asyncio apps (`prevent_thread_lock=True`)
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+from tinyagent.hooks.gradio_callback import GradioCallback
+async def main():
+    # 1. Initialize your agent
+    agent = TinyAgent(model="gpt-4.1-mini", api_key="YOUR_API_KEY")
+    # 2. (Optional) Add tools or connect to MCP servers
+    # await agent.connect_to_server("npx", ["-y","@openbnb/mcp-server-airbnb","--ignore-robots-txt"])
+    # 3. Instantiate the Gradio UI callback
+    gradio_ui = GradioCallback(
+    file_upload_folder="uploads/",
+    show_thinking=True,
+    show_tool_calls=True
+    )
+    # 4. Register the callback with the agent
+    agent.add_callback(gradio_ui)
+    # 5. Launch the web interface (non-blocking)
+    gradio_ui.launch(
+    agent,
+    title="TinyAgent Chat",
+    description="Ask me to plan a trip or fetch data!",
+    share=False,
+    prevent_thread_lock=True
+    )
+if __name__ == "__main__":
+    asyncio.run(main())
+```
 ---
 
 ## Contributing Hooks

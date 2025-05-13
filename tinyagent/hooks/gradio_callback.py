@@ -248,6 +248,7 @@ class GradioCallback:
         # Track token usage
         try:
             usage = response.usage
+            self.logger.debug(f"Token usage: {usage}")
             if usage:
                 prompt_tokens = getattr(usage, "prompt_tokens", 0)
                 completion_tokens = getattr(usage, "completion_tokens", 0)
@@ -381,9 +382,9 @@ class GradioCallback:
         """Format the token usage string."""
         if not any(self.token_usage.values()):
             return "Tokens: 0"
-        return (f"Tokens: P {self.token_usage['prompt_tokens']} | " +
-                f"C {self.token_usage['completion_tokens']} | " +
-                f"T {self.token_usage['total_tokens']}")
+        return (f"Tokens: I {self.token_usage['prompt_tokens']} | " +
+                f"O {self.token_usage['completion_tokens']} | " +
+                f"Total {self.token_usage['total_tokens']}")
 
     async def interact_with_agent(self, user_input_processed, chatbot_history):
         """
@@ -527,8 +528,8 @@ class GradioCallback:
                 
                 # Skip final_answer and ask_question tools in the tool call section
                 # as they're already shown as regular messages
-                if tool_name in ["final_answer", "ask_question"]:
-                    continue
+                #if tool_name in ["final_answer", "ask_question"]:
+                #    continue
                 
                 formatted_parts.append(f"\n<details><summary>🛠️ **Tool {i+1}: {tool_name}** - {input_tokens+output_tokens} tokens</summary>\n")
                 formatted_parts.append(f"\n**Input Arguments:**\n```json\n{arguments}\n```")
@@ -744,16 +745,25 @@ class GradioCallback:
         return app
 
     def clear_conversation(self):
-        """Clear the conversation history, reset state, and update UI."""
-        self.logger.debug("Clearing conversation")
-        # Reset internal state
+        """Clear the conversation history (UI + agent), reset state, and update UI."""
+        self.logger.debug("Clearing conversation (UI + agent)")
+        # Reset UI‐side state
         self.thinking_content = ""
         self.tool_calls = []
         self.tool_call_details = []
         self.assistant_text_responses = []
         self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.is_running = False
-        # Return empty state for UI components
+
+        # Also clear the agent's conversation history
+        try:
+            if self.current_agent and hasattr(self.current_agent, "clear_conversation"):
+                self.current_agent.clear_conversation()
+                self.logger.debug("Cleared TinyAgent internal conversation.")
+        except Exception as e:
+            self.logger.error(f"Failed to clear TinyAgent conversation: {e}")
+
+        # Return cleared UI components: empty chat + fresh token usage
         return [], self._get_token_usage_text()
 
     def launch(self, agent, title="TinyAgent Chat", description=None, share=False, **kwargs):

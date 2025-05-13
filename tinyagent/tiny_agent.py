@@ -574,7 +574,26 @@ class TinyAgent:
             except RuntimeError as e:
                 self.logger.error(f"Error closing MCP client: {str(e)}")
                 # Continue closing other clients even if one fails
-
+    def clear_conversation(self):
+        """
+        Clear the conversation history, preserving only the initial system prompt.
+        """
+        if self.messages:
+            system_msg = self.messages[0]
+        else:
+            # Rebuild a default system prompt if somehow missing
+            default_sys = {
+                "role": "system",
+                "content": (
+                    "You are a helpful AI assistant with access to a variety of tools. "
+                    "Use the tools when appropriate to accomplish tasks. "
+                    "If a tool you need isn't available, just say so."
+                )
+            }
+            system_msg = default_sys
+        self.messages = [system_msg]
+        self.logger.info("TinyAgent conversation history cleared.")
+        
     def as_tool(self, name: Optional[str] = None, description: Optional[str] = None) -> Dict[str, Any]:
         """
         Convert this TinyAgent instance into a tool that can be used by another TinyAgent.
