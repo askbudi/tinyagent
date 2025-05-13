@@ -564,71 +564,93 @@ class GradioCallback:
         self.logger.debug("Creating Gradio app")
         self.current_agent = agent # Store agent reference
 
-        with gr.Blocks(title=title, theme=gr.themes.Default(font=[gr.themes.GoogleFont("Inter"), "Arial", "sans-serif"])) as app:
-            # Use gr.State for file uploads log as it's simple data
+        with gr.Blocks(
+            title=title,
+            theme=gr.themes.Default(font=[gr.themes.GoogleFont("Inter"), "Arial", "sans-serif"])
+        ) as app:
             file_uploads_log = gr.State([])
 
             with gr.Row():
+                # -- Left Sidebar --
                 with gr.Column(scale=1):
-                    # Sidebar with title and description
                     gr.Markdown(f"# {title}")
                     if description:
                         gr.Markdown(description)
-                    
-                    # File upload section (if enabled)
+
+                    # 1) Collapsible File Upload Section
                     if self.file_upload_folder:
-                        with gr.Group():
-                            gr.Markdown("## Upload Files")
-                            file_upload = gr.File(label="Upload a file")
+                        with gr.Accordion("Upload Files", open=False):
+                            gr.Markdown("Upload files to be used by the agent")
+                            file_upload = gr.File(label="Choose a file")
                             upload_status = gr.Textbox(label="Upload Status", visible=False, interactive=False)
-                            
                             file_upload.change(
                                 fn=self.upload_file,
                                 inputs=[file_upload, file_uploads_log],
                                 outputs=[upload_status, file_uploads_log]
                             )
-                    
-                    # Thinking and tool call toggles
+
+                    # 2) Available Tools Section
+                    tools = getattr(agent, "available_tools", [])
+                    with gr.Accordion(f"Available Tools ({len(tools)})", open=True):
+                        
+                        if not tools:
+                            gr.Markdown("_No tools registered_")
+                        else:
+                            for tool_meta in tools:
+                                fn = tool_meta.get("function", {})
+                                tool_name = fn.get("name", "unknown")
+                                with gr.Accordion(tool_name, open=False):
+                                    # Description
+                                    desc = fn.get("description")
+                                    if desc:
+                                        gr.Markdown(f"**Description:** {desc}")
+
+                                    # JSON schema for function calling
+                                    schema = fn.get("parameters")
+                                    if schema:
+                                        gr.JSON(value=schema, label="Function Calling Schema")
+                                    else:
+                                        gr.Markdown("_No schema available_")
+
+                    # 3) Thinking / Tool‐call Toggles
                     with gr.Group():
                         gr.Markdown("## Display Options")
                         show_thinking_checkbox = gr.Checkbox(
-                            label="Show thinking process", 
+                            label="Show thinking process",
                             value=self.show_thinking
                         )
                         show_tool_calls_checkbox = gr.Checkbox(
-                            label="Show tool calls", 
+                            label="Show tool calls",
                             value=self.show_tool_calls
                         )
-                        
-                        # Update callback settings when checkboxes change
                         show_thinking_checkbox.change(
                             fn=lambda x: setattr(self, "show_thinking", x),
                             inputs=show_thinking_checkbox,
-                            outputs=None # No direct output change needed
+                            outputs=None
                         )
                         show_tool_calls_checkbox.change(
                             fn=lambda x: setattr(self, "show_tool_calls", x),
                             inputs=show_tool_calls_checkbox,
-                            outputs=None # No direct output change needed
+                            outputs=None
                         )
-                    
-                    # Token usage display
+
+                    # 4) Token Usage Display
                     with gr.Group():
                         gr.Markdown("## Token Usage")
-                        # Assign component to self for updates
                         self._token_usage_component = gr.Textbox(
                             label="Token Usage",
                             interactive=False,
-                            value=self._get_token_usage_text() # Initial value
+                            value=self._get_token_usage_text()
                         )
-                    
-                    # Add a footer with attribution
+
+                    # Footer
                     gr.Markdown(
                         "<div style='text-align: center; margin-top: 20px;'>"
-                        "Powered by <a href='https://github.com/askdev-ai/tinyagent' target='_blank'>TinyAgent</a>"
+                        "Powered by <a href='https://github.com/askbudi/tinyagent' target='_blank'>TinyAgent</a>"
                         "</div>"
                     )
-                
+
+                # -- Right Chat Column (unchanged) --
                 with gr.Column(scale=3):
                     # Chat interface - Assign component to self for updates
                     self._chatbot_component = gr.Chatbot(
