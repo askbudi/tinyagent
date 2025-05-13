@@ -14,6 +14,7 @@ from tinyagent import TinyAgent
 # Check if gradio is available
 try:
     import gradio as gr
+    
 except ImportError:
     raise ModuleNotFoundError(
         "Please install 'gradio' to use the GradioCallback: `pip install gradio`"
@@ -165,6 +166,9 @@ class GradioCallback:
                             "result_timestamp": None
                         })
                         self.logger.debug(f"Added tool call detail: {tool_name} (ID: {tool_id}, Tokens: {token_count})")
+                        
+                        # If this is a final_answer or ask_question tool, we'll handle it specially later
+                        # when the result comes in
                     else:
                          self.logger.debug(f"Tool call detail already exists for ID: {tool_id}")
 
@@ -192,6 +196,19 @@ class GradioCallback:
                         tool_detail["result_token_count"] = token_count
                         tool_detail["result_timestamp"] = current_time
                         self.logger.debug(f"Updated tool call {tool_call_id} with result (Tokens: {token_count})")
+                        
+                        # Special handling for final_answer and ask_question tools
+                        # Add their results directly as assistant messages in the chat
+                        if tool_detail["name"] in ["final_answer", "ask_question"]:
+                            self.assistant_text_responses.append({
+                                "content": content,
+                                "token_count": token_count,
+                                "timestamp": current_time,
+                                "from_tool": True,
+                                "tool_name": tool_detail["name"]
+                            })
+                            self.logger.debug(f"Added {tool_detail['name']} result as assistant message")
+                        
                         updated = True
                         break
                 if not updated:
@@ -325,29 +342,32 @@ class GradioCallback:
 
         # 2. Add Tool Call details (if enabled and available)
         if self.show_tool_calls and sorted_tool_details:
-            parts.append("\n\n---\n**Tool Calls:**")
             for i, tool_detail in enumerate(sorted_tool_details):
                 tool_name = tool_detail["name"]
                 arguments = tool_detail["arguments"]
                 result = tool_detail["result"]
                 result_status = "⏳ Processing..." if result is None else "✅ Done"
-                if result is not None and len(str(result)) > 100: # Truncate long results
-                    result_display = f"```\n{str(result)[:100]}...\n```"
-                elif result is not None:
-                     result_display = f"```\n{result}\n```"
-                else:
-                    result_display = "" # No output shown until done
-
-                parts.append(f"\n\n**Tool {i+1}: {tool_name}** ({result_status})")
-                # Use details/summary for arguments to avoid clutter
-                parts.append(f"\n<details><summary>Input Arguments</summary>\n\n```json\n{arguments}\n```\n</details>")
-                if result_display:
-                    parts.append(f"\n*Output:*\n{result_display}")
+                input_tokens = tool_detail.get("token_count", 0)
+                output_tokens = tool_detail.get("result_token_count", 0)
+                
+                # Special handling for final_answer and ask_question tools
+                if tool_name in ["final_answer", "ask_question"] and result is not None:
+                    # Don't add these as tool calls, they'll be shown as regular messages
+                    continue
+                
+                # Create collapsible tool call section using Gradio's markdown format
+                parts.append(f"\n\n<details><summary>🛠️ **Tool: {tool_name}** ({result_status}) - {input_tokens+output_tokens} tokens</summary>")
+                parts.append(f"\n\n**Input Arguments:**\n```json\n{arguments}\n```")
+                
+                if result is not None:
+                    parts.append(f"\n\n**Output:** ({output_tokens} tokens)\n```\n{result}\n```")
+                
+                parts.append("\n</details>")
 
         # 3. Add Thinking Process (if enabled and available, and no text response yet)
         # Only show thinking if there isn't a more concrete text response or tool call happening
         if self.show_thinking and self.thinking_content and not sorted_text_responses and not sorted_tool_details:
-            parts.append("\n\n---\n**Thinking Process:**\n```\n" + self.thinking_content + "\n```")
+            parts.append("\n\n<details><summary>🧠 **Thinking Process**</summary>\n\n```\n" + self.thinking_content + "\n```\n</details>")
 
         # If parts is empty after all checks, use the initial display_content
         if not parts:
@@ -449,34 +469,36 @@ class GradioCallback:
         # Sort details for consistent display order
         sorted_tool_details = sorted(self.tool_call_details, key=lambda x: x.get("timestamp", 0))
 
-        # Add thinking process if enabled and content exists
-        if self.show_thinking and self.thinking_content:
-            # Avoid showing thinking if it's identical to the final response text
-            if self.thinking_content.strip() != response_text.strip():
-                 formatted_parts.append("\n\n---\n**Thinking Process:**\n```\n" + self.thinking_content + "\n```")
-
         # Add tool calls if enabled and details exist
         if self.show_tool_calls and sorted_tool_details:
-            formatted_parts.append("\n\n---\n**Tool Calls:**")
+            formatted_parts.append("\n\n---\n")
+            
             for i, tool_detail in enumerate(sorted_tool_details):
                 tool_name = tool_detail["name"]
                 arguments = tool_detail["arguments"]
                 result = tool_detail["result"] or "No result captured."
                 input_tokens = tool_detail.get("token_count", 0)
                 output_tokens = tool_detail.get("result_token_count", 0)
+                
+                # Skip final_answer and ask_question tools in the tool call section
+                # as they're already shown as regular messages
+                if tool_name in ["final_answer", "ask_question"]:
+                    continue
+                
+                formatted_parts.append(f"\n<details><summary>🛠️ **Tool {i+1}: {tool_name}** - {input_tokens+output_tokens} tokens</summary>\n")
+                formatted_parts.append(f"\n**Input Arguments:**\n```json\n{arguments}\n```")
+                formatted_parts.append(f"\n**Output:** ({output_tokens} tokens)\n```\n{result}\n```\n</details>")
 
-                formatted_parts.append(f"\n\n**Tool {i+1}: {tool_name}** (Input Tokens: {input_tokens}, Output Tokens: {output_tokens})")
-                # Use details/summary for arguments to avoid clutter
-                formatted_parts.append(f"\n<details><summary>Input Arguments</summary>\n\n```json\n{arguments}\n```\n</details>")
-                formatted_parts.append(f"\n*Output:*\n```\n{result}\n```")
+        # Add thinking process if enabled and content exists
+        if self.show_thinking and self.thinking_content:
+            # Avoid showing thinking if it's identical to the final response text
+            if self.thinking_content.strip() != response_text.strip():
+                 formatted_parts.append("\n\n<details><summary>🧠 **Thinking Process**</summary>\n\n```\n" + self.thinking_content + "\n```\n</details>")
 
-
-        # Add token usage summary (already displayed live, but good for final message)
-        # This is slightly redundant with the dedicated token display, maybe remove?
-        # Keeping it for now as it's part of the final message structure.
+        # Add token usage summary
         if any(self.token_usage.values()):
-            formatted_parts.append("\n\n---\n**Token Usage:**")
-            formatted_parts.append(f"\nPrompt: {self.token_usage['prompt_tokens']} | " +
+            formatted_parts.append("\n\n---\n")
+            formatted_parts.append(f"**Token Usage:** Prompt: {self.token_usage['prompt_tokens']} | " +
                                   f"Completion: {self.token_usage['completion_tokens']} | " +
                                   f"Total: {self.token_usage['total_tokens']}")
 
@@ -497,7 +519,7 @@ class GradioCallback:
         self.logger.debug("Creating Gradio app")
         self.current_agent = agent # Store agent reference
 
-        with gr.Blocks(title=title, theme=gr.themes.Soft()) as app:
+        with gr.Blocks(title=title, theme=gr.themes.Default(font=[gr.themes.GoogleFont("Inter"), "Arial", "sans-serif"])) as app:
             # Use gr.State for file uploads log as it's simple data
             file_uploads_log = gr.State([])
 
@@ -568,7 +590,7 @@ class GradioCallback:
                         [], # Start empty
                         label="Chat History",
                         height=600,
-                         type="messages", # 'messages' type is deprecated/internal, use default
+                        type="messages", # Use messages type for better formatting
                         bubble_full_width=False,
                         show_copy_button=True,
                         render_markdown=True # Enable markdown rendering
