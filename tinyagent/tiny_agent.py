@@ -545,16 +545,17 @@ class TinyAgent:
             return f"Error executing tool {tool_name}: {str(e)}"
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
-        """
-        Run the agent with user input.
-        
-        Args:
-            user_input: The user's request
-            max_turns: Maximum number of turns before giving up
-            
-        Returns:
-            The final agent response
-        """
+        # ----------------------------------------------------------------
+        # Ensure any deferred session‐load happens exactly once
+        # ----------------------------------------------------------------
+        if self._needs_session_load:
+            self.logger.debug(f"Deferred session load detected for {self.session_id}; loading now")
+        await self.init_async()
+
+        # ----------------------------------------------------------------
+        # Now proceed with the normal agent loop
+        # ----------------------------------------------------------------
+
         # Notify start
         await self._run_callbacks("agent_start", user_input=user_input)
         
@@ -799,7 +800,6 @@ class TinyAgent:
         except Exception as e:
             self.logger.error(f"Failed to load session {self.session_id}: {e}")
         finally:
-            # Never reload again
             self._needs_session_load = False
 
         return self
