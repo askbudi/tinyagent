@@ -8,6 +8,8 @@ import asyncio
 import tiktoken  # Add tiktoken import for token counting
 import inspect
 import functools
+import uuid
+from .storage import Storage    # ← your abstract base
 
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
@@ -125,12 +127,24 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
 
 class TinyAgent:
     """
-    A minimal implementation of an agent powered by MCP and LiteLLM.
-    This agent is literally just a while loop on top of MCPClient.
+    A minimal implementation of an agent powered by MCP and LiteLLM,
+    now with session/state persistence.
     """
     
-    def __init__(self, model: str = "gpt-4.1-mini", api_key: Optional[str] = None, 
-                system_prompt: Optional[str] = None, temperature: float = 0.0, logger: Optional[logging.Logger] = None,model_kwargs: Optional[Dict[str, Any]] = {}):
+    def __init__(
+        self,
+        model: str = "gpt-4.1-mini",
+        api_key: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.0,
+        logger: Optional[logging.Logger] = None,
+        model_kwargs: Optional[Dict[str, Any]] = {},
+        *,
+        session_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        storage: Optional[Storage] = None,
+        persist_tool_configs: bool = False
+    ):
         """
         Initialize the Tiny Agent.
         
@@ -139,6 +153,10 @@ class TinyAgent:
             api_key: The API key for the model provider
             system_prompt: Custom system prompt for the agent
             logger: Optional logger to use
+            session_id: Optional session ID (if provided with storage, will attempt to load existing session)
+            metadata: Optional metadata for the session
+            storage: Optional storage backend for persistence
+            persist_tool_configs: Whether to persist tool configurations
         """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
@@ -213,7 +231,147 @@ class TinyAgent:
         self.custom_tools: List[Dict[str, Any]] = []
         self.custom_tool_handlers: Dict[str, Any] = {}
         
-        self.logger.debug("TinyAgent initialized")
+        # 1) Session management
+        self.session_id = session_id or self._generate_session_id()
+        # build default metadata
+        default_md = {
+            "model": model,
+            "temperature": temperature,
+            **(model_kwargs or {}),
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }
+        self.metadata = metadata or default_md
+        self.metadata.setdefault("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+
+        # 2) Storage is attached immediately for auto‐saving, but loading is deferred:
+        self.storage = storage
+        self.persist_tool_configs = persist_tool_configs
+        # only a flag — no blocking or hidden runs in __init__
+        self._needs_session_load = bool(self.storage and session_id)
+
+        if self.storage:
+            # register auto‐save on llm_end
+            self.storage.attach(self)
+
+        self.logger.debug(f"TinyAgent initialized (session={self.session_id})")
+        
+        # register our usage‐merging hook
+        self.add_callback(self._on_llm_end)
+    
+    def _generate_session_id(self) -> str:
+        """Produce a unique session identifier."""
+        return str(uuid.uuid4())
+
+    async def save_agent(self) -> None:
+        """Persist our full serialized state via the configured Storage."""
+        if not self.storage:
+            self.logger.warning("No storage configured; skipping save.")
+            return
+        data = self.to_dict()
+        await self.storage.save_session(self.session_id, data)
+        self.logger.info(f"Agent state saved for session={self.session_id}")
+
+    async def _on_llm_end(self, event_name: str, agent: "TinyAgent", **kwargs) -> None:
+        """
+        Callback hook: after each LLM call, accumulate *all* fields from
+        litellm's response.usage into our metadata and persist.
+        """
+        if event_name != "llm_end":
+            return
+
+        response = kwargs.get("response")
+        if response and hasattr(response, "usage") and isinstance(response.usage, dict):
+            usage = response.usage
+            bucket = self.metadata.setdefault(
+                "usage", {}
+            )
+            # Merge every key from the LLM usage (prompt_tokens, completion_tokens,
+            # total_tokens, maybe cost, etc.)
+            for field, value in usage.items():
+                try:
+                    # only aggregate numeric fields
+                    bucket[field] = bucket.get(field, 0) + int(value)
+                except (ValueError, TypeError):
+                    # fallback: overwrite or store as-is
+                    bucket[field] = value
+
+        # persist after each LLM call
+        await self.save_agent()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Serialize session_id, metadata, and a user‐extensible session_state.
+        """
+        # start from user's own session_state
+        session_data = dict(self.session_state)
+        # always include the conversation
+        session_data["messages"] = self.messages
+
+        # optionally include tools
+        if self.persist_tool_configs:
+            serialized = []
+            for cfg in getattr(self, "_tool_configs_for_serialization", []):
+                if cfg["type"] == "tiny_agent":
+                    serialized.append({
+                        "type": "tiny_agent",
+                        "state": cfg["state_func"]()
+                    })
+                else:
+                    serialized.append(cfg)
+            session_data["tool_configs"] = serialized
+
+        return {
+            "session_id": self.session_id,
+            "metadata": self.metadata,
+            "session_state": session_data
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        *,
+        logger: Optional[logging.Logger] = None,
+        tool_registry: Optional[Dict[str, Any]] = None,
+        storage: Optional[Storage] = None
+    ) -> "TinyAgent":
+        """
+        Rehydrate a TinyAgent from JSON state.
+        """
+        session_id = data["session_id"]
+        metadata   = data.get("metadata", {})
+        state_blob = data.get("session_state", {})
+
+        # core config
+        model       = metadata.get("model", "gpt-4.1-mini")
+        temperature = metadata.get("temperature", 0.0)
+        # everything else except model/temperature/usage → model_kwargs
+        model_kwargs = {k:v for k,v in metadata.items() if k not in ("model","temperature","usage")}
+
+        # instantiate (tools* not yet reconstructed)
+        agent = cls(
+            model=model,
+            api_key=None,
+            system_prompt=None,
+            temperature=temperature,
+            logger=logger,
+            model_kwargs=model_kwargs,
+            session_id=session_id,
+            metadata=metadata,
+            storage=storage,
+            persist_tool_configs=False   # default off
+        )
+
+        # Apply the session data directly instead of loading from storage
+        agent._needs_session_load = False
+        agent._apply_session_data(data)
+
+        # rebuild tools if we persisted them
+        agent.tool_registry = tool_registry or {}
+        for tcfg in state_blob.get("tool_configs", []):
+            agent._reconstruct_tool(tcfg)
+
+        return agent
     
     def add_callback(self, callback: callable) -> None:
         """
@@ -624,6 +782,93 @@ class TinyAgent:
         
         return agent_tool
 
+    async def init_async(self) -> "TinyAgent":
+        """
+        Load session data from storage if flagged.  Safe to call only once.
+        """
+        if not self._needs_session_load:
+            return self
+
+        try:
+            data = await self.storage.load_session(self.session_id)
+            if data:
+                self.logger.info(f"Resuming session {self.session_id}")
+                self._apply_session_data(data)
+            else:
+                self.logger.info(f"No existing session for {self.session_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to load session {self.session_id}: {e}")
+        finally:
+            # Never reload again
+            self._needs_session_load = False
+
+        return self
+
+    @classmethod
+    async def create(
+        cls,
+        model: str = "gpt-4.1-mini",
+        api_key: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.0,
+        logger: Optional[logging.Logger] = None,
+        model_kwargs: Optional[Dict[str, Any]] = {},
+        *,
+        session_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        storage: Optional[Storage] = None,
+        persist_tool_configs: bool = False
+    ) -> "TinyAgent":
+        """
+        Async factory: constructs the agent, then loads an existing session
+        if (storage and session_id) were provided.
+        """
+        agent = cls(
+            model=model,
+            api_key=api_key,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            logger=logger,
+            model_kwargs=model_kwargs,
+            session_id=session_id,
+            metadata=metadata,
+            storage=storage,
+            persist_tool_configs=persist_tool_configs
+        )
+        if agent._needs_session_load:
+            await agent.init_async()
+        return agent
+
+    def _apply_session_data(self, data: Dict[str, Any]) -> None:
+        """
+        Apply loaded session data to this agent instance.
+        
+        Args:
+            data: Session data dictionary from storage
+        """
+        # Update metadata (preserving model and temperature from constructor)
+        if "metadata" in data:
+            # Keep original model/temperature/api_key but merge everything else
+            stored_metadata = data["metadata"]
+            for key, value in stored_metadata.items():
+                if key not in ("model", "temperature"):  # Don't override these
+                    self.metadata[key] = value
+        
+        # Load session state
+        if "session_state" in data:
+            state_blob = data["session_state"]
+            
+            # Restore conversation history
+            if "messages" in state_blob:
+                self.messages = state_blob["messages"]
+            
+            # Restore other session state
+            for key, value in state_blob.items():
+                if key != "messages" and key != "tool_configs":
+                    self.session_state[key] = value
+            
+            # Tool configs would be handled separately if needed
+
 async def run_example():
     """Example usage of TinyAgent with proper logging."""
     import os
@@ -661,7 +906,13 @@ async def run_example():
         return
     
     # Initialize the agent with our logger
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
+    agent = await TinyAgent.create(
+        model="gpt-4.1-mini",
+        api_key=api_key,
+        logger=agent_logger,
+        session_id="my-session-123",
+        storage=None
+    )
     
     # Add the Rich UI callback with our logger
     rich_ui = RichUICallback(
