@@ -410,6 +410,9 @@ class GradioCallback:
         thinking_message_added = False
         update_interval = 0.3
         min_yield_interval = 0.2
+        
+        # Track tool calls that are in progress (showing "working...")
+        in_progress_tool_calls = {}
  
         while not agent_task.done():
             now = time.time()
@@ -443,36 +446,60 @@ class GradioCallback:
                     thinking_message_added = True
                     self.logger.debug("Added thinking message")
  
-                # → **NEW**: emit one ChatMessage per completed tool call
+                # → Show tool calls with "working..." status when they start
                 if self.show_tool_calls:
                     for tool in sorted_tool_details:
                         tid = tool["id"]
                         tname = tool["name"]
-                        # skip special tools—they get rendered as normal assistant messages
-                        #if tname in ("final_answer", "ask_question"):
-                        #    continue
-                        # only once, and only once result is in
-                        if tid not in displayed_tool_calls and tool.get("result") is not None:
-                            in_tok  = tool.get("token_count", 0)
-                            out_tok = tool.get("result_token_count", 0)
-                            tot_tok = in_tok + out_tok
-                            # accordion content
+                        
+                        # If we haven't displayed this tool call yet
+                        if tid not in displayed_tool_calls and tid not in in_progress_tool_calls:
+                            in_tok = tool.get("token_count", 0)
+                            # Create "working..." message for this tool call
                             body = (
                                 f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
-                                f"**Output:** ({out_tok} tokens)\n```json\n{tool['result']}\n```\n"
+                                f"**Output:** ⏳ Working...\n"
                             )
-                            # build ChatMessage with metadata.title = accordion header
+                            # Add to chatbot with "working" status
                             msg = ChatMessage(
                                 role="assistant",
                                 content=body,
                                 metadata={
-                                    "title": f"🛠️ {tname} — {tot_tok} tokens",
-                                    "status": "done"
+                                    "title": f"🛠️ {tname} — {in_tok} tokens",
+                                    "status": "pending"
                                 }
                             )
                             chatbot_history.append(msg)
+                            # Track this tool call as in progress
+                            in_progress_tool_calls[tid] = len(chatbot_history) - 1
+                            self.logger.debug(f"Added in-progress tool call: {tname}")
+                        
+                        # If this tool call has completed and we're tracking it as in-progress
+                        elif tid in in_progress_tool_calls and tool.get("result") is not None:
+                            # Get the position in the chatbot history
+                            pos = in_progress_tool_calls[tid]
+                            in_tok = tool.get("token_count", 0)
+                            out_tok = tool.get("result_token_count", 0)
+                            tot_tok = in_tok + out_tok
+                            
+                            # Update the message with completed status and result
+                            body = (
+                                f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
+                                f"**Output:** ({out_tok} tokens)\n```json\n{tool['result']}\n```\n"
+                            )
+                            # Update the existing message
+                            chatbot_history[pos] = ChatMessage(
+                                role="assistant",
+                                content=body,
+                                metadata={
+                                    "title": f"🛠️ {tname} — {tot_tok} tokens ✅",
+                                    "status": "done"
+                                }
+                            )
+                            # Mark as displayed and remove from in-progress
                             displayed_tool_calls.add(tid)
-                            self.logger.debug(f"Added tool call message: {tname}")
+                            del in_progress_tool_calls[tid]
+                            self.logger.debug(f"Updated tool call to completed: {tname}")
  
                 # yield updated history + token usage
                 token_text = self._get_token_usage_text()
