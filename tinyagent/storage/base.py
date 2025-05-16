@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from tinyagent.tiny_agent import TinyAgent
@@ -10,14 +10,14 @@ class Storage(ABC):
     """
 
     @abstractmethod
-    async def save_session(self, session_id: str, data: Dict[str, Any]) -> None:
+    async def save_session(self, session_id: str, data: Dict[str, Any], user_id: Optional[str] = None) -> None:
         """
         Persist the given agent state under `session_id`.
         """
         ...
 
     @abstractmethod
-    async def load_session(self, session_id: str) -> Dict[str, Any]:
+    async def load_session(self, session_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Retrieve the agent state for `session_id`, or return {} if not found.
         """

@@ -10,7 +10,8 @@ import inspect
 import functools
 import uuid
 from .storage import Storage    # ← your abstract base
-
+import traceback
+import time  # Add time import for Unix timestamps
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
@@ -130,7 +131,10 @@ class TinyAgent:
     A minimal implementation of an agent powered by MCP and LiteLLM,
     now with session/state persistence.
     """
-    
+    session_state: Dict[str, Any] = {}
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+
     def __init__(
         self,
         model: str = "gpt-4.1-mini",
@@ -140,6 +144,7 @@ class TinyAgent:
         logger: Optional[logging.Logger] = None,
         model_kwargs: Optional[Dict[str, Any]] = {},
         *,
+        user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
@@ -230,8 +235,8 @@ class TinyAgent:
         # Add a list to store custom tools (functions and classes)
         self.custom_tools: List[Dict[str, Any]] = []
         self.custom_tool_handlers: Dict[str, Any] = {}
-        
-        # 1) Session management
+        # 1) User and session management
+        self.user_id = user_id or self._generate_session_id()
         self.session_id = session_id or self._generate_session_id()
         # build default metadata
         default_md = {
@@ -268,7 +273,7 @@ class TinyAgent:
             self.logger.warning("No storage configured; skipping save.")
             return
         data = self.to_dict()
-        await self.storage.save_session(self.session_id, data)
+        await self.storage.save_session(self.session_id, data, self.user_id)
         self.logger.info(f"Agent state saved for session={self.session_id}")
 
     async def _on_llm_end(self, event_name: str, agent: "TinyAgent", **kwargs) -> None:
@@ -559,8 +564,13 @@ class TinyAgent:
         # Notify start
         await self._run_callbacks("agent_start", user_input=user_input)
         
-        # Add user message to conversation
-        self.messages.append({"role": "user", "content": user_input})
+        # Add user message to conversation with timestamp
+        user_message = {
+            "role": "user", 
+            "content": user_input,
+            "created_at": int(time.time())
+        }
+        self.messages.append(user_message)
         await self._run_callbacks("message_add", message=self.messages[-1])
         
         # Initialize loop control variables
@@ -604,7 +614,8 @@ class TinyAgent:
                 if content:
                     content_msg = {
                         "role": "assistant",
-                        "content": content
+                        "content": content,
+                        "created_at": int(time.time())
                     }
                     self.messages.append(content_msg)
                     await self._run_callbacks("message_add", message=content_msg)
@@ -614,12 +625,14 @@ class TinyAgent:
                     assistant_msg = {
                         "role": "assistant",
                         "content": "",            # split off above
-                        "tool_calls": tool_calls
+                        "tool_calls": tool_calls,
+                        "created_at": int(time.time())
                     }
                 else:
                     assistant_msg = {
                         "role": "assistant",
-                        "content": content
+                        "content": content,
+                        "created_at": int(time.time())
                     }
                 self.messages.append(assistant_msg)
                 await self._run_callbacks("message_add", message=assistant_msg)
@@ -639,7 +652,8 @@ class TinyAgent:
                             "role": "tool",
                             "tool_call_id": tool_call_id,
                             "name": tool_name,
-                            "content": ""  # Default empty content
+                            "content": "",  # Default empty content
+                            "created_at": int(time.time())
                         }
                         
                         try:
@@ -791,14 +805,14 @@ class TinyAgent:
             return self
 
         try:
-            data = await self.storage.load_session(self.session_id)
+            data = await self.storage.load_session(self.session_id, self.user_id)
             if data:
                 self.logger.info(f"Resuming session {self.session_id}")
                 self._apply_session_data(data)
             else:
                 self.logger.info(f"No existing session for {self.session_id}")
         except Exception as e:
-            self.logger.error(f"Failed to load session {self.session_id}: {e}")
+            self.logger.error(f"Failed to load session {self.session_id}: {traceback.format_exc()}")
         finally:
             self._needs_session_load = False
 
@@ -814,6 +828,7 @@ class TinyAgent:
         logger: Optional[logging.Logger] = None,
         model_kwargs: Optional[Dict[str, Any]] = {},
         *,
+        user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
@@ -830,6 +845,7 @@ class TinyAgent:
             temperature=temperature,
             logger=logger,
             model_kwargs=model_kwargs,
+            user_id=user_id,
             session_id=session_id,
             metadata=metadata,
             storage=storage,
