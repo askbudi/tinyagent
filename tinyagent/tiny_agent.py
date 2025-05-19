@@ -126,6 +126,12 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
     
     return schema
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant with access to a variety of tools. "
+    "Use the tools when appropriate to accomplish tasks. "
+    "If a tool you need isn't available, just say so."
+)
+
 class TinyAgent:
     """
     A minimal implementation of an agent powered by MCP and LiteLLM,
@@ -184,15 +190,12 @@ class TinyAgent:
             litellm.api_key = api_key
         
         self.model_kwargs = model_kwargs
+        self.encoder = tiktoken.get_encoding("o200k_base")
             
         # Conversation state
         self.messages = [{
             "role": "system",
-            "content": system_prompt or (
-                "You are a helpful AI assistant with access to a variety of tools. "
-                "Use the tools when appropriate to accomplish tasks. "
-                "If a tool you need isn't available, just say so."
-            )
+            "content": system_prompt or DEFAULT_SYSTEM_PROMPT
         }]
         
         # This list now accumulates tools from *all* connected MCP servers:
@@ -267,6 +270,16 @@ class TinyAgent:
         """Produce a unique session identifier."""
         return str(uuid.uuid4())
 
+    def count_tokens(self, text: str) -> int:
+            """Count tokens in a string using tiktoken."""
+            if not self.encoder or not text:
+                return 0
+            try:
+                return len(self.encoder.encode(text))
+            except Exception as e:
+                self.logger.error(f"Error counting tokens: {e}")
+                return 0
+            
     async def save_agent(self) -> None:
         """Persist our full serialized state via the configured Storage."""
         if not self.storage:
@@ -610,21 +623,11 @@ class TinyAgent:
                 tool_calls = getattr(response_message, "tool_calls", []) or []
                 has_tool_calls = bool(tool_calls)
 
-                # If there's textual content, emit it as its own assistant message
-                if content:
-                    content_msg = {
-                        "role": "assistant",
-                        "content": content,
-                        "created_at": int(time.time())
-                    }
-                    self.messages.append(content_msg)
-                    await self._run_callbacks("message_add", message=content_msg)
-
                 # Now emit the "assistant" message that carries the function call (or, if no calls, the content)
                 if has_tool_calls:
                     assistant_msg = {
                         "role": "assistant",
-                        "content": "",            # split off above
+                        "content": content,            # split off above
                         "tool_calls": tool_calls,
                         "created_at": int(time.time())
                     }
@@ -669,6 +672,7 @@ class TinyAgent:
                                 # Add a response for this tool call before returning
                                 tool_message["content"] = tool_args.get("content", "Task completed without final answer.!!!")
                                 self.messages.append(tool_message)
+                                await self._run_callbacks("message_add", message=tool_message)
                                 await self._run_callbacks("agent_end", result="Task completed.")
                                 return tool_message["content"] 
                             elif tool_name == "ask_question":
@@ -676,6 +680,7 @@ class TinyAgent:
                                 # Add a response for this tool call before returning
                                 tool_message["content"] = f"Question asked: {question}"
                                 self.messages.append(tool_message)
+                                await self._run_callbacks("message_add", message=tool_message)
                                 await self._run_callbacks("agent_end", result=f"I need more information: {question}")
                                 return f"I need more information: {question}"
                             else:
@@ -719,7 +724,8 @@ class TinyAgent:
                     next_turn_should_call_tools = False
                 else:
                     # No tool calls in this message
-                    if next_turn_should_call_tools and num_turns > 0:
+                    if num_turns > 0:
+                    #if next_turn_should_call_tools and num_turns > 0:
                         # If we expected tool calls but didn't get any, we're done
                         await self._run_callbacks("agent_end", result=assistant_msg["content"] or "")
                         return assistant_msg["content"] or ""

@@ -44,7 +44,13 @@ class PostgresStorage(Storage):
         if not self._pool:
             self.logger.debug(f"Connecting to PostgreSQL with DSN: {self._dsn[:10]}...")
             try:
-                self._pool = await asyncpg.create_pool(dsn=self._dsn)
+                # Ensure statement_cache_size=0 to disable prepared statements for pgbouncer compatibility
+                self._pool = await asyncpg.create_pool(
+                    dsn=self._dsn, 
+                    statement_cache_size=0,
+                    min_size=1,
+                    max_size=10
+                )
                 self.logger.info("PostgreSQL connection pool created")
                 await self._ensure_table()
             except Exception as e:
