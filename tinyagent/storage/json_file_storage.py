@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, Union, Optional
 from tinyagent.storage import Storage
 
-class JSONFileStorage(Storage):
+class JsonFileStorage(Storage):
     """
     Persist TinyAgent sessions as individual JSON files.
     """
