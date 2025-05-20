@@ -1,7 +1,13 @@
-# tinyagent
-Tiny Agent: 100 lines Agent with MCP
+# TinyAgent
+Tiny Agent: 100 lines Agent with MCP and extendable hook system
+
+[![AskDev.AI | Chat with TinyAgent](https://img.shields.io/badge/AskDev.AI-Chat_with_TinyAgent-blue?style=flat-square)](https://askdev.ai/github/askbudi/tinyagent)
+
+
 ![TinyAgent Logo](https://raw.githubusercontent.com/askbudi/tinyagent/main/public/logo.png)
 
+
+[![AskDev.AI | Chat with TinyAgent](https://img.shields.io/badge/AskDev.AI-Chat_with_TinyAgent-blue?style=flat-square)](https://askdev.ai/github/askbudi/tinyagent)
 
 
 Inspired by:
@@ -19,15 +25,47 @@ This is a tiny agent that uses MCP and LiteLLM to interact with a model. You hav
 
 ### Using pip
 ```bash
+# Basic installation
 pip install tinyagent-py
+
+# Install with all optional dependencies
+pip install tinyagent-py[all]
+
+# Install with PostgreSQL support
+pip install tinyagent-py[postgres]
+
+# Install with SQLite support
+pip install tinyagent-py[sqlite]
+
+# Install with Gradio UI support
+pip install tinyagent-py[gradio]
+
 ```
 
 ### Using uv
 ```bash
+# Basic installation
 uv pip install tinyagent-py
+
+# Install with PostgreSQL support
+uv pip install tinyagent-py[postgres]
+
+# Install with SQLite support
+uv pip install tinyagent-py[sqlite]
+
+# Install with Gradio UI support
+uv pip install tinyagent-py[gradio]
+
+# Install with all optional dependencies
+uv pip install tinyagent-py[all]
+
+# Install with development tools
+uv pip install tinyagent-py[dev]
 ```
 
 ## Usage
+[![AskDev.AI | Chat with TinyAgent](https://img.shields.io/badge/AskDev.AI-Chat_with_TinyAgent-blue?style=flat-square)](https://askdev.ai/github/askbudi/tinyagent)
+
 
 ```python
 from tinyagent import TinyAgent
@@ -140,7 +178,7 @@ The `GradioCallback` hook lets you spin up a full-featured web chat interface fo
 Features:
 - **Browser-based chat** with streaming updates  
 - **File uploads** (\*.pdf, \*.docx, \*.txt) that the agent can reference  
-- **Live “thinking” view** so you see intermediate thoughts  
+- **Live "thinking" view** so you see intermediate thoughts  
 - **Collapsible tool-call sections** showing inputs & outputs  
 - **Real-time token usage** (prompt, completion, total)  
 - **Toggleable display options** for thinking & tool calls  
@@ -174,6 +212,14 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+---
+
+## Build your own TinyAgent
+
+You can chat with TinyAgent and build your own TinyAgent for your use case.
+
+[![AskDev.AI | Chat with TinyAgent](https://img.shields.io/badge/AskDev.AI-Chat_with_TinyAgent-blue?style=flat-square)](https://askdev.ai/github/askbudi/tinyagent)
+
 ---
 
 ## Contributing Hooks
