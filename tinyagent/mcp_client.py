@@ -106,11 +106,6 @@ class MCPClient:
 
     async def close(self):
         """Clean up subprocess and streams."""
-        if self.session:
-            try:
-                await self.session.close()
-            except Exception as e:
-                self.logger.error(f"Error closing session: {e}")
         if self.exit_stack:
             try:
                 await self.exit_stack.aclose()

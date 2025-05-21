@@ -9,7 +9,7 @@ exclude = ["public", "public.*"]
 
 [project]
 name = "tinyagent-py"
-version = "0.0.5"
+version = "0.0.6"
 description = "Tiny Agent with MCP Client"
 readme = "README.md"
 authors = [

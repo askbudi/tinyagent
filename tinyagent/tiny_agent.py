@@ -746,13 +746,58 @@ class TinyAgent:
 
     
     async def close(self):
-        """Clean up *all* MCP clients."""
+        """
+        Clean up all resources used by the agent including MCP clients and storage.
+        
+        This method should be called when the agent is no longer needed to ensure
+        proper resource cleanup, especially in web frameworks like FastAPI.
+        """
+        cleanup_errors = []
+        
+        # 1. First save any pending state if storage is configured
+        if self.storage:
+            try:
+                self.logger.debug(f"Saving final state before closing (session={self.session_id})")
+                await self.save_agent()
+            except Exception as e:
+                error_msg = f"Error saving final state: {str(e)}"
+                self.logger.error(error_msg)
+                cleanup_errors.append(error_msg)
+        
+        # 2. Close all MCP clients
         for client in self.mcp_clients:
             try:
+                self.logger.debug(f"Closing MCP client: {client}")
                 await client.close()
-            except RuntimeError as e:
-                self.logger.error(f"Error closing MCP client: {str(e)}")
-                # Continue closing other clients even if one fails
+            except Exception as e:
+                error_msg = f"Error closing MCP client: {str(e)}"
+                self.logger.error(error_msg)
+                cleanup_errors.append(error_msg)
+        
+        # 3. Close storage connection if available
+        if self.storage:
+            try:
+                self.logger.debug("Closing storage connection")
+                await self.storage.close()
+            except Exception as e:
+                error_msg = f"Error closing storage: {str(e)}"
+                self.logger.error(error_msg)
+                cleanup_errors.append(error_msg)
+        
+        # 4. Run any cleanup callbacks
+        try:
+            await self._run_callbacks("agent_cleanup")
+        except Exception as e:
+            error_msg = f"Error in cleanup callbacks: {str(e)}"
+            self.logger.error(error_msg)
+            cleanup_errors.append(error_msg)
+        
+        # Log summary of cleanup
+        if cleanup_errors:
+            self.logger.warning(f"TinyAgent cleanup completed with {len(cleanup_errors)} errors")
+        else:
+            self.logger.info(f"TinyAgent cleanup completed successfully (session={self.session_id})")
+
     def clear_conversation(self):
         """
         Clear the conversation history, preserving only the initial system prompt.
