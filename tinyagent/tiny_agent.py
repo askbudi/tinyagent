@@ -186,8 +186,7 @@ class TinyAgent:
         self.temperature = temperature
         if model in ["o1", "o1-preview","o3","o4-mini"]:
             self.temperature = 1
-        if api_key:
-            litellm.api_key = api_key
+
         
         self.model_kwargs = model_kwargs
         self.encoder = tiktoken.get_encoding("o200k_base")
@@ -560,6 +559,7 @@ class TinyAgent:
             return str(result)
         except Exception as e:
             self.logger.error(f"Error executing custom tool {tool_name}: {str(e)}")
+            self.logger.error(f"Error: {traceback.format_exc()}")
             return f"Error executing tool {tool_name}: {str(e)}"
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
