@@ -46,7 +46,8 @@ class SqliteStorage(Storage):
 
     async def save_session(self, session_id: str, data: Dict[str, Any], user_id: Optional[str] = None):
         await self._connect()
-        print(f"Saving session {session_id} for user {user_id} to sqlite {data}")
+        self.logger.info(f"[sqlite] Saving session {session_id} for user {user_id}")
+        self.logger.debug(f"[sqlite] Save data: {json.dumps(data)[:200]}...")
         # Extract data following the TinyAgent schema
         metadata = data.get("metadata", {}) or {}
         session_state = data.get("session_state", {}) or {}
