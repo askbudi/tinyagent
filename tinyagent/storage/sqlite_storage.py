@@ -1,6 +1,7 @@
 import aiosqlite
 import json
 import os
+import logging
 from typing import Optional, Dict, Any
 from tinyagent.storage import Storage
 
@@ -13,6 +14,7 @@ class SqliteStorage(Storage):
         self._db_path = db_path
         self._table = table_name
         self._conn: Optional[aiosqlite.Connection] = None
+        self.logger = logging.getLogger(__name__)
         
         # Ensure the directory exists
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
