@@ -105,22 +105,24 @@ class MCPClient:
             raise
 
     async def close(self):
-        """Clean up subprocess and streams."""
-        if self.exit_stack:
-            try:
-                await self.exit_stack.aclose()
-            except (RuntimeError, asyncio.CancelledError) as e:
-                # Log the error but don't re-raise it
-                self.logger.error(f"Error during client cleanup: {e}")
-            finally:
-                # Always reset these regardless of success or failure
-                self.session = None
-                self.exit_stack = AsyncExitStack()
+        """
+        Close this client’s contexts exactly once,
+        and only if we’re in the same cancel scope.
+        """
+        if self._closed:
+            self.logger.debug("MCPClient.close called twice; ignoring.")
+            return
 
-async def run_example():
-    """Example usage of MCPClient with proper logging."""
-    import sys
-    from tinyagent.hooks.logging_manager import LoggingManager
+        if get_cancel_scope() is not self._own_cancel_scope:
+            self.logger.warning(
+                "Closing outside original cancel scope; results may be undefined.",
+            )
+        try:
+            await self.exit_stack.aclose()
+        except Exception as e:
+            self.logger.error(f"Error during client cleanup: {e}")
+        finally:
+            self._closed = True
     
     # Create and configure logging manager
     log_manager = LoggingManager(default_level=logging.INFO)
