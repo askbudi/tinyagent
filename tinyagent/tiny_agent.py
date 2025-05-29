@@ -1001,3 +1001,18 @@ async def run_example():
     # Clean up
     await agent.close()
     agent_logger.debug("Example completed")
+
+    async def close_server_by_index(self, index: int):
+        if index < 0 or index >= len(self.mcp_clients):
+            raise IndexError(f"No server at index {index}")
+        client = self.mcp_clients.pop(index)
+        self.tool_to_client = {n: c for n, c in self.tool_to_client.items() if c is not client}
+        await client.close()
+
+    async def close_server_for_tool(self, tool_name: str):
+        client = self.tool_to_client.get(tool_name)
+        if not client:
+            raise KeyError(f"No server for tool {tool_name}")
+        self.mcp_clients.remove(client)
+        self.tool_to_client = {n: c for n, c in self.tool_to_client.items() if c is not client}
+        await client.close()
