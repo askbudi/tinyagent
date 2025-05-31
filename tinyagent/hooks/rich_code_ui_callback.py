@@ -193,13 +193,30 @@ class RichCodeUICallback(RichUICallback):
                             if tool_detail.get("result"):
                                 result = tool_detail.get("result")
                                 content_group.append(Text("\nOutput:", style="bold"))
-                                try:
-                                    # Try to parse the result as JSON for better display
-                                    result_json = json.loads(result)
-                                    content_group.append(JSON(result_json))
-                                except:
-                                    # If not JSON, just add as text
-                                    content_group.append(Text(result))
+                                
+                                # Handle different result types properly
+                                if isinstance(result, dict):
+                                    # If result is already a dict, use JSON formatter
+                                    content_group.append(JSON(result))
+                                else:
+                                    try:
+                                        # Try to parse string result as JSON
+                                        result_json = json.loads(result)
+                                        content_group.append(JSON(result_json))
+                                    except:
+                                        # Handle plain text with proper formatting
+                                        # Replace escaped newlines with actual newlines
+                                        if isinstance(result, str):
+                                            formatted_result = result.replace("\\n", "\n")
+                                            # Split by lines and preserve indentation
+                                            lines = formatted_result.split("\n")
+                                            formatted_text = Text()
+                                            for line in lines:
+                                                formatted_text.append(f"{line}\n")
+                                            content_group.append(formatted_text)
+                                        else:
+                                            # For any other type, convert to string
+                                            content_group.append(Text(str(result)))
                             
                             # Create a panel with the content group
                             code_panel = create_panel(
