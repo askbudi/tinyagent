@@ -9,8 +9,8 @@ exclude = ["public", "public.*"]
 
 [project]
 name = "tinyagent-py"
-version = "0.0.6"
-description = "Tiny Agent with MCP Client"
+version = "0.0.7"
+description = "Tiny Agent with MCP Client and Extendable Hooks, Tiny but powerful"
 readme = "README.md"
 authors = [
   {name="Mahdi Golchin", email="golchin@askdev.ai"}
