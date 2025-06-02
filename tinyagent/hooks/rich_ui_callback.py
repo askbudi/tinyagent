@@ -464,29 +464,7 @@ class RichUICallback:
             )
             ordered_panels.append(token_panel)
         
-        # 8. Final response panel (if we have a response)
-        if self.response_content:
-            content = self.response_content
-            if self.markdown:
-                self.logger.debug("Converting response to markdown")
-                escaped_content = escape_markdown_tags(content, self.tags_to_include_in_markdown)
-                content = Markdown(escaped_content)
-            
-            response_panel = create_panel(
-                content=content,
-                title=f"Response ({self.timer.elapsed:.1f}s)",
-                border_style="blue"
-            )
-            ordered_panels.append(response_panel)
-            
-            # Add token count panel for final response
-            response_token_count = self.count_tokens(self.response_content)
-            token_panel = create_panel(
-                content=Text(f"Token count: {response_token_count}", style="bold"),
-                title="Tokens",
-                border_style="purple"
-            )
-            ordered_panels.append(token_panel)
+        # 8. Final response panel skipped: final answer display suppressed
         
         try:
             self.logger.debug(f"Updating live display with {len(ordered_panels)} panels")
