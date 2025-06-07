@@ -196,27 +196,40 @@ class RichCodeUICallback(RichUICallback):
                                 
                                 # Handle different result types properly
                                 if isinstance(result, dict):
-                                    # If result is already a dict, use JSON formatter
-                                    content_group.append(JSON(result))
+                                    # Format dict as JSON in a markdown code block
+                                    json_str = json.dumps(result, indent=2)
+                                    json_markdown = f"```json\n{json_str}\n```"
+                                    content_group.append(Markdown(json_markdown))
                                 else:
                                     try:
                                         # Try to parse string result as JSON
                                         result_json = json.loads(result)
-                                        content_group.append(JSON(result_json))
+                                        json_str = json.dumps(result_json, indent=2)
+                                        json_markdown = f"```json\n{json_str}\n```"
+                                        content_group.append(Markdown(json_markdown))
                                     except:
                                         # Handle plain text with proper formatting
-                                        # Replace escaped newlines with actual newlines
                                         if isinstance(result, str):
-                                            formatted_result = result.replace("\\n", "\n")
-                                            # Split by lines and preserve indentation
-                                            lines = formatted_result.split("\n")
-                                            formatted_text = Text()
-                                            for line in lines:
-                                                formatted_text.append(f"{line}\n")
-                                            content_group.append(formatted_text)
+                                            # Replace escaped newlines with actual newlines
+                                            formatted_result = result.replace("\\n", "\n").replace("\\t", "\t")
+                                            
+                                            # Try to detect language or use appropriate format
+                                            if result.startswith("<!DOCTYPE html>") or "<html" in result[:100]:
+                                                text_markdown = f"```html\n{formatted_result}\n```"
+
+                                            elif any(python_hint in result for python_hint in ["def ", "import ", "class ", "if __name__"]):
+                                                text_markdown = f"```python\n{formatted_result}\n```"
+                                            elif result.startswith("<") and any(tag in result for tag in ["<div", "<span", "<p", "<a"]):
+                                                text_markdown = f"```html\n{formatted_result}\n```"
+                                            else:
+                                                # Default to markdown for better highlighting of plain text
+                                                text_markdown = f"```markdown\n{formatted_result}\n```"
+                                            
+                                            content_group.append(Markdown(text_markdown))
                                         else:
-                                            # For any other type, convert to string
-                                            content_group.append(Text(str(result)))
+                                            # For any other type, convert to string with markdown formatting
+                                            text_markdown = f"```markdown\n{str(result)}\n```"
+                                            content_group.append(Markdown(text_markdown))
                             
                             # Create a panel with the content group
                             code_panel = create_panel(

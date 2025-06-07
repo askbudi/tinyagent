@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
 
 def tool(name: Optional[str] = None, description: Optional[str] = None, 
-         schema: Optional[Dict[str, Any]] = None):
+         schema: Optional[Dict[str, Any]] = None, memory_importance: Optional[str] = None):
     """
     Decorator to convert a Python function or class into a tool for TinyAgent.
     
@@ -25,6 +25,8 @@ def tool(name: Optional[str] = None, description: Optional[str] = None,
         name: Optional custom name for the tool (defaults to function/class name)
         description: Optional description (defaults to function/class docstring)
         schema: Optional JSON schema for the tool parameters (auto-generated if not provided)
+        memory_importance: Optional memory importance level ("CRITICAL", "HIGH", "MEDIUM", "LOW", "TEMP")
+                          for overriding default memory management behavior
         
     Returns:
         Decorated function or class with tool metadata
@@ -50,12 +52,18 @@ def tool(name: Optional[str] = None, description: Optional[str] = None,
                 # For functions, use the function itself
                 tool_schema = _generate_schema_from_function(func_or_class)
         
+        # Validate memory importance if provided
+        valid_importance_levels = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "TEMP"}
+        if memory_importance and memory_importance.upper() not in valid_importance_levels:
+            raise ValueError(f"Invalid memory_importance '{memory_importance}'. Must be one of: {valid_importance_levels}")
+        
         # Attach metadata to the function or class
         func_or_class._tool_metadata = {
             "name": tool_name,
             "description": tool_description,
             "schema": tool_schema,
-            "is_class": is_class
+            "is_class": is_class,
+            "memory_importance": memory_importance.upper() if memory_importance else None
         }
         
         return func_or_class

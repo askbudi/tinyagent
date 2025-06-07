@@ -18,7 +18,7 @@
 #
 # should share same level of importance for it's response with role = tool and same tool_call_id
 
-# last 4 pair in the history should have HIGH importance
+# last 3 pairs in the history should have HIGH importance
 #
 #
 #
@@ -67,6 +67,7 @@ class MessageMetadata:
     summary: Optional[str] = None
     related_messages: List[int] = field(default_factory=list)  # Indices of related messages
     tool_call_id: Optional[str] = None  # To track tool call/response pairs
+    function_name: Optional[str] = None  # The actual function name for tool calls/responses
 
 class MemoryStrategy(ABC):
     """Abstract base class for memory management strategies."""
@@ -253,6 +254,9 @@ class MemoryManager:
         # Message metadata storage
         self.message_metadata: List[MessageMetadata] = []
         
+        # Reference to messages for tool call pairing
+        self.messages: Optional[List[Dict[str, Any]]] = None
+        
         # Task tracking
         self.active_tasks: Set[str] = set()
         self.completed_tasks: Set[str] = set()
@@ -272,6 +276,62 @@ class MemoryManager:
         # Tool call tracking for proper pairing
         self._tool_call_pairs: Dict[str, Tuple[int, int]] = {}  # tool_call_id -> (call_index, response_index)
         self._resolved_errors: Set[str] = set()  # Track resolved error tool_call_ids
+        
+        # Tool importance overrides (tool_name -> importance_level)
+        self._tool_importance_overrides: Dict[str, MessageImportance] = {}
+    
+    def register_tool_importance_override(self, tool_name: str, importance_level: str) -> None:
+        """
+        Register a custom importance level for a specific tool.
+        
+        Args:
+            tool_name: Name of the tool
+            importance_level: Importance level ("CRITICAL", "HIGH", "MEDIUM", "LOW", "TEMP")
+        """
+        importance_map = {
+            "CRITICAL": MessageImportance.CRITICAL,
+            "HIGH": MessageImportance.HIGH,
+            "MEDIUM": MessageImportance.MEDIUM,
+            "LOW": MessageImportance.LOW,
+            "TEMP": MessageImportance.TEMP
+        }
+        
+        importance_level_upper = importance_level.upper()
+        if importance_level_upper not in importance_map:
+            raise ValueError(f"Invalid importance level '{importance_level}'. Must be one of: {list(importance_map.keys())}")
+        
+        self._tool_importance_overrides[tool_name] = importance_map[importance_level_upper]
+        self.logger.debug(f"Registered tool importance override: {tool_name} -> {importance_level_upper}")
+    
+    def register_tools_from_agent(self, agent: Any) -> None:
+        """
+        Register tool importance overrides from an agent's tool configurations.
+        
+        Args:
+            agent: TinyAgent instance with tools
+        """
+        # Register custom tools
+        if hasattr(agent, 'custom_tool_handlers'):
+            for tool_name, handler in agent.custom_tool_handlers.items():
+                if hasattr(handler, '_tool_metadata'):
+                    metadata = handler._tool_metadata
+                    memory_importance = metadata.get('memory_importance')
+                    if memory_importance:
+                        self.register_tool_importance_override(tool_name, memory_importance)
+        
+        self.logger.debug(f"Registered {len(self._tool_importance_overrides)} tool importance overrides")
+    
+    def get_tool_importance_override(self, tool_name: str) -> Optional[MessageImportance]:
+        """
+        Get the importance override for a specific tool.
+        
+        Args:
+            tool_name: Name of the tool
+            
+        Returns:
+            MessageImportance if override exists, None otherwise
+        """
+        return self._tool_importance_overrides.get(tool_name)
     
     def _count_message_tokens(self, message: Dict[str, Any], token_counter: callable) -> int:
         """
@@ -294,25 +354,34 @@ class MemoryManager:
         # Count tool call tokens
         if 'tool_calls' in message and message['tool_calls']:
             for tool_call in message['tool_calls']:
-                # Count function name
+                # Handle both dict and object-style tool calls
                 if isinstance(tool_call, dict):
+                    # Count tool call ID
+                    if 'id' in tool_call:
+                        total_tokens += token_counter(str(tool_call['id']))
+                    
+                    # Count function data
                     if 'function' in tool_call:
                         func_data = tool_call['function']
                         if 'name' in func_data:
                             total_tokens += token_counter(func_data['name'])
                         if 'arguments' in func_data:
-                            total_tokens += token_counter(str(func_data['arguments']))
-                    # Count tool call ID
-                    if 'id' in tool_call:
-                        total_tokens += token_counter(str(tool_call['id']))
+                            # Arguments are usually JSON strings, count them properly
+                            args_str = str(func_data['arguments'])
+                            total_tokens += token_counter(args_str)
+                    
+                    # Count type if present
+                    if 'type' in tool_call:
+                        total_tokens += token_counter(str(tool_call['type']))
+                        
                 elif hasattr(tool_call, 'function'):
                     # Handle object-style tool calls
+                    if hasattr(tool_call, 'id'):
+                        total_tokens += token_counter(str(tool_call.id))
                     if hasattr(tool_call.function, 'name'):
                         total_tokens += token_counter(tool_call.function.name)
                     if hasattr(tool_call.function, 'arguments'):
                         total_tokens += token_counter(str(tool_call.function.arguments))
-                    if hasattr(tool_call, 'id'):
-                        total_tokens += token_counter(str(tool_call.id))
         
         # Count tool call ID for tool responses
         if 'tool_call_id' in message and message['tool_call_id']:
@@ -329,16 +398,24 @@ class MemoryManager:
         message: Dict[str, Any], 
         index: int, 
         total_messages: int, 
-        message_pairs: List[Tuple[int, int]]
+        message_pairs: List[Tuple[int, int]],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> MessageImportance:
         """
-        Calculate dynamic importance based on position, content, and context.
+        Calculate dynamic importance using a hierarchical rule-based system.
+        
+        Rules are applied in order of precedence:
+        1. Absolute Rules (cannot be overridden)
+        2. Content-Based Rules (based on message content/type)
+        3. Position-Based Rules (based on conversation position)
+        4. Default Rules (fallback based on role)
         
         Args:
             message: The message to evaluate
             index: Position of the message in the conversation
             total_messages: Total number of messages
             message_pairs: List of message pair ranges
+            messages: Optional array of messages for better user message detection
             
         Returns:
             MessageImportance level
@@ -346,60 +423,139 @@ class MemoryManager:
         role = message.get('role', '')
         content = str(message.get('content', ''))
         
-        # System messages are always CRITICAL
+        # ===== ABSOLUTE RULES (Highest Priority - Cannot be overridden) =====
+        
+        # Rule 1: System messages are always CRITICAL
         if role == 'system':
             return MessageImportance.CRITICAL
         
-        # Check if this is a final_answer or ask_question tool call (HIGH importance)
+        # Rule 2: First user message is always CRITICAL (as per requirements)
+        if role == 'user' and self._is_first_user_message(index):
+            return MessageImportance.CRITICAL
+        
+        # ===== CONTENT-BASED RULES (Second Priority) =====
+        
+        # Rule 3: Final answers and ask_question are HIGH
         if role == 'assistant' and message.get('tool_calls'):
             tool_calls = message.get('tool_calls', [])
             if any(tc.get('function', {}).get('name') in ['final_answer', 'ask_question'] 
                    for tc in tool_calls):
                 return MessageImportance.HIGH
         
-        # Check if this is an error response (HIGH importance until resolved)
+        # Rule 4: Resolved errors are LOW importance
         if self._is_tool_error_response(message):
             return MessageImportance.HIGH
         
-        # Position-based importance (first N pairs are CRITICAL, last N pairs are HIGH)
-        if total_messages <= 10:
-            # For short conversations, keep everything at MEDIUM or higher
-            return MessageImportance.MEDIUM
+        # ===== TOOL IMPORTANCE OVERRIDES (Third Priority) =====
         
-        # Find which pair this message belongs to
-        current_pair_index = None
-        for pair_idx, (start_idx, end_idx) in enumerate(message_pairs):
-            if start_idx <= index <= end_idx:
-                current_pair_index = pair_idx
-                break
+        # Rule 5: Tool importance overrides from @tool decorator
+        if message.get('role') == 'tool':
+            tool_override = self.get_tool_importance_override(message.get('name', 'unknown'))
+            if tool_override is not None:
+                self.logger.debug(f"Applying tool importance override for {message.get('name', 'unknown')}: {tool_override.value}")
+                return tool_override
+        elif message.get('role') == 'assistant' and message.get('tool_calls'):
+            # Apply tool overrides to tool calls as well
+            tool_calls = message.get('tool_calls', [])
+            for tool_call in tool_calls:
+                function_name = tool_call.get('function', {}).get('name')
+                if function_name:
+                    tool_override = self.get_tool_importance_override(function_name)
+                    if tool_override is not None:
+                        self.logger.debug(f"Applying tool importance override for tool call {function_name}: {tool_override.value}")
+                        return tool_override
+        
+        # ===== POSITION-BASED RULES (Fourth Priority) =====
+        
+        # Apply positional rules based on message pairs
+        current_pair_index = self._find_message_pair_index(index, message_pairs)
         
         if current_pair_index is not None:
-            # First N pairs are CRITICAL
-            if current_pair_index < self._num_initial_pairs_critical:
+            # Debug logging
+            self.logger.debug(f"Recalc - Message at index {index}: pair_index={current_pair_index}, total_pairs={len(message_pairs)}, last_{self._num_recent_pairs_for_high_importance}_threshold={len(message_pairs) - self._num_recent_pairs_for_high_importance}")
+            
+            # Rule 4: First N pairs are CRITICAL for longer conversations
+            if (total_messages > 10 and 
+                current_pair_index < self._num_initial_pairs_critical):
                 return MessageImportance.CRITICAL
             
-            # Last N pairs are HIGH
+            # Rule 5: Last N pairs are HIGH (most recent pairs) - applies to all conversations
             if current_pair_index >= len(message_pairs) - self._num_recent_pairs_for_high_importance:
+                self.logger.debug(f"Recalc - Applying HIGH importance due to recency rule for message at index {index}")
                 return MessageImportance.HIGH
         
-        # Content-based importance adjustments
+        # ===== ERROR-BASED RULES (Fourth Priority) =====
+        
+        # Rule 6: Tool errors are HIGH importance by default (per memory.md guidelines)
+        if self._is_tool_error_response(message):
+            return MessageImportance.HIGH
+        
+        # ===== DEFAULT RULES (Lowest Priority - Fallback) =====
+        
+        # Rule 8: User messages (except first and last) are HIGH
         if role == 'user':
-            # User queries are generally important
-            return MessageImportance.MEDIUM
-        elif role == 'assistant':
-            # Assistant responses vary by content length and complexity
-            if len(content) > 500:  # Long responses might be more important
+            # Check if this is the last user message
+            if messages is not None:
+                is_last_user = self._is_last_user_message_in_array(index, messages)
+            else:
+                is_last_user = self._is_last_user_message(index, total_messages)
+            
+            if not is_last_user:  # Not first (handled above) and not last
+                return MessageImportance.HIGH
+            else:
+                return MessageImportance.MEDIUM  # Last user message is MEDIUM
+        
+        # Rule 9: Assistant responses based on content complexity
+        if role == 'assistant':
+            if len(content) > 500:  # Substantial responses are MEDIUM
                 return MessageImportance.MEDIUM
             else:
                 return MessageImportance.LOW
-        elif role == 'tool':
-            # Tool responses are generally MEDIUM unless they're errors
+        
+        # Rule 10: Tool responses are MEDIUM (unless errors, handled above)
+        if role == 'tool':
             return MessageImportance.MEDIUM
         
-        # Default importance
+        # Rule 11: Default fallback
         return MessageImportance.LOW
     
-    def categorize_message(self, message: Dict[str, Any], index: int, total_messages: int) -> Tuple[MessageType, MessageImportance]:
+    def _is_first_user_message(self, current_index: int) -> bool:
+        """
+        Check if the current message is the first user message in the conversation.
+        This works during initial categorization when we don't have full metadata yet.
+        
+        Args:
+            current_index: Index of the current message being processed
+            
+        Returns:
+            True if this is the first user message
+        """
+        # Check all previous messages in metadata to see if any were user messages
+        for i in range(current_index):
+            if i < len(self.message_metadata):
+                if self.message_metadata[i].message_type == MessageType.USER_QUERY:
+                    return False  # Found an earlier user message
+        
+        # If we reach here, no previous user messages were found
+        return True
+    
+    def _find_message_pair_index(self, message_index: int, message_pairs: List[Tuple[int, int]]) -> Optional[int]:
+        """
+        Find which pair index a message belongs to.
+        
+        Args:
+            message_index: Index of the message
+            message_pairs: List of message pair ranges
+            
+        Returns:
+            Pair index or None if not found
+        """
+        for pair_idx, (start_idx, end_idx) in enumerate(message_pairs):
+            if start_idx <= message_index <= end_idx:
+                return pair_idx
+        return None
+    
+    def categorize_message(self, message: Dict[str, Any], index: int, total_messages: int, messages: Optional[List[Dict[str, Any]]] = None) -> Tuple[MessageType, MessageImportance]:
         """
         Categorize a message and determine its base importance.
         
@@ -407,6 +563,7 @@ class MemoryManager:
             message: The message to categorize
             index: Position of the message in the conversation
             total_messages: Total number of messages in the conversation
+            messages: Optional array of messages for better user message detection
             
         Returns:
             Tuple of (MessageType, MessageImportance)
@@ -428,9 +585,12 @@ class MemoryManager:
             if message.get('tool_calls'):
                 # Check if this is a final_answer or ask_question tool call
                 tool_calls = message.get('tool_calls', [])
-                if any(tc.get('function', {}).get('name') in ['final_answer', 'ask_question'] 
+                if any(tc.get('function', {}).get('name') == 'final_answer' 
                        for tc in tool_calls):
                     msg_type = MessageType.FINAL_ANSWER
+                elif any(tc.get('function', {}).get('name') == 'ask_question' 
+                         for tc in tool_calls):
+                    msg_type = MessageType.QUESTION_TO_USER
                 else:
                     msg_type = MessageType.TOOL_CALL
             else:
@@ -442,7 +602,7 @@ class MemoryManager:
         message_pairs = self._calculate_message_pairs()
         
         # Calculate dynamic importance
-        importance = self._calculate_dynamic_importance(message, index, total_messages, message_pairs)
+        importance = self._calculate_dynamic_importance(message, index, total_messages, message_pairs, messages)
         
         return msg_type, importance
     
@@ -451,7 +611,8 @@ class MemoryManager:
         message: Dict[str, Any], 
         token_count: int, 
         position: int, 
-        total_messages: int
+        total_messages: int,
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> None:
         """
         Add metadata for a message and update tool call pairs.
@@ -461,9 +622,10 @@ class MemoryManager:
             token_count: Number of tokens in the message
             position: Position of the message in the conversation
             total_messages: Total number of messages in the conversation
+            messages: Optional array of messages for better user message detection
         """
         # Categorize the message
-        msg_type, base_importance = self.categorize_message(message, position, total_messages)
+        msg_type, base_importance = self.categorize_message(message, position, total_messages, messages)
         
         # Extract task information
         task_id = self._extract_task_id(message)
@@ -475,14 +637,21 @@ class MemoryManager:
         
         # Extract tool call ID - handle both tool calls and tool responses
         tool_call_id = None
+        function_name = None
+        
         if message.get('role') == 'tool':
             # Tool response - get tool_call_id directly
             tool_call_id = message.get('tool_call_id')
+            function_name = message.get('name')  # Tool responses have 'name' field
         elif message.get('role') == 'assistant' and message.get('tool_calls'):
-            # Tool call - get the first tool call ID (assuming single tool call per message)
+            # Tool call - for multi-tool-call messages, we'll store the first one in metadata
+            # but _update_tool_call_pairs will handle all tool calls by examining the actual message
             tool_calls = message.get('tool_calls', [])
             if tool_calls:
                 tool_call_id = tool_calls[0].get('id')
+                # Extract function name from the tool call
+                function_data = tool_calls[0].get('function', {})
+                function_name = function_data.get('name')
         
         # Create metadata
         metadata = MessageMetadata(
@@ -496,14 +665,15 @@ class MemoryManager:
             task_completed=task_id in self.completed_tasks if task_id else False,
             tool_call_id=tool_call_id,
             can_summarize=msg_type not in [MessageType.SYSTEM, MessageType.FINAL_ANSWER],
-            summary=None
+            summary=None,
+            function_name=function_name
         )
         
         # Add to metadata list
         self.message_metadata.append(metadata)
         
         # Update tool call pairs
-        self._update_tool_call_pairs()
+        self._update_tool_call_pairs(messages)
         
         # Update resolved errors
         self._update_resolved_errors()
@@ -513,26 +683,47 @@ class MemoryManager:
         
         self.logger.debug(f"Added metadata for message at position {position}: {msg_type.value}, {base_importance.value}, tool_call_id: {tool_call_id}")
 
-    def _update_tool_call_pairs(self) -> None:
+    def _update_tool_call_pairs(self, messages: Optional[List[Dict[str, Any]]] = None) -> None:
         """Update the tool call pairs mapping based on current messages."""
         self._tool_call_pairs.clear()
         
-        # Find all tool calls and their responses
+        # First, collect all tool call IDs from assistant messages
+        tool_call_messages = {}  # tool_call_id -> message_index
+        
         for i, metadata in enumerate(self.message_metadata):
-            if metadata.tool_call_id:
-                if metadata.message_type in [MessageType.TOOL_CALL, MessageType.FINAL_ANSWER]:
-                    # This is a tool call, look for its response
-                    for j in range(i + 1, len(self.message_metadata)):
-                        response_meta = self.message_metadata[j]
-                        if (response_meta.tool_call_id == metadata.tool_call_id and 
-                            response_meta.message_type in [MessageType.TOOL_RESPONSE, MessageType.TOOL_ERROR]):
-                            self._tool_call_pairs[metadata.tool_call_id] = (i, j)
-                            break
+            if metadata.message_type in [MessageType.TOOL_CALL, MessageType.FINAL_ANSWER, MessageType.QUESTION_TO_USER]:
+                # This is an assistant message with tool calls, extract all tool call IDs
+                # We need to look at the actual message to get all tool calls
+                if messages and i < len(messages):
+                    message = messages[i]
+                    tool_calls = message.get('tool_calls', [])
+                    for tool_call in tool_calls:
+                        tool_call_id = tool_call.get('id')
+                        if tool_call_id:
+                            tool_call_messages[tool_call_id] = i
+                elif metadata.tool_call_id:
+                    # Fallback: use the tool_call_id from metadata if available
+                    tool_call_messages[metadata.tool_call_id] = i
+        
+        # Then, find responses for each tool call
+        for i, metadata in enumerate(self.message_metadata):
+            if (metadata.tool_call_id and 
+                metadata.message_type in [MessageType.TOOL_RESPONSE, MessageType.TOOL_ERROR] and
+                metadata.tool_call_id in tool_call_messages):
+                
+                call_idx = tool_call_messages[metadata.tool_call_id]
+                self._tool_call_pairs[metadata.tool_call_id] = (call_idx, i)
 
     def _recalculate_all_importance_levels(self) -> None:
         """Recalculate importance levels for all messages based on current context."""
         if not self.message_metadata:
             return
+        
+        # First update resolved errors
+        self._update_resolved_errors()
+        
+        # Update tool call pairs (without messages reference during recalculation)
+        self._update_tool_call_pairs()
         
         # Calculate message pairs for context
         message_pairs = self._calculate_message_pairs()
@@ -540,8 +731,6 @@ class MemoryManager:
         
         # Recalculate importance for each message
         for i, metadata in enumerate(self.message_metadata):
-            # We need the original message to recalculate importance
-            # For now, we'll use a simplified approach based on message type and position
             new_importance = self._calculate_positional_importance(i, total_messages, message_pairs, metadata)
             metadata.importance = new_importance
         
@@ -557,45 +746,100 @@ class MemoryManager:
         message_pairs: List[Tuple[int, int]],
         metadata: MessageMetadata
     ) -> MessageImportance:
-        """Calculate importance based on position and message type."""
+        """
+        Calculate importance based on position and message type using the same rule hierarchy.
+        This method is used during recalculation when we have full metadata context.
+        """
         
-        # System messages are always CRITICAL
+        # ===== ABSOLUTE RULES (Highest Priority - Cannot be overridden) =====
+        
+        # Rule 1: System messages are always CRITICAL
         if metadata.message_type == MessageType.SYSTEM:
             return MessageImportance.CRITICAL
         
-        # Final answers are HIGH
-        if metadata.message_type == MessageType.FINAL_ANSWER:
+        # Rule 2: First user message is always CRITICAL
+        if metadata.message_type == MessageType.USER_QUERY and self._is_first_user_message_by_metadata(index):
+            return MessageImportance.CRITICAL
+        
+        # ===== CONTENT-BASED RULES (Second Priority) =====
+        
+        # Rule 3: Final answers and ask_question are HIGH
+        if metadata.message_type in [MessageType.FINAL_ANSWER, MessageType.QUESTION_TO_USER]:
             return MessageImportance.HIGH
         
-        # Errors are HIGH until resolved
+        # Rule 4: Resolved errors are LOW importance
+        if metadata.is_error and metadata.error_resolved:
+            return MessageImportance.LOW
+        
+        # ===== TOOL IMPORTANCE OVERRIDES (Third Priority) =====
+        
+        # Rule 5: Tool importance overrides from @tool decorator
+        if metadata.function_name:
+            tool_override = self.get_tool_importance_override(metadata.function_name)
+            if tool_override is not None:
+                self.logger.debug(f"Applying tool importance override for {metadata.function_name}: {tool_override.value}")
+                return tool_override
+        
+        # ===== POSITION-BASED RULES (Fourth Priority) =====
+        
+        # Apply positional rules based on message pairs
+        current_pair_index = self._find_message_pair_index(index, message_pairs)
+        
+        if current_pair_index is not None:
+            # Debug logging
+            self.logger.debug(f"Recalc - Message at index {index}: pair_index={current_pair_index}, total_pairs={len(message_pairs)}, last_{self._num_recent_pairs_for_high_importance}_threshold={len(message_pairs) - self._num_recent_pairs_for_high_importance}")
+            
+            # Rule 4: First N pairs are CRITICAL for longer conversations
+            if (total_messages > 10 and 
+                current_pair_index < self._num_initial_pairs_critical):
+                return MessageImportance.CRITICAL
+            
+            # Rule 5: Last N pairs are HIGH (most recent pairs) - applies to all conversations
+            if current_pair_index >= len(message_pairs) - self._num_recent_pairs_for_high_importance:
+                self.logger.debug(f"Recalc - Applying HIGH importance due to recency rule for message at index {index}")
+                return MessageImportance.HIGH
+        
+        # ===== ERROR-BASED RULES (Fourth Priority) =====
+        
+        # Rule 7: Unresolved errors are HIGH importance by default (per memory.md guidelines)
         if metadata.is_error and not metadata.error_resolved:
             return MessageImportance.HIGH
         
-        # Position-based importance
-        if total_messages <= 10:
-            return MessageImportance.MEDIUM
+        # ===== DEFAULT RULES (Lowest Priority - Fallback) =====
         
-        # Find which pair this message belongs to
-        current_pair_index = None
-        for pair_idx, (start_idx, end_idx) in enumerate(message_pairs):
-            if start_idx <= index <= end_idx:
-                current_pair_index = pair_idx
-                break
-        
-        if current_pair_index is not None:
-            # First N pairs are CRITICAL
-            if current_pair_index < self._num_initial_pairs_critical:
-                return MessageImportance.CRITICAL
-            
-            # Last N pairs are HIGH
-            if current_pair_index >= len(message_pairs) - self._num_recent_pairs_for_high_importance:
+        # Rule 8: User messages (except first and last) are HIGH
+        if metadata.message_type == MessageType.USER_QUERY:
+            # Check if this is the last user message
+            is_last_user = self._is_last_user_message(index, total_messages)
+            if not is_last_user:  # Not first (handled above) and not last
                 return MessageImportance.HIGH
+            else:
+                return MessageImportance.MEDIUM  # Last user message is MEDIUM
         
-        # Default based on message type
-        if metadata.message_type in [MessageType.USER_QUERY, MessageType.TOOL_RESPONSE]:
+        # Rule 9: Tool calls and responses are MEDIUM (unless errors, handled above)
+        if metadata.message_type in [MessageType.TOOL_CALL, MessageType.TOOL_RESPONSE]:
             return MessageImportance.MEDIUM
         
+        # Rule 10: Default fallback
         return MessageImportance.LOW
+
+    def _is_first_user_message_by_metadata(self, current_index: int) -> bool:
+        """
+        Check if the current message is the first user message using metadata.
+        This is used during recalculation when we have full metadata available.
+        
+        Args:
+            current_index: Index of the current message
+            
+        Returns:
+            True if this is the first user message
+        """
+        for i in range(current_index):
+            if i < len(self.message_metadata):
+                if self.message_metadata[i].message_type == MessageType.USER_QUERY:
+                    return False  # Found an earlier user message
+        
+        return True  # No earlier user messages found
 
     def _calculate_message_pairs(self) -> List[Tuple[int, int]]:
         """Calculate logical message pairs for positional importance."""
@@ -615,7 +859,7 @@ class MemoryManager:
             if metadata.message_type == MessageType.USER_QUERY:
                 if i + 1 < len(self.message_metadata):
                     next_meta = self.message_metadata[i + 1]
-                    if next_meta.message_type in [MessageType.ASSISTANT_RESPONSE, MessageType.TOOL_CALL]:
+                    if next_meta.message_type in [MessageType.ASSISTANT_RESPONSE, MessageType.TOOL_CALL, MessageType.FINAL_ANSWER, MessageType.QUESTION_TO_USER]:
                         pairs.append((i, i + 1))
                         i += 2
                         continue
@@ -640,57 +884,88 @@ class MemoryManager:
         return pairs
 
     def _update_resolved_errors(self) -> None:
-        """Update the set of resolved error tool call IDs."""
+        """
+        Update the set of resolved error tool call IDs.
+        Enhanced logic for tool error recovery detection that can be overridden by developers.
+        """
         self._resolved_errors.clear()
         
         # Track tool calls that had errors but later succeeded
-        error_tool_calls = set()
-        success_tool_calls = set()
+        error_tool_calls = {}  # tool_call_id -> (function_name, error_index, error_metadata)
+        success_tool_calls = {}  # function_name -> [(success_index, success_metadata), ...]
         
-        for metadata in self.message_metadata:
-            if metadata.tool_call_id:
+        for i, metadata in enumerate(self.message_metadata):
+            if metadata.tool_call_id and metadata.function_name:
                 if metadata.is_error:
-                    error_tool_calls.add(metadata.tool_call_id)
-                elif metadata.message_type in [MessageType.TOOL_RESPONSE]:
-                    # Check if this is a successful response (not an error)
-                    success_tool_calls.add(metadata.tool_call_id)
+                    # This is an error response
+                    error_tool_calls[metadata.tool_call_id] = (metadata.function_name, i, metadata)
+                elif metadata.message_type == MessageType.TOOL_RESPONSE:
+                    # This is a successful response
+                    if metadata.function_name not in success_tool_calls:
+                        success_tool_calls[metadata.function_name] = []
+                    success_tool_calls[metadata.function_name].append((i, metadata))
         
-        # Find tool functions that had both errors and successes
-        for tool_call_id in self._tool_call_pairs:
-            call_idx, response_idx = self._tool_call_pairs[tool_call_id]
-            
-            if (call_idx < len(self.message_metadata) and 
-                response_idx < len(self.message_metadata)):
-                
-                call_meta = self.message_metadata[call_idx]
-                response_meta = self.message_metadata[response_idx]
-                
-                # Check if there's a later successful call to the same function
-                if response_meta.is_error:
-                    function_name = self._extract_function_name(call_meta, call_idx)
-                    if function_name and self._has_later_success(function_name, call_idx):
+        # Mark errors as resolved using improved logic
+        for tool_call_id, (function_name, error_index, error_metadata) in error_tool_calls.items():
+            if function_name in success_tool_calls:
+                # Check all successful calls for this function
+                for success_index, success_metadata in success_tool_calls[function_name]:
+                    # Use overridable method to determine if this represents error recovery
+                    if self.is_tool_error_recovery(error_metadata, success_metadata, error_index, success_index):
                         self._resolved_errors.add(tool_call_id)
-                        response_meta.error_resolved = True
+                        # Update the metadata
+                        error_metadata.error_resolved = True
+                        self.logger.debug(f"Marked error {tool_call_id} as resolved for function {function_name} (error at {error_index}, success at {success_index})")
+                        break  # Found recovery, no need to check more successes
 
-    def _extract_function_name(self, metadata: MessageMetadata, message_index: int) -> Optional[str]:
-        """Extract function name from a tool call message."""
-        # This would need access to the actual message content
-        # For now, return a placeholder - this should be implemented based on message structure
-        return f"function_{message_index}"  # Placeholder
+    def is_tool_error_recovery(
+        self, 
+        error_metadata: MessageMetadata, 
+        success_metadata: MessageMetadata, 
+        error_index: int, 
+        success_index: int
+    ) -> bool:
+        """
+        Determine if a successful tool call represents recovery from an earlier error.
+        This method can be overridden by developers for custom error recovery logic.
+        
+        Args:
+            error_metadata: Metadata of the error message
+            success_metadata: Metadata of the potential recovery message
+            error_index: Index of the error message
+            success_index: Index of the success message
+            
+        Returns:
+            True if the success represents recovery from the error
+        """
+        # Default logic: same function succeeding after the error occurred
+        same_function = error_metadata.function_name == success_metadata.function_name
+        success_after_error = success_index > error_index
+        
+        return same_function and success_after_error
 
-    def _has_later_success(self, function_name: str, error_position: int) -> bool:
-        """Check if there's a later successful call to the same function."""
-        # Look for successful calls to the same function after the error
-        for i in range(error_position + 1, len(self.message_metadata)):
-            metadata = self.message_metadata[i]
-            if (metadata.message_type == MessageType.TOOL_RESPONSE and 
-                not metadata.is_error):
-                # Check if this is the same function (simplified check)
-                return True
-        return False
+    def _get_function_name_for_tool_call(self, tool_call_id: str) -> Optional[str]:
+        """Get the function name for a given tool call ID from stored metadata."""
+        for metadata in self.message_metadata:
+            if metadata.tool_call_id == tool_call_id:
+                return metadata.function_name
+        return None
+
+    def _extract_function_from_tool_call_id(self, tool_call_id: str) -> Optional[str]:
+        """Extract a function identifier from tool call ID for error resolution tracking."""
+        # This is a simplified approach - in a real implementation, you'd want to 
+        # store the function name in the metadata when the tool call is made
+        if not tool_call_id:
+            return None
+        
+        # For now, we'll use the tool_call_id itself as a unique identifier
+        # This works for the current use case where we're tracking if the same
+        # type of operation succeeded later
+        return tool_call_id
 
     def _synchronize_tool_call_pairs(self) -> None:
         """Ensure tool call pairs have synchronized importance levels."""
+        # First pass: handle individual pairs
         for tool_call_id, (call_idx, response_idx) in self._tool_call_pairs.items():
             if (call_idx < len(self.message_metadata) and 
                 response_idx < len(self.message_metadata)):
@@ -698,7 +973,28 @@ class MemoryManager:
                 call_meta = self.message_metadata[call_idx]
                 response_meta = self.message_metadata[response_idx]
                 
-                # Use the higher importance level for both
+                # Special handling for resolved errors - both should be LOW
+                if response_meta.is_error and response_meta.error_resolved:
+                    call_meta.importance = MessageImportance.LOW
+                    response_meta.importance = MessageImportance.LOW
+                    self.logger.debug(f"Set resolved error pair {tool_call_id} to LOW importance")
+                    continue
+                
+                # Check if either message has a tool importance override
+                call_has_override = call_meta.function_name and self.get_tool_importance_override(call_meta.function_name) is not None
+                response_has_override = response_meta.function_name and self.get_tool_importance_override(response_meta.function_name) is not None
+                
+                if call_has_override or response_has_override:
+                    # If either has an override, apply it to both
+                    if call_meta.function_name:
+                        override_importance = self.get_tool_importance_override(call_meta.function_name)
+                        if override_importance:
+                            call_meta.importance = override_importance
+                            response_meta.importance = override_importance
+                            self.logger.debug(f"Applied tool importance override to pair {tool_call_id}: both set to {override_importance.value}")
+                            continue
+                
+                # Use the higher importance level for both (original logic)
                 importance_order = [
                     MessageImportance.TEMP,
                     MessageImportance.LOW, 
@@ -717,38 +1013,115 @@ class MemoryManager:
                 response_meta.importance = target_importance
                 
                 self.logger.debug(f"Synchronized tool call pair {tool_call_id}: both set to {target_importance.value}")
+        
+        # Second pass: handle multi-tool-call messages
+        # Group tool calls by their call message index
+        call_message_groups = {}  # call_idx -> [response_indices]
+        
+        for tool_call_id, (call_idx, response_idx) in self._tool_call_pairs.items():
+            if call_idx not in call_message_groups:
+                call_message_groups[call_idx] = []
+            call_message_groups[call_idx].append(response_idx)
+        
+        # For each call message with multiple responses, ensure it has the highest importance
+        for call_idx, response_indices in call_message_groups.items():
+            if len(response_indices) > 1 and call_idx < len(self.message_metadata):
+                call_meta = self.message_metadata[call_idx]
+                
+                # Find the highest importance among all responses
+                max_importance = MessageImportance.TEMP
+                importance_order = [
+                    MessageImportance.TEMP,
+                    MessageImportance.LOW, 
+                    MessageImportance.MEDIUM,
+                    MessageImportance.HIGH,
+                    MessageImportance.CRITICAL
+                ]
+                
+                for response_idx in response_indices:
+                    if response_idx < len(self.message_metadata):
+                        response_meta = self.message_metadata[response_idx]
+                        response_priority = importance_order.index(response_meta.importance)
+                        max_priority = importance_order.index(max_importance)
+                        if response_priority > max_priority:
+                            max_importance = response_meta.importance
+                
+                # Update the call message to have the highest importance
+                call_meta.importance = max_importance
+                self.logger.debug(f"Updated multi-tool call message at {call_idx} to {max_importance.value} importance")
 
     def _extract_task_id(self, message: Dict[str, Any]) -> Optional[str]:
         """Extract task identifier from message content."""
-        # Simple implementation - could be enhanced with more sophisticated parsing
         content = str(message.get('content', ''))
         
-        # Look for task patterns
-        if 'task:' in content.lower():
-            parts = content.lower().split('task:')
-            if len(parts) > 1:
-                task_part = parts[1].split()[0] if parts[1].split() else None
-                return f"task_{task_part}" if task_part else None
+        # Look for task patterns - be more careful with parsing
+        content_lower = content.lower()
+        
+        # Pattern 1: "task: something"
+        if 'task:' in content_lower:
+            try:
+                parts = content_lower.split('task:')
+                if len(parts) > 1:
+                    task_part = parts[1].strip().split()[0] if parts[1].strip().split() else None
+                    if task_part:
+                        # Clean up the task part - remove quotes and special characters
+                        task_part = task_part.strip('"\'.,!?;')
+                        return f"task_{task_part}" if task_part else None
+            except Exception:
+                pass
+        
+        # Pattern 2: Look for common task-related keywords
+        task_keywords = ['plan', 'create', 'generate', 'build', 'design', 'analyze']
+        for keyword in task_keywords:
+            if keyword in content_lower:
+                return f"task_{keyword}"
         
         return None
     
     def _is_tool_error_response(self, message: Dict[str, Any]) -> bool:
         """
-        Check if a tool response message represents an error.
+        Enhanced helper to determine if a tool response is an error.
+        This method can be overridden by developers for custom error detection.
         
         Args:
             message: The tool response message to check
             
         Returns:
-            True if the message represents a tool error
+            True if the message represents an error, False otherwise
         """
         if message.get('role') != 'tool':
             return False
         
-        content = str(message.get('content', '')).strip().lower()
+        content = str(message.get('content', '')).lower()
         
-        # Check if content starts with "error"
-        return content.startswith('error')
+        # Check if content starts with common error prefixes
+        error_prefixes = [
+            'error', 'error executing', 'failed to', 'unable to',
+            'could not', 'cannot', 'exception:', 'traceback',
+            'error', 'failed', 'exception', 'traceback', 'invalid',
+            'not found', 'permission denied', 'timeout', 'connection refused',
+            'unauthorized', 'forbidden', 'bad request', 'internal server error',
+            'syntax error', 'runtime error', 'type error', 'value error',
+            'file not found', 'access denied', 'network error'
+        ]
+        
+        # Check for error indicators
+        
+        has_error_prefix = any(content.startswith(prefix) for prefix in error_prefixes)
+        
+        return has_error_prefix 
+    
+    def is_tool_error_response(self, message: Dict[str, Any]) -> bool:
+        """
+        Public method for error detection that can be easily overridden by developers.
+        
+        Args:
+            message: The tool response message to check
+            
+        Returns:
+            True if the message represents an error, False otherwise
+        """
+        return self._is_tool_error_response(message)
     
     def calculate_memory_pressure(self, total_tokens: int) -> float:
         """Calculate current memory pressure (0.0 to 1.0)."""
@@ -767,12 +1140,22 @@ class MemoryManager:
         Optimize message list by removing/summarizing less important messages
         while preserving tool call/response pairs and maintaining conversation integrity.
         """
+        # RULE: If there are less than 10 messages in the history, there is no need to remove any pairs
+        if len(messages) < 10:
+            total_tokens = sum(self._count_message_tokens(msg, token_counter) for msg in messages)
+            return messages, {
+                'action': 'none', 
+                'reason': 'less_than_10_messages',
+                'message_count': len(messages),
+                'total_tokens': total_tokens
+            }
+        
         # Ensure metadata is up to date
         if len(messages) > len(self.message_metadata):
             for i in range(len(self.message_metadata), len(messages)):
                 msg = messages[i]
                 token_count = self._count_message_tokens(msg, token_counter)
-                self.add_message_metadata(msg, token_count, i, len(messages))
+                self.add_message_metadata(msg, token_count, i, len(messages), messages)
         
         if len(messages) != len(self.message_metadata):
             self.logger.warning("Message count mismatch with metadata")
@@ -791,9 +1174,15 @@ class MemoryManager:
         context = {'memory_pressure': memory_pressure}
         
         self.logger.info(f"Memory optimization needed. Total tokens: {total_tokens}, pressure: {memory_pressure:.2f}")
+        self.logger.debug(f"DEBUG: Memory optimization starting with {len(messages)} messages")
         
+        # Debug: Log all message importance levels
+        for i, (msg, meta) in enumerate(zip(messages, self.message_metadata)):
+            self.logger.debug(f"DEBUG: Message {i} ({meta.message_type.value}): {meta.importance.value} - {str(msg.get('content', ''))[:50]}...")
+    
         # Find all tool call/response pairs
         tool_call_pairs = self._tool_call_pairs
+        self.logger.debug(f"DEBUG: Found {len(tool_call_pairs)} tool call pairs to preserve")
         
         # Create sets of message indices that must be kept together
         protected_indices = set()
@@ -859,6 +1248,14 @@ class MemoryManager:
                     tokens_saved += group_tokens
                     messages_removed += len(group_indices)
                     self.logger.debug(f"Removed tool call pair group: {group_indices}")
+                    
+                    # Debug: Log why the group was removed
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        reason = "low importance" if not should_keep_group else "token limit exceeded"
+                        group_importance_str = max(group_importance_values, key=lambda x: 
+                            {"critical": 4, "high": 3, "medium": 2, "low": 1, "temp": 0}.get(x, 0)
+                        )
+                        self.logger.debug(f"DEBUG: Removed group {group_indices} - reason: {reason}, importance: {group_importance_str}, tokens: {group_tokens}")
                 
                 # Skip to after this group
                 i = max(group_indices) + 1
@@ -870,11 +1267,13 @@ class MemoryManager:
                 optimized_messages.append(msg)
                 optimized_metadata.append(meta)
                 tokens_used += msg_tokens
+                self.logger.debug(f"DEBUG: Kept protected message {i} ({meta.importance.value}): {str(msg.get('content', ''))[:50]}...")
             elif self.strategy.should_keep_message(msg, meta, context) and tokens_used + msg_tokens <= self.target_tokens:
                 # Keep this message
                 optimized_messages.append(msg)
                 optimized_metadata.append(meta)
                 tokens_used += msg_tokens
+                self.logger.debug(f"DEBUG: Kept message {i} ({meta.importance.value}) - strategy decision: {str(msg.get('content', ''))[:50]}...")
             elif self.enable_summarization and meta.can_summarize and not meta.summary:
                 # Try to summarize
                 summary = self._summarize_message(msg)
@@ -893,14 +1292,19 @@ class MemoryManager:
                     tokens_used += summary_tokens
                     tokens_saved += msg_tokens - summary_tokens
                     messages_summarized += 1
+                    self.logger.debug(f"DEBUG: Summarized message {i} ({meta.importance.value}) - saved {msg_tokens - summary_tokens} tokens")
                 else:
                     # Skip this message
                     tokens_saved += msg_tokens
                     messages_removed += 1
+                    self.logger.debug(f"DEBUG: Removed message {i} ({meta.importance.value}) - summary too large: {str(msg.get('content', ''))[:50]}...")
             else:
                 # Skip this message
                 tokens_saved += msg_tokens
                 messages_removed += 1
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    reason = "strategy decision" if not self.strategy.should_keep_message(msg, meta, context) else "token limit"
+                    self.logger.debug(f"DEBUG: Removed message {i} ({meta.importance.value}) - reason: {reason}: {str(msg.get('content', ''))[:50]}...")
             
             i += 1
         
@@ -992,6 +1396,21 @@ class MemoryManager:
         self.message_metadata = kept_metadata
         self.logger.info(f"Cleared {removed_count} completed task metadata entries")
     
+    def mark_task_completed(self, task_id: str) -> None:
+        """Mark a task as completed and update related message metadata."""
+        if task_id in self.active_tasks:
+            self.active_tasks.remove(task_id)
+            self.completed_tasks.add(task_id)
+            
+            # Update metadata for messages related to this task
+            for metadata in self.message_metadata:
+                if metadata.part_of_task == task_id:
+                    metadata.task_completed = True
+            
+            self.logger.info(f"Marked task '{task_id}' as completed")
+        else:
+            self.logger.warning(f"Task '{task_id}' not found in active tasks")
+    
     def to_dict(self) -> Dict[str, Any]:
         """Serialize memory manager state."""
         return {
@@ -1016,7 +1435,8 @@ class MemoryManager:
                     'can_summarize': meta.can_summarize,
                     'summary': meta.summary,
                     'related_messages': meta.related_messages,
-                    'tool_call_id': meta.tool_call_id
+                    'tool_call_id': meta.tool_call_id,
+                    'function_name': meta.function_name
                 }
                 for meta in self.message_metadata
             ]
@@ -1059,9 +1479,67 @@ class MemoryManager:
                 can_summarize=meta['can_summarize'],
                 summary=meta['summary'],
                 related_messages=meta['related_messages'],
-                tool_call_id=meta['tool_call_id']
+                tool_call_id=meta['tool_call_id'],
+                function_name=meta['function_name']
             )
             for meta in metadata_list
         ]
         
         return manager
+
+    def recalculate_importance_levels(self, messages: Optional[List[Dict[str, Any]]] = None) -> None:
+        """
+        Public method to trigger recalculation of importance levels.
+        This should be called when conversation structure changes significantly.
+        
+        Args:
+            messages: Optional list of messages for validation (not used in calculation)
+        """
+        self._recalculate_all_importance_levels()
+        self.logger.info("Manually triggered importance level recalculation")
+
+    def _is_last_user_message(self, index: int, total_messages: int) -> bool:
+        """
+        Check if the current message is the last user message in the conversation.
+        
+        Args:
+            index: Position of the current message
+            total_messages: Total number of messages in the conversation
+            
+        Returns:
+            True if this is the last user message
+        """
+        # During initial calculation, we might not have all metadata yet
+        # Check if there are any user messages after this one in metadata
+        for i in range(index + 1, min(len(self.message_metadata), total_messages)):
+            if i < len(self.message_metadata):
+                if self.message_metadata[i].message_type == MessageType.USER_QUERY:
+                    return False  # Found a later user message
+        
+        # If we don't have metadata beyond current index, this might be during initial calculation
+        # In that case, we can't determine if it's the last user message, so assume it's not
+        if len(self.message_metadata) <= index + 1:
+            return False
+        
+        # No user messages found after this one, so this is the last
+        return True
+
+    def _is_last_user_message_in_array(self, index: int, messages: List[Dict[str, Any]]) -> bool:
+        """
+        Check if the current message is the last user message by looking at the messages array.
+        This is used during initial calculation when metadata might not be complete.
+        
+        Args:
+            index: Position of the current message
+            messages: Array of messages to check
+            
+        Returns:
+            True if this is the last user message
+        """
+        # Check if there are any user messages after this one in the messages array
+        for i in range(index + 1, len(messages)):
+            if messages[i].get('role') == 'user':
+                return False  # Found a later user message
+        
+        # No user messages found after this one, so this is the last
+        return True
