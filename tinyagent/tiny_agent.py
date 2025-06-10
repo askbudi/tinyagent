@@ -604,6 +604,7 @@ class TinyAgent:
                 
                 response = await litellm.acompletion(
                     model=self.model,
+                    api_key=self.api_key,
                     messages=self.messages,
                     tools=all_tools,
                     tool_choice="auto",
