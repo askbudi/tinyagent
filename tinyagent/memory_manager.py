@@ -555,29 +555,56 @@ class MemoryManager:
                 return pair_idx
         return None
     
-    def categorize_message(self, message: Dict[str, Any], index: int, total_messages: int, messages: Optional[List[Dict[str, Any]]] = None) -> Tuple[MessageType, MessageImportance]:
+    def add_message_metadata(
+        self, 
+        message: Dict[str, Any], 
+        token_count: int, 
+        position: int, 
+        total_messages: int,
+        messages: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
         """
-        Categorize a message and determine its base importance.
+        Add metadata for a message and update tool call pairs.
         
         Args:
-            message: The message to categorize
-            index: Position of the message in the conversation
+            message: The message to add metadata for
+            token_count: Number of tokens in the message
+            position: Position of the message in the conversation
             total_messages: Total number of messages in the conversation
             messages: Optional array of messages for better user message detection
-            
-        Returns:
-            Tuple of (MessageType, MessageImportance)
         """
-        role = message.get('role', '')
-        content = message.get('content', '')
+        # Extract tool call ID and function name first (before categorization)
+        tool_call_id = None
+        function_name = None
         
-        # Determine message type
+        if message.get('role') == 'tool':
+            # Tool response - get tool_call_id directly
+            tool_call_id = message.get('tool_call_id')
+            function_name = message.get('name')  # Tool responses have 'name' field
+        elif message.get('role') == 'assistant' and message.get('tool_calls'):
+            # Tool call - for multi-tool-call messages, we'll store the first one in metadata
+            # but _update_tool_call_pairs will handle all tool calls by examining the actual message
+            tool_calls = message.get('tool_calls', [])
+            if tool_calls:
+                tool_call_id = tool_calls[0].get('id')
+                # Extract function name from the tool call
+                function_data = tool_calls[0].get('function', {})
+                function_name = function_data.get('name')
+        
+        # Create preliminary metadata without importance calculation
+        is_error = self._is_tool_error_response(message)
+        task_id = self._extract_task_id(message)
+        if task_id:
+            self.active_tasks.add(task_id)
+        
+        # Determine message type first
+        role = message.get('role', '')
         if role == 'system':
             msg_type = MessageType.SYSTEM
         elif role == 'user':
             msg_type = MessageType.USER_QUERY
         elif role == 'tool':
-            if self._is_tool_error_response(message):
+            if is_error:
                 msg_type = MessageType.TOOL_ERROR
             else:
                 msg_type = MessageType.TOOL_RESPONSE
@@ -598,65 +625,10 @@ class MemoryManager:
         else:
             msg_type = MessageType.ASSISTANT_RESPONSE
         
-        # Calculate message pairs for dynamic importance
-        message_pairs = self._calculate_message_pairs()
-        
-        # Calculate dynamic importance
-        importance = self._calculate_dynamic_importance(message, index, total_messages, message_pairs, messages)
-        
-        return msg_type, importance
-    
-    def add_message_metadata(
-        self, 
-        message: Dict[str, Any], 
-        token_count: int, 
-        position: int, 
-        total_messages: int,
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> None:
-        """
-        Add metadata for a message and update tool call pairs.
-        
-        Args:
-            message: The message to add metadata for
-            token_count: Number of tokens in the message
-            position: Position of the message in the conversation
-            total_messages: Total number of messages in the conversation
-            messages: Optional array of messages for better user message detection
-        """
-        # Categorize the message
-        msg_type, base_importance = self.categorize_message(message, position, total_messages, messages)
-        
-        # Extract task information
-        task_id = self._extract_task_id(message)
-        if task_id:
-            self.active_tasks.add(task_id)
-        
-        # Check if this is an error message
-        is_error = self._is_tool_error_response(message)
-        
-        # Extract tool call ID - handle both tool calls and tool responses
-        tool_call_id = None
-        function_name = None
-        
-        if message.get('role') == 'tool':
-            # Tool response - get tool_call_id directly
-            tool_call_id = message.get('tool_call_id')
-            function_name = message.get('name')  # Tool responses have 'name' field
-        elif message.get('role') == 'assistant' and message.get('tool_calls'):
-            # Tool call - for multi-tool-call messages, we'll store the first one in metadata
-            # but _update_tool_call_pairs will handle all tool calls by examining the actual message
-            tool_calls = message.get('tool_calls', [])
-            if tool_calls:
-                tool_call_id = tool_calls[0].get('id')
-                # Extract function name from the tool call
-                function_data = tool_calls[0].get('function', {})
-                function_name = function_data.get('name')
-        
-        # Create metadata
+        # Create metadata with temporary LOW importance (will be recalculated)
         metadata = MessageMetadata(
             message_type=msg_type,
-            importance=base_importance,  # Will be recalculated dynamically
+            importance=MessageImportance.LOW,  # Temporary, will be recalculated
             created_at=time.time(),
             token_count=token_count,
             is_error=is_error,
@@ -672,16 +644,21 @@ class MemoryManager:
         # Add to metadata list
         self.message_metadata.append(metadata)
         
-        # Update tool call pairs
+        # Update tool call pairs FIRST (before importance calculation)
         self._update_tool_call_pairs(messages)
         
         # Update resolved errors
         self._update_resolved_errors()
         
+        # Now calculate the correct importance with updated pairs
+        message_pairs = self._calculate_message_pairs()
+        correct_importance = self._calculate_dynamic_importance(message, position, total_messages, message_pairs, messages)
+        metadata.importance = correct_importance
+        
         # Synchronize tool call pair importance levels
         self._synchronize_tool_call_pairs()
         
-        self.logger.debug(f"Added metadata for message at position {position}: {msg_type.value}, {base_importance.value}, tool_call_id: {tool_call_id}")
+        self.logger.debug(f"Added metadata for message at position {position}: {msg_type.value}, {correct_importance.value}, tool_call_id: {tool_call_id}")
 
     def _update_tool_call_pairs(self, messages: Optional[List[Dict[str, Any]]] = None) -> None:
         """Update the tool call pairs mapping based on current messages."""
@@ -845,8 +822,11 @@ class MemoryManager:
         """Calculate logical message pairs for positional importance."""
         pairs = []
         i = 0
+        max_iterations = len(self.message_metadata) * 2  # Safety limit
+        iterations = 0
         
-        while i < len(self.message_metadata):
+        while i < len(self.message_metadata) and iterations < max_iterations:
+            iterations += 1
             metadata = self.message_metadata[i]
             
             # System message stands alone
@@ -869,17 +849,36 @@ class MemoryManager:
                 i += 1
                 continue
             
-            # Tool call with response
-            if metadata.tool_call_id and metadata.tool_call_id in self._tool_call_pairs:
+            # Tool call with response - with safety checks
+            if (metadata.tool_call_id and 
+                metadata.tool_call_id in self._tool_call_pairs):
+                
                 call_idx, response_idx = self._tool_call_pairs[metadata.tool_call_id]
-                if i == call_idx:
+                
+                # Safety checks to prevent infinite loops
+                if (call_idx >= 0 and response_idx >= 0 and 
+                    call_idx < len(self.message_metadata) and 
+                    response_idx < len(self.message_metadata) and
+                    i == call_idx and response_idx > call_idx):
+                    
                     pairs.append((call_idx, response_idx))
                     i = response_idx + 1
+                    continue
+                else:
+                    # Invalid pair data, treat as single message
+                    self.logger.warning(f"Invalid tool call pair data for {metadata.tool_call_id}: call_idx={call_idx}, response_idx={response_idx}, current_i={i}")
+                    pairs.append((i, i))
+                    i += 1
                     continue
             
             # Single message
             pairs.append((i, i))
             i += 1
+        
+        # Safety check for infinite loop detection
+        if iterations >= max_iterations:
+            self.logger.error(f"Infinite loop detected in _calculate_message_pairs! Breaking after {iterations} iterations. Current index: {i}, metadata count: {len(self.message_metadata)}")
+            # Return what we have so far
         
         return pairs
 
@@ -1137,8 +1136,13 @@ class MemoryManager:
         token_counter: callable
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Optimize message list by removing/summarizing less important messages
-        while preserving tool call/response pairs and maintaining conversation integrity.
+        Optimize message list by removing/summarizing ONLY less important messages.
+        
+        CONSERVATIVE PRINCIPLE: 
+        - NEVER remove CRITICAL, HIGH, or USER messages
+        - Only remove LOW, TEMP, and MEDIUM messages when absolutely necessary
+        - If we can't get under the limit without removing important messages, accept going over the limit
+        - Preserve conversation integrity and tool call/response pairs
         """
         # RULE: If there are less than 10 messages in the history, there is no need to remove any pairs
         if len(messages) < 10:
@@ -1179,137 +1183,210 @@ class MemoryManager:
         # Debug: Log all message importance levels
         for i, (msg, meta) in enumerate(zip(messages, self.message_metadata)):
             self.logger.debug(f"DEBUG: Message {i} ({meta.message_type.value}): {meta.importance.value} - {str(msg.get('content', ''))[:50]}...")
-    
+        
         # Find all tool call/response pairs
         tool_call_pairs = self._tool_call_pairs
         self.logger.debug(f"DEBUG: Found {len(tool_call_pairs)} tool call pairs to preserve")
         
-        # Create sets of message indices that must be kept together
-        protected_indices = set()
+        # STEP 1: Identify messages that are NEVER removable
+        never_remove_indices = set()
+        
+        for i, meta in enumerate(self.message_metadata):
+            # Never remove these importance levels
+            if meta.importance in [MessageImportance.CRITICAL, MessageImportance.HIGH]:
+                never_remove_indices.add(i)
+            # Never remove user messages regardless of importance 
+            elif meta.message_type == MessageType.USER_QUERY:
+                never_remove_indices.add(i)
+        
+        # STEP 2: Identify tool call pairs and their combined importance
         pair_groups = {}  # Maps group_id to set of indices
+        pair_importance = {}  # Maps group_id to max importance in pair
         
         for tool_call_id, (call_idx, response_idx) in tool_call_pairs.items():
             group_id = f"pair_{tool_call_id}"
             pair_groups[group_id] = {call_idx, response_idx}
-            protected_indices.update({call_idx, response_idx})
+            
+            # Determine pair importance (use the higher of the two)
+            call_meta = self.message_metadata[call_idx] if call_idx < len(self.message_metadata) else None
+            response_meta = self.message_metadata[response_idx] if response_idx < len(self.message_metadata) else None
+            
+            if call_meta and response_meta:
+                importance_order = [
+                    MessageImportance.TEMP,
+                    MessageImportance.LOW,
+                    MessageImportance.MEDIUM,
+                    MessageImportance.HIGH,
+                    MessageImportance.CRITICAL
+                ]
+                call_priority = importance_order.index(call_meta.importance)
+                response_priority = importance_order.index(response_meta.importance)
+                max_importance = importance_order[max(call_priority, response_priority)]
+                pair_importance[group_id] = max_importance
+                
+                # If either message in the pair is never removable, protect the whole pair
+                if call_idx in never_remove_indices or response_idx in never_remove_indices:
+                    never_remove_indices.update({call_idx, response_idx})
         
-        # Always protect system message and recent critical messages
+        # STEP 3: Identify candidates for removal (only LOW, TEMP, MEDIUM)
+        removal_candidates = []  # List of (index, metadata, tokens, is_pair_group)
+        
         for i, meta in enumerate(self.message_metadata):
-            if meta.importance == MessageImportance.CRITICAL:
-                protected_indices.add(i)
+            if i in never_remove_indices:
+                continue  # Skip never-removable messages
+                
+            # Only consider LOW, TEMP, and MEDIUM for removal
+            if meta.importance in [MessageImportance.LOW, MessageImportance.TEMP, MessageImportance.MEDIUM]:
+                msg_tokens = self._count_message_tokens(messages[i], token_counter)
+                
+                # Check if this message is part of a tool call pair
+                is_in_pair = False
+                pair_group_id = None
+                for group_id, indices in pair_groups.items():
+                    if i in indices:
+                        is_in_pair = True
+                        pair_group_id = group_id
+                        break
+                
+                if is_in_pair:
+                    # For pairs, only add if we haven't already added this pair and it's removable
+                    if (pair_group_id not in [candidate[4] for candidate in removal_candidates if len(candidate) > 4] and
+                        pair_importance.get(pair_group_id, MessageImportance.MEDIUM) in [MessageImportance.LOW, MessageImportance.TEMP, MessageImportance.MEDIUM]):
+                        
+                        # Calculate tokens for the entire pair
+                        pair_indices = sorted(pair_groups[pair_group_id])
+                        pair_tokens = sum(self._count_message_tokens(messages[idx], token_counter) for idx in pair_indices)
+                        removal_candidates.append((min(pair_indices), meta, pair_tokens, True, pair_group_id, pair_indices))
+                else:
+                    # Single message
+                    removal_candidates.append((i, meta, msg_tokens, False))
         
-        # Build optimized message list
-        optimized_messages = []
-        optimized_metadata = []
-        tokens_used = 0
+        # STEP 4: Sort candidates by priority (remove least important first)
+        def get_removal_priority(candidate):
+            importance_priority = {
+                MessageImportance.TEMP: 0,
+                MessageImportance.LOW: 1,
+                MessageImportance.MEDIUM: 2
+            }
+            return importance_priority.get(candidate[1].importance, 999)
+        
+        removal_candidates.sort(key=get_removal_priority)
+        
+        self.logger.debug(f"DEBUG: Found {len(removal_candidates)} removal candidates")
+        
+        # STEP 5: Try to optimize by removing candidates until we're under the target
+        optimized_messages = messages.copy()
+        optimized_metadata = self.message_metadata.copy()
         tokens_saved = 0
         messages_removed = 0
         messages_summarized = 0
+        removed_indices = set()
         
-        # Process messages in order, respecting pairs and importance
-        i = 0
-        while i < len(messages):
-            msg = messages[i]
-            meta = self.message_metadata[i]
-            msg_tokens = self._count_message_tokens(msg, token_counter)
-            
-            # Check if this message is part of a protected pair
-            current_group = None
-            for group_id, indices in pair_groups.items():
-                if i in indices:
-                    current_group = group_id
-                    break
-            
-            if current_group:
-                # Process the entire group
-                group_indices = sorted(pair_groups[current_group])
-                group_messages = [messages[idx] for idx in group_indices]
-                group_metadata = [self.message_metadata[idx] for idx in group_indices]
-                group_tokens = sum(self._count_message_tokens(messages[idx], token_counter) for idx in group_indices)
+        current_tokens = total_tokens
+        
+        for candidate in removal_candidates:
+            if current_tokens <= self.target_tokens:
+                break  # We've achieved our target
                 
-                # Check if we should keep this group
-                group_importance_values = [self.message_metadata[idx].importance.value for idx in group_indices]
-                group_importance = max(group_importance_values, key=lambda x: 
-                    {"critical": 4, "high": 3, "medium": 2, "low": 1, "temp": 0}.get(x, 0)
-                )
-                should_keep_group = (
-                    group_importance == MessageImportance.CRITICAL or
-                    self.strategy.should_keep_message(msg, meta, context)
-                )
+            if len(candidate) == 6:  # This is a pair
+                _, meta, pair_tokens, is_pair, pair_group_id, pair_indices = candidate
                 
-                if should_keep_group and tokens_used + group_tokens <= self.target_tokens:
-                    # Keep the entire group
-                    optimized_messages.extend(group_messages)
-                    optimized_metadata.extend(group_metadata)
-                    tokens_used += group_tokens
-                    self.logger.debug(f"Kept tool call pair group: {group_indices}")
-                else:
-                    # Skip the entire group
-                    tokens_saved += group_tokens
-                    messages_removed += len(group_indices)
-                    self.logger.debug(f"Removed tool call pair group: {group_indices}")
+                # Check if we can summarize instead of removing
+                if self.enable_summarization and meta.can_summarize and not meta.summary:
+                    # Try summarizing the pair
+                    summary_tokens = 0
+                    can_summarize_pair = True
                     
-                    # Debug: Log why the group was removed
-                    if self.logger.isEnabledFor(logging.DEBUG):
-                        reason = "low importance" if not should_keep_group else "token limit exceeded"
-                        group_importance_str = max(group_importance_values, key=lambda x: 
-                            {"critical": 4, "high": 3, "medium": 2, "low": 1, "temp": 0}.get(x, 0)
-                        )
-                        self.logger.debug(f"DEBUG: Removed group {group_indices} - reason: {reason}, importance: {group_importance_str}, tokens: {group_tokens}")
-                
-                # Skip to after this group
-                i = max(group_indices) + 1
-                continue
-            
-            # Single message processing
-            if i in protected_indices:
-                # Always keep protected messages
-                optimized_messages.append(msg)
-                optimized_metadata.append(meta)
-                tokens_used += msg_tokens
-                self.logger.debug(f"DEBUG: Kept protected message {i} ({meta.importance.value}): {str(msg.get('content', ''))[:50]}...")
-            elif self.strategy.should_keep_message(msg, meta, context) and tokens_used + msg_tokens <= self.target_tokens:
-                # Keep this message
-                optimized_messages.append(msg)
-                optimized_metadata.append(meta)
-                tokens_used += msg_tokens
-                self.logger.debug(f"DEBUG: Kept message {i} ({meta.importance.value}) - strategy decision: {str(msg.get('content', ''))[:50]}...")
-            elif self.enable_summarization and meta.can_summarize and not meta.summary:
-                # Try to summarize
-                summary = self._summarize_message(msg)
-                summary_tokens = token_counter(summary)
-                
-                if tokens_used + summary_tokens <= self.target_tokens:
-                    # Create summarized message
-                    summarized_msg = msg.copy()
-                    summarized_msg['content'] = summary
-                    optimized_messages.append(summarized_msg)
+                    for idx in pair_indices:
+                        if idx not in removed_indices:
+                            summary = self._summarize_message(messages[idx])
+                            summary_tokens += token_counter(summary)
                     
-                    # Update metadata
-                    meta.summary = summary
-                    optimized_metadata.append(meta)
+                    if summary_tokens < pair_tokens and current_tokens - pair_tokens + summary_tokens <= self.target_tokens:
+                        # Summarize the pair
+                        for idx in pair_indices:
+                            if idx not in removed_indices:
+                                summary = self._summarize_message(messages[idx])
+                                optimized_messages[idx] = messages[idx].copy()
+                                optimized_messages[idx]['content'] = summary
+                                optimized_metadata[idx].summary = summary
+                        
+                        tokens_saved += pair_tokens - summary_tokens
+                        messages_summarized += len(pair_indices)
+                        current_tokens = current_tokens - pair_tokens + summary_tokens
+                        self.logger.debug(f"DEBUG: Summarized tool call pair {pair_indices} - saved {pair_tokens - summary_tokens} tokens")
+                        continue
+                
+                # Remove the entire pair
+                for idx in pair_indices:
+                    if idx not in removed_indices:
+                        removed_indices.add(idx)
+                
+                tokens_saved += pair_tokens
+                messages_removed += len(pair_indices)
+                current_tokens -= pair_tokens
+                self.logger.debug(f"DEBUG: Removed tool call pair {pair_indices} ({meta.importance.value}) - saved {pair_tokens} tokens")
+                
+            else:  # Single message
+                i, meta, msg_tokens, is_pair = candidate
+                
+                if i in removed_indices:
+                    continue  # Already removed as part of a pair
+                
+                # Try summarization first
+                if self.enable_summarization and meta.can_summarize and not meta.summary:
+                    summary = self._summarize_message(messages[i])
+                    summary_tokens = token_counter(summary)
                     
-                    tokens_used += summary_tokens
-                    tokens_saved += msg_tokens - summary_tokens
-                    messages_summarized += 1
-                    self.logger.debug(f"DEBUG: Summarized message {i} ({meta.importance.value}) - saved {msg_tokens - summary_tokens} tokens")
-                else:
-                    # Skip this message
-                    tokens_saved += msg_tokens
-                    messages_removed += 1
-                    self.logger.debug(f"DEBUG: Removed message {i} ({meta.importance.value}) - summary too large: {str(msg.get('content', ''))[:50]}...")
-            else:
-                # Skip this message
+                    if summary_tokens < msg_tokens and current_tokens - msg_tokens + summary_tokens <= self.target_tokens:
+                        # Summarize this message
+                        optimized_messages[i] = messages[i].copy()
+                        optimized_messages[i]['content'] = summary
+                        optimized_metadata[i].summary = summary
+                        
+                        tokens_saved += msg_tokens - summary_tokens
+                        messages_summarized += 1
+                        current_tokens = current_tokens - msg_tokens + summary_tokens
+                        self.logger.debug(f"DEBUG: Summarized message {i} ({meta.importance.value}) - saved {msg_tokens - summary_tokens} tokens")
+                        continue
+                
+                # Remove the message
+                removed_indices.add(i)
                 tokens_saved += msg_tokens
                 messages_removed += 1
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    reason = "strategy decision" if not self.strategy.should_keep_message(msg, meta, context) else "token limit"
-                    self.logger.debug(f"DEBUG: Removed message {i} ({meta.importance.value}) - reason: {reason}: {str(msg.get('content', ''))[:50]}...")
+                current_tokens -= msg_tokens
+                self.logger.debug(f"DEBUG: Removed message {i} ({meta.importance.value}) - saved {msg_tokens} tokens")
+        
+        # STEP 6: Build final optimized message list
+        if removed_indices:
+            final_messages = []
+            final_metadata = []
             
-            i += 1
+            for i, (msg, meta) in enumerate(zip(optimized_messages, optimized_metadata)):
+                if i not in removed_indices:
+                    final_messages.append(msg)
+                    final_metadata.append(meta)
+            
+            optimized_messages = final_messages
+            optimized_metadata = final_metadata
         
         # Update metadata list
         self.message_metadata = optimized_metadata
+        
+        # STEP 7: Check if we achieved meaningful optimization
+        final_tokens = sum(self._count_message_tokens(msg, token_counter) for msg in optimized_messages)
+        
+        if final_tokens > self.target_tokens and tokens_saved == 0:
+            # We couldn't optimize without removing important messages - return original
+            self.message_metadata = self.message_metadata  # Restore original metadata
+            self.logger.info(f"Memory optimization skipped: Cannot reduce tokens without removing important messages. "
+                           f"Current: {total_tokens}, Target: {self.target_tokens}")
+            return messages, {
+                'action': 'none', 
+                'reason': 'cannot_optimize_without_removing_important_messages',
+                'total_tokens': total_tokens,
+                'target_tokens': self.target_tokens
+            }
         
         # Update statistics
         self.stats['messages_removed'] += messages_removed
@@ -1320,21 +1397,44 @@ class MemoryManager:
         optimization_info = {
             'action': 'optimized',
             'original_tokens': total_tokens,
-            'final_tokens': tokens_used,
+            'final_tokens': final_tokens,
             'tokens_saved': tokens_saved,
             'messages_removed': messages_removed,
             'messages_summarized': messages_summarized,
             'memory_pressure_before': memory_pressure,
-            'memory_pressure_after': self.calculate_memory_pressure(tokens_used),
-            'tool_pairs_preserved': len(tool_call_pairs)
+            'memory_pressure_after': self.calculate_memory_pressure(final_tokens),
+            'tool_pairs_preserved': len([pair for pair in tool_call_pairs.values() 
+                                       if not any(idx in removed_indices for idx in pair)]),
+            'important_messages_preserved': len([i for i in never_remove_indices if i not in removed_indices])
         }
         
         self.logger.info(f"Memory optimization completed: {optimization_info}")
         
         # Final validation: ensure tool call integrity is maintained
-        final_pairs = self._tool_call_pairs
-        if len(final_pairs) != len([pair for pair in tool_call_pairs.values() if all(idx < len(optimized_messages) for idx in pair)]):
-            self.logger.warning("Tool call/response integrity may be compromised")
+        remaining_tool_pairs = {}
+        for tool_call_id, (call_idx, response_idx) in tool_call_pairs.items():
+            # Map old indices to new indices
+            new_call_idx = None
+            new_response_idx = None
+            new_idx = 0
+            
+            for old_idx in range(len(messages)):
+                if old_idx not in removed_indices:
+                    if old_idx == call_idx:
+                        new_call_idx = new_idx
+                    if old_idx == response_idx:
+                        new_response_idx = new_idx
+                    new_idx += 1
+            
+            if new_call_idx is not None and new_response_idx is not None:
+                remaining_tool_pairs[tool_call_id] = (new_call_idx, new_response_idx)
+        
+        # Update tool call pairs with new indices
+        self._tool_call_pairs = remaining_tool_pairs
+        
+        if len(remaining_tool_pairs) != len([pair for pair in tool_call_pairs.values() 
+                                           if not any(idx in removed_indices for idx in pair)]):
+            self.logger.warning("Tool call/response integrity may be compromised during index remapping")
         
         return optimized_messages, optimization_info
     

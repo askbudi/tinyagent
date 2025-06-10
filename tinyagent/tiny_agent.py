@@ -162,7 +162,9 @@ class TinyAgent:
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
-        persist_tool_configs: bool = False
+        persist_tool_configs: bool = False,
+        # Network timeout for LiteLLM calls
+        llm_timeout: float = 120.0
     ):
         """
         Initialize the Tiny Agent.
@@ -176,9 +178,13 @@ class TinyAgent:
             metadata: Optional metadata for the session
             storage: Optional storage backend for persistence
             persist_tool_configs: Whether to persist tool configurations
+            llm_timeout: Timeout in seconds for LiteLLM calls (default: 60.0)
         """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
+        
+        # Network timeout configuration
+        self.llm_timeout = llm_timeout
         
         # Instead of a single MCPClient, keep multiple:
         self.mcp_clients: List[MCPClient] = []
@@ -610,13 +616,18 @@ class TinyAgent:
                 # Notify LLM start
                 await self._run_callbacks("llm_start", messages=self.messages, tools=all_tools)
                 
-                response = await litellm.acompletion(
-                    model=self.model,
-                    messages=self.messages,
-                    tools=all_tools,
-                    tool_choice="auto",
-                    temperature=self.temperature,
-                    **self.model_kwargs
+                # Apply timeout to LiteLLM call to prevent hanging on network issues
+                response = await asyncio.wait_for(
+                    litellm.acompletion(
+                        model=self.model,
+                        api_key=self.api_key,
+                        messages=self.messages,
+                        tools=all_tools,
+                        tool_choice="auto",
+                        temperature=self.temperature,
+                        **self.model_kwargs
+                    ),
+                    timeout=self.llm_timeout
                 )
                 
                 # Notify LLM end
@@ -746,6 +757,11 @@ class TinyAgent:
                     await self._run_callbacks("agent_end", result=result)
                     return result
                 
+            except asyncio.TimeoutError as e:
+                self.logger.error(f"Network timeout in agent loop after {self.llm_timeout} seconds")
+                result = f"Network timeout: The AI service is currently unavailable. Please try again later."
+                await self._run_callbacks("agent_end", result=result, error="Network timeout")
+                return result
             except Exception as e:
                 self.logger.error(f"Error in agent loop: {str(e)}")
                 result = f"Error: {str(e)}"
@@ -891,7 +907,8 @@ class TinyAgent:
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
-        persist_tool_configs: bool = False
+        persist_tool_configs: bool = False,
+        llm_timeout: float = 60.0
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
@@ -908,7 +925,8 @@ class TinyAgent:
             session_id=session_id,
             metadata=metadata,
             storage=storage,
-            persist_tool_configs=persist_tool_configs
+            persist_tool_configs=persist_tool_configs,
+            llm_timeout=llm_timeout
         )
         if agent._needs_session_load:
             await agent.init_async()
@@ -980,13 +998,14 @@ async def run_example():
         agent_logger.error("Please set the OPENAI_API_KEY environment variable")
         return
     
-    # Initialize the agent with our logger
+    # Initialize the agent with our logger and network timeout
     agent = await TinyAgent.create(
         model="gpt-4.1-mini",
         api_key=api_key,
         logger=agent_logger,
         session_id="my-session-123",
-        storage=None
+        storage=None,
+        llm_timeout=60.0  # 60 second timeout for LLM calls
     )
     
     # Add the Rich UI callback with our logger
