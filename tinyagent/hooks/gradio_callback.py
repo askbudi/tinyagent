@@ -157,7 +157,7 @@ class GradioCallback:
 
                     # Add to detailed tool call info if not already present by ID
                     if not any(tc['id'] == tool_id for tc in self.tool_call_details):
-                        self.tool_call_details.append({
+                        tool_detail = {
                             "id": tool_id,
                             "name": tool_name,
                             "arguments": formatted_args,
@@ -166,7 +166,25 @@ class GradioCallback:
                             "result_token_count": 0,
                             "timestamp": current_time,
                             "result_timestamp": None
-                        })
+                        }
+                        
+                        # Special handling for run_python tool - extract code_lines
+                        if tool_name == "run_python":
+                            try:
+                                # Look for code in different possible field names
+                                code_content = None
+                                for field in ['code_lines', 'code', 'script', 'python_code']:
+                                    if field in parsed_args:
+                                        code_content = parsed_args[field]
+                                        break
+                                
+                                if code_content is not None:
+                                    tool_detail["code_lines"] = code_content
+                                    self.logger.debug(f"Stored code content for run_python tool {tool_id}")
+                            except Exception as e:
+                                self.logger.error(f"Error processing run_python arguments: {e}")
+                        
+                        self.tool_call_details.append(tool_detail)
                         self.logger.debug(f"Added tool call detail: {tool_name} (ID: {tool_id}, Tokens: {token_count})")
                         
                         # If this is a final_answer or ask_question tool, we'll handle it specially later
@@ -386,19 +404,127 @@ class GradioCallback:
                 f"O {self.token_usage['completion_tokens']} | " +
                 f"Total {self.token_usage['total_tokens']}")
 
+    def _format_run_python_tool(self, tool_detail: dict) -> str:
+        """
+        Format run_python tool call with proper markdown formatting for code and output.
+        
+        Args:
+            tool_detail: Tool call detail dictionary
+            
+        Returns:
+            Formatted markdown string
+        """
+        tool_name = tool_detail["name"]
+        tool_id = tool_detail.get("id", "unknown")
+        code_lines = tool_detail.get("code_lines", [])
+        result = tool_detail.get("result")
+        input_tokens = tool_detail.get("token_count", 0)
+        output_tokens = tool_detail.get("result_token_count", 0)
+        total_tokens = input_tokens + output_tokens
+        
+        # Start building the formatted content
+        parts = []
+        
+        # Handle different code_lines formats
+        combined_code = ""
+        if code_lines:
+            if isinstance(code_lines, list):
+                # Standard case: list of code lines
+                combined_code = "\n".join(code_lines)
+            elif isinstance(code_lines, str):
+                # Handle case where code_lines is a single string
+                combined_code = code_lines
+            else:
+                # Convert other types to string
+                combined_code = str(code_lines)
+        
+        # If we have code content, show it as Python code block
+        if combined_code.strip():
+            parts.append(f"**Python Code:**\n```python\n{combined_code}\n```")
+        else:
+            # Try to extract code from arguments as fallback
+            try:
+                args_dict = json.loads(tool_detail['arguments'])
+                # Check for different possible code field names
+                code_content = None
+                for field in ['code_lines', 'code', 'script', 'python_code']:
+                    if field in args_dict:
+                        code_content = args_dict[field]
+                        break
+                
+                if code_content:
+                    if isinstance(code_content, list):
+                        combined_code = "\n".join(code_content)
+                    else:
+                        combined_code = str(code_content)
+                    
+                    if combined_code.strip():
+                        parts.append(f"**Python Code:**\n```python\n{combined_code}\n```")
+                    else:
+                        # Final fallback to showing raw arguments
+                        parts.append(f"**Input Arguments:**\n```json\n{tool_detail['arguments']}\n```")
+                else:
+                    # No code found, show raw arguments
+                    parts.append(f"**Input Arguments:**\n```json\n{tool_detail['arguments']}\n```")
+            except (json.JSONDecodeError, KeyError):
+                # If we can't parse arguments, show them as-is
+                parts.append(f"**Input Arguments:**\n```json\n{tool_detail['arguments']}\n```")
+        
+        # Add the output if available
+        if result is not None:
+            parts.append(f"\n**Output:** ({output_tokens} tokens)")
+            
+            try:
+                # Try to parse result as JSON for better formatting
+                result_json = json.loads(result)
+                parts.append(f"```json\n{json.dumps(result_json, indent=2)}\n```")
+            except (json.JSONDecodeError, TypeError):
+                # Handle plain text result
+                if isinstance(result, str):
+                    # Replace escaped newlines with actual newlines for better readability
+                    formatted_result = result.replace("\\n", "\n")
+                    parts.append(f"```\n{formatted_result}\n```")
+                else:
+                    parts.append(f"```\n{str(result)}\n```")
+        else:
+            parts.append(f"\n**Status:** ⏳ Processing...")
+        
+        # Add token information
+        parts.append(f"\n**Token Usage:** {total_tokens} total ({input_tokens} input + {output_tokens} output)")
+        
+        return "\n".join(parts)
+
     async def interact_with_agent(self, user_input_processed, chatbot_history):
         """
         Process user input, interact with the agent, and stream updates to Gradio UI.
         Each tool call and response will be shown as a separate message.
         """
         self.logger.info(f"Starting interaction for: {user_input_processed[:50]}...")
+        
+        # Reset state for new interaction to prevent showing previous content
+        self.thinking_content = ""
+        self.tool_calls = []
+        self.tool_call_details = []
+        self.assistant_text_responses = []
+        self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.is_running = True
+        self.last_update_yield_time = 0
+        self.logger.debug("Reset interaction state for new conversation turn")
  
         # 1. Add user message to chatbot history as a ChatMessage
         chatbot_history.append(
             ChatMessage(role="user", content=user_input_processed)
         )
  
-        # Initial yield to show user message
+        # 2. Add typing indicator immediately after user message
+        typing_message = ChatMessage(
+            role="assistant", 
+            content="🤔 Thinking..."
+        )
+        chatbot_history.append(typing_message)
+        typing_message_index = len(chatbot_history) - 1
+ 
+        # Initial yield to show user message and typing indicator
         yield chatbot_history, self._get_token_usage_text()
  
         # Kick off the agent in the background
@@ -407,7 +533,7 @@ class GradioCallback:
  
         displayed_tool_calls = set()
         displayed_text_responses = set()
-        thinking_message_added = False
+        thinking_removed = False
         update_interval = 0.3
         min_yield_interval = 0.2
         
@@ -420,6 +546,14 @@ class GradioCallback:
                 sorted_tool_details = sorted(self.tool_call_details, key=lambda x: x.get("timestamp", 0))
                 sorted_text_responses = sorted(self.assistant_text_responses, key=lambda x: x.get("timestamp", 0))
  
+                # Remove typing indicator once we have actual content to show
+                if not thinking_removed and (sorted_text_responses or sorted_tool_details):
+                    # Remove the typing indicator
+                    if typing_message_index < len(chatbot_history):
+                        chatbot_history.pop(typing_message_index)
+                        thinking_removed = True
+                        self.logger.debug("Removed typing indicator")
+ 
                 # → New assistant text chunks
                 for resp in sorted_text_responses:
                     content = resp["content"]
@@ -430,22 +564,6 @@ class GradioCallback:
                         displayed_text_responses.add(content)
                         self.logger.debug(f"Added new text response: {content[:50]}...")
  
-                # → Thinking placeholder (optional)
-                if self.show_thinking and self.thinking_content \
-                   and not thinking_message_added \
-                   and not displayed_text_responses:
-                    thinking_msg = (
-                        "Working on it...\n\n"
-                        "```"
-                        f"{self.thinking_content}"
-                        "```"
-                    )
-                    chatbot_history.append(
-                        ChatMessage(role="assistant", content=thinking_msg)
-                    )
-                    thinking_message_added = True
-                    self.logger.debug("Added thinking message")
- 
                 # → Show tool calls with "working..." status when they start
                 if self.show_tool_calls:
                     for tool in sorted_tool_details:
@@ -455,11 +573,18 @@ class GradioCallback:
                         # If we haven't displayed this tool call yet
                         if tid not in displayed_tool_calls and tid not in in_progress_tool_calls:
                             in_tok = tool.get("token_count", 0)
+                            
                             # Create "working..." message for this tool call
-                            body = (
-                                f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
-                                f"**Output:** ⏳ Working...\n"
-                            )
+                            if tname == "run_python":
+                                # Special formatting for run_python
+                                body = self._format_run_python_tool(tool)
+                            else:
+                                # Standard formatting for other tools
+                                body = (
+                                    f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
+                                    f"**Output:** ⏳ Working...\n"
+                                )
+                            
                             # Add to chatbot with "working" status
                             msg = ChatMessage(
                                 role="assistant",
@@ -483,10 +608,16 @@ class GradioCallback:
                             tot_tok = in_tok + out_tok
                             
                             # Update the message with completed status and result
-                            body = (
-                                f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
-                                f"**Output:** ({out_tok} tokens)\n```json\n{tool['result']}\n```\n"
-                            )
+                            if tname == "run_python":
+                                # Special formatting for completed run_python
+                                body = self._format_run_python_tool(tool)
+                            else:
+                                # Standard formatting for other completed tools
+                                body = (
+                                    f"**Input Arguments:**\n```json\n{tool['arguments']}\n```\n\n"
+                                    f"**Output:** ({out_tok} tokens)\n```json\n{tool['result']}\n```\n"
+                                )
+                            
                             # Update the existing message
                             chatbot_history[pos] = ChatMessage(
                                 role="assistant",
@@ -507,6 +638,11 @@ class GradioCallback:
                 self.last_update_yield_time = now
  
             await asyncio.sleep(update_interval)
+ 
+        # Remove typing indicator if still present when agent finishes
+        if not thinking_removed and typing_message_index < len(chatbot_history):
+            chatbot_history.pop(typing_message_index)
+            self.logger.debug("Removed typing indicator at end")
  
         # once the agent_task is done, add its final result if any
         try:
@@ -772,8 +908,8 @@ class GradioCallback:
         return app
 
     def clear_conversation(self):
-        """Clear the conversation history (UI + agent), reset state, and update UI."""
-        self.logger.debug("Clearing conversation (UI + agent)")
+        """Clear the conversation history (UI + agent), reset state completely, and update UI."""
+        self.logger.debug("Clearing conversation completely (UI + agent with new session)")
         # Reset UI‐side state
         self.thinking_content = ""
         self.tool_calls = []
@@ -782,13 +918,52 @@ class GradioCallback:
         self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.is_running = False
 
-        # Also clear the agent's conversation history
+        # Completely reset the agent state with a new session
         try:
-            if self.current_agent and hasattr(self.current_agent, "clear_conversation"):
-                self.current_agent.clear_conversation()
-                self.logger.debug("Cleared TinyAgent internal conversation.")
+            if self.current_agent:
+                # Generate a new session ID for a fresh start
+                import uuid
+                new_session_id = str(uuid.uuid4())
+                self.current_agent.session_id = new_session_id
+                self.logger.debug(f"Generated new session ID: {new_session_id}")
+                
+                # Reset all agent state
+                # 1. Clear conversation history (preserve system message)
+                if self.current_agent.messages:
+                    system_msg = self.current_agent.messages[0]
+                    self.current_agent.messages = [system_msg]
+                else:
+                    # Rebuild default system prompt if missing
+                    default_system_prompt = (
+                        "You are a helpful AI assistant with access to a variety of tools. "
+                        "Use the tools when appropriate to accomplish tasks. "
+                        "If a tool you need isn't available, just say so."
+                    )
+                    self.current_agent.messages = [{
+                        "role": "system",
+                        "content": default_system_prompt
+                    }]
+                
+                # 2. Reset session state
+                self.current_agent.session_state = {}
+                
+                # 3. Reset token usage in metadata
+                if hasattr(self.current_agent, 'metadata') and 'usage' in self.current_agent.metadata:
+                    self.current_agent.metadata['usage'] = {
+                        "prompt_tokens": 0, 
+                        "completion_tokens": 0, 
+                        "total_tokens": 0
+                    }
+                
+                # 4. Reset any other accumulated state that might affect behavior
+                self.current_agent.is_running = False
+                
+                # 5. Reset session load flag to prevent any deferred loading of old session
+                self.current_agent._needs_session_load = False
+                
+                self.logger.info(f"Completely reset TinyAgent with new session: {new_session_id}")
         except Exception as e:
-            self.logger.error(f"Failed to clear TinyAgent conversation: {e}")
+            self.logger.error(f"Failed to reset TinyAgent completely: {e}")
 
         # Return cleared UI components: empty chat + fresh token usage
         return [], self._get_token_usage_text()
