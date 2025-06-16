@@ -86,7 +86,22 @@ def _run_python(code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dic
 
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
         try:
-            output = exec(code, updated_globals, updated_locals)
+            # Merge all variables into globals to avoid scoping issues with generator expressions
+            # When exec() is called with both globals and locals, generator expressions can't
+            # access local variables. By using only globals, everything runs in global scope.
+            merged_globals = updated_globals.copy()
+            merged_globals.update(updated_locals)
+            
+            # Execute with only globals - this fixes generator expression scoping issues
+            output = exec(code, merged_globals)
+            
+            # Update both dictionaries with any new variables created during execution
+            for key, value in merged_globals.items():
+                if key not in updated_globals and key not in updated_locals:
+                    updated_locals[key] = value
+                elif key in updated_locals or key not in updated_globals:
+                    updated_locals[key] = value
+                updated_globals[key] = value
         except Exception:
             # Capture the full traceback as a string
             error_traceback = traceback.format_exc()

@@ -19,7 +19,11 @@ Inspired by:
 - [Build your own Tiny Agent](https://askdev.ai/github/askbudi/tinyagent)
 
 ## Overview
-This is a tiny agent that uses MCP and LiteLLM to interact with a model. You have full control over the agent, you can add any tools you like from MCP and extend the agent using its event system.
+This is a tiny agent framework that uses MCP and LiteLLM to interact with language models. You have full control over the agent, you can add any tools you like from MCP and extend the agent using its event system.
+
+**Two Main Components:**
+- **TinyAgent**: Core agent with MCP tool integration and extensible hooks
+- **TinyCodeAgent**: Specialized agent for secure Python code execution with pluggable providers
 
 ## Installation
 
@@ -31,6 +35,10 @@ pip install tinyagent-py
 # Install with all optional dependencies
 pip install tinyagent-py[all]
 
+# Install with Code Agent support
+pip install tinyagent-py[code]
+
+
 # Install with PostgreSQL support
 pip install tinyagent-py[postgres]
 
@@ -40,12 +48,20 @@ pip install tinyagent-py[sqlite]
 # Install with Gradio UI support
 pip install tinyagent-py[gradio]
 
+
+
+
+
 ```
 
 ### Using uv
 ```bash
 # Basic installation
 uv pip install tinyagent-py
+
+# Install with Code Agent support
+uv pip install tinyagent-py[code]
+
 
 # Install with PostgreSQL support
 uv pip install tinyagent-py[postgres]
@@ -59,11 +75,11 @@ uv pip install tinyagent-py[gradio]
 # Install with all optional dependencies
 uv pip install tinyagent-py[all]
 
-# Install with development tools
-uv pip install tinyagent-py[dev]
 ```
 
 ## Usage
+
+### TinyAgent (Core Agent)
 [![AskDev.AI | Chat with TinyAgent](https://img.shields.io/badge/AskDev.AI-Chat_with_TinyAgent-blue?style=flat-square)](https://askdev.ai/github/askbudi/tinyagent)
 
 
@@ -99,6 +115,114 @@ I need accommodation in Toronto between 15th to 20th of May. Give me 5 options f
 """)
 await test_agent(task, model="gpt-4.1-mini")
 ```
+
+## TinyCodeAgent - Code Execution Made Easy
+
+TinyCodeAgent is a specialized agent for executing Python code with enterprise-grade reliability and extensible execution providers.
+
+### Quick Start with TinyCodeAgent
+
+```python
+import asyncio
+from tinyagent import TinyCodeAgent
+
+async def main():
+    # Initialize with minimal configuration
+    agent = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        api_key="your-openai-api-key"
+    )
+    
+    try:
+        # Ask the agent to solve a coding problem
+        result = await agent.run("Calculate the factorial of 10 and explain the algorithm")
+        print(result)
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### TinyCodeAgent with Gradio UI
+
+Launch a complete web interface for interactive code execution:
+
+```python
+from tinyagent.code_agent.example import run_example
+import asyncio
+
+# Run the full example with Gradio interface
+asyncio.run(run_example())
+```
+
+### Key Features
+
+- **🔒 Secure Execution**: Sandboxed Python code execution using Modal.com or other providers
+- **🔧 Extensible Providers**: Switch between Modal, Docker, local execution, or cloud functions
+- **🎯 Built for Enterprise**: Production-ready with proper logging, error handling, and resource cleanup  
+- **📁 File Support**: Upload and process files through the Gradio interface
+- **🛠️ Custom Tools**: Add your own tools and functions easily
+- **📊 Session Persistence**: Code state persists across executions
+
+### Provider System
+
+TinyCodeAgent uses a pluggable provider system - change execution backends with minimal code changes:
+
+```python
+# Use Modal (default) - great for production
+agent = TinyCodeAgent(provider="modal")
+
+# Future providers (coming soon)
+# agent = TinyCodeAgent(provider="docker")
+# agent = TinyCodeAgent(provider="local") 
+# agent = TinyCodeAgent(provider="lambda")
+```
+
+### Example Use Cases
+
+**Web Scraping:**
+```python
+result = await agent.run("""
+What are trending spaces on huggingface today?
+""")
+# Agent will create a python tool to request HuggingFace API and find trending spaces
+```
+
+**Use code to solve a task:**
+```python
+response = await agent.run(dedent("""
+Suggest me 13 tags for my Etsy Listing, each tag should be multiworded and maximum 20 characters. Each word should be used only once in the whole corpus, And tags should cover different ways people are searching for the product on Etsy.
+- You should use your coding abilities to check your answer pass the criteria and continue your job until you get to the answer.
+                                
+My Product is **Wedding Invitation Set of 3, in sage green color, with a gold foil border.**
+"""),max_turns=20)
+
+print(response)
+# LLM is not good at this task, counting characters, avoid duplicates, but with the power of code, tiny model like gpt-4.1-mini can do it without any problem.
+```
+
+
+### Configuration Options
+
+```python
+from tinyagent import TinyCodeAgent
+from tinyagent.code_agent.tools import get_weather, get_traffic
+
+# Full configuration example
+agent = TinyCodeAgent(
+    model="gpt-4.1-mini",
+    api_key="your-api-key", 
+    provider="modal",
+    tools=[get_weather, get_traffic],
+    authorized_imports=["requests", "pandas", "numpy"],
+    provider_config={
+        "pip_packages": ["requests", "pandas"],
+        "sandbox_name": "my-code-sandbox"
+    }
+)
+```
+
+For detailed documentation, see the [TinyCodeAgent README](tinyagent/code_agent/README.md).
 
 ## How the TinyAgent Hook System Works
 
