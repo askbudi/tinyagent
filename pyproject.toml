@@ -9,8 +9,8 @@ exclude = ["public", "public.*"]
 
 [project]
 name = "tinyagent-py"
-version = "0.0.8"
-description = "Tiny Agent with MCP Client and Extendable Hooks, Tiny but powerful"
+version = "0.0.9"
+description = "TinyAgent with MCP Client, Code Agent (Thinking, Planning, and Executing in Python), and Extendable Hooks, Tiny but powerful"
 readme = "README.md"
 authors = [
   {name="Mahdi Golchin", email="golchin@askdev.ai"}
@@ -41,10 +41,21 @@ sqlite = [
 gradio = [
   "gradio>=3.50.0"
 ]
+code = [
+  "jinja2",
+  "pyyaml",
+  "cloudpickle",
+  "modal"
+]
 all = [
   "asyncpg>=0.27.0",
   "aiosqlite>=0.18.0",
-  "gradio>=3.50.0"
+  "gradio>=3.50.0",
+  "jinja2",
+  "pyyaml",
+  "cloudpickle",
+  "modal"
+
 ]
 [project.urls]
 "Homepage" = "https://github.com/askbudi/tinyagent"
