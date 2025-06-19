@@ -71,7 +71,7 @@ def _run_python(code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dic
         try:
             module = __import__(module_name)
             updated_globals[module_name] = module
-            print(f"✓ {module_name} module loaded successfully")
+            #print(f"✓ {module_name} module loaded successfully")
         except ImportError:
             print(f"⚠️  Warning: {module_name} module not available")
     

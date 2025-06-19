@@ -30,6 +30,7 @@ class TinyCodeAgent:
         provider_config: Optional[Dict[str, Any]] = None,
         user_variables: Optional[Dict[str, Any]] = None,
         pip_packages: Optional[List[str]] = None,
+        local_execution: bool = False,
         **agent_kwargs
     ):
         """
@@ -47,6 +48,8 @@ class TinyCodeAgent:
             provider_config: Configuration for the code execution provider
             user_variables: Dictionary of variables to make available in Python environment
             pip_packages: List of additional Python packages to install in Modal environment
+            local_execution: If True, uses Modal's .local() method for local execution. 
+                                If False, uses Modal's .remote() method for cloud execution (default: False)
             **agent_kwargs: Additional arguments passed to TinyAgent
         """
         self.model = model
@@ -58,6 +61,7 @@ class TinyCodeAgent:
         self.provider_config = provider_config or {}
         self.user_variables = user_variables or {}
         self.pip_packages = pip_packages or []
+        self.local_execution = local_execution
         
         # Create the code execution provider
         self.code_provider = self._create_provider(provider, self.provider_config)
@@ -98,6 +102,7 @@ class TinyCodeAgent:
             return ModalProvider(
                 log_manager=self.log_manager,
                 code_tools=self.code_tools,
+                local_execution=self.local_execution,
                 **final_config
             )
         else:
@@ -460,6 +465,7 @@ class TinyCodeAgent:
 async def run_example():
     """
     Example demonstrating TinyCodeAgent with both LLM tools and code tools.
+    Also shows how to use local vs remote execution.
     
     LLM tools: Available to the LLM for direct calling
     Code tools: Available in the Python execution environment
@@ -483,30 +489,56 @@ async def run_example():
             "count": len(data)
         }
     
-    # Create TinyCodeAgent with both types of tools
-    agent = TinyCodeAgent(
+    print("🚀 Testing TinyCodeAgent with REMOTE execution (Modal)")
+    # Create TinyCodeAgent with remote execution (default)
+    agent_remote = TinyCodeAgent(
         model="gpt-4.1-mini",
         tools=[search_web],  # LLM tools
         code_tools=[data_processor],  # Code tools
         user_variables={
             "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
-        }
+        },
+        local_execution=False  # Remote execution via Modal (default)
     )
     
     # Connect to MCP servers
-    await agent.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
-    await agent.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+    await agent_remote.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    await agent_remote.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
     
-    # Test the agent
-    response = await agent.run("""
-    I have some sample data. Please:
-    1. First, search for information about data analysis best practices
-    2. Then, use the data_processor tool in Python to analyze my sample_data
-    3. Create a simple visualization of the results
+    # Test the remote agent
+    response_remote = await agent_remote.run("""
+    I have some sample data. Please use the data_processor tool in Python to analyze my sample_data
+    and show me the results.
     """)
     
-    print("Agent Response:")
-    print(response)
+    print("Remote Agent Response:")
+    print(response_remote)
+    print("\n" + "="*80 + "\n")
+    
+    # Now test with local execution
+    print("🏠 Testing TinyCodeAgent with LOCAL execution")
+    agent_local = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        tools=[search_web],  # LLM tools
+        code_tools=[data_processor],  # Code tools
+        user_variables={
+            "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
+        },
+        local_execution=True  # Local execution
+    )
+    
+    # Connect to MCP servers
+    await agent_local.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    await agent_local.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+    
+    # Test the local agent
+    response_local = await agent_local.run("""
+    I have some sample data. Please use the data_processor tool in Python to analyze my sample_data
+    and show me the results.
+    """)
+    
+    print("Local Agent Response:")
+    print(response_local)
     
     # Demonstrate adding tools dynamically
     @tool(name="validator", description="Validate processed results")
@@ -514,16 +546,26 @@ async def run_example():
         """Validate that results make sense."""
         return all(key in results for key in ["mean", "max", "min", "count"])
     
-    # Add a new code tool
-    agent.add_code_tool(validator)
+    # Add a new code tool to both agents
+    agent_remote.add_code_tool(validator)
+    agent_local.add_code_tool(validator)
     
-    # Test again with the new tool
-    response2 = await agent.run("Now validate the previous analysis results using the validator tool.")
+    print("\n" + "="*80)
+    print("🔧 Testing with dynamically added tools")
     
-    print("\nSecond Response:")
-    print(response2)
+    # Test both agents with the new tool
+    validation_prompt = "Now validate the previous analysis results using the validator tool."
     
-    await agent.close()
+    response2_remote = await agent_remote.run(validation_prompt)
+    print("Remote Agent Validation Response:")
+    print(response2_remote)
+    
+    response2_local = await agent_local.run(validation_prompt)
+    print("Local Agent Validation Response:")
+    print(response2_local)
+    
+    await agent_remote.close()
+    await agent_local.close()
 
 
 if __name__ == "__main__":

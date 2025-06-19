@@ -33,6 +33,7 @@ class CodeExecutionProvider(ABC):
         self._globals_dict = kwargs.get("globals_dict", {})
         self._locals_dict = kwargs.get("locals_dict", {})
         self._user_variables = {}
+        self.code_tools_definitions = []
     
     @abstractmethod
     async def execute_python(
@@ -79,7 +80,7 @@ class CodeExecutionProvider(ABC):
         tools_str_list.append("\n\n")
         tools_str_list.append("###########</tools>###########\n")
         tools_str_list.append("\n\n")
-        self.default_python_codes.extend(tools_str_list)
+        self.code_tools_definitions.extend(tools_str_list)
     
     def set_user_variables(self, variables: Dict[str, Any]) -> None:
         """
