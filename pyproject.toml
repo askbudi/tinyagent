@@ -7,9 +7,12 @@ where = ["."]
 include = ["tinyagent*"]
 exclude = ["public", "public.*"]
 
+[tool.setuptools.package-data]
+tinyagent = ["prompts/*.yaml"]
+
 [project]
 name = "tinyagent-py"
-version = "0.0.9"
+version = "0.0.11"
 description = "TinyAgent with MCP Client, Code Agent (Thinking, Planning, and Executing in Python), and Extendable Hooks, Tiny but powerful"
 readme = "README.md"
 authors = [
