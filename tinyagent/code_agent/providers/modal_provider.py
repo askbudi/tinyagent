@@ -22,22 +22,57 @@ class ModalProvider(CodeExecutionProvider):
         log_manager,
         default_python_codes: Optional[List[str]] = None,
         code_tools: List[Dict[str, Any]] = None,
-        pip_packages: List[str] = None,
-        modal_secrets: Dict[str, Union[str, None]] = None,
+        pip_packages: List[str] | None = None,
+        default_packages: Optional[List[str]] = None,
+        apt_packages: Optional[List[str]] = None,
+        python_version: Optional[str] = None,
+        modal_secrets: Dict[str, Union[str, None]] | None = None,
         lazy_init: bool = True,
         sandbox_name: str = "tinycodeagent-sandbox",
         local_execution: bool = False,
         **kwargs
     ):
-        # Set up default packages
-        default_packages = [
-            "cloudpickle",
-            "requests", 
-            "tinyagent-py[all]",
-            "gradio",
-            "arize-phoenix-otel"
-        ]
-        final_packages = list(set(default_packages + (pip_packages or [])))
+        """Create a ModalProvider instance.
+
+        Additional keyword arguments (passed via **kwargs) are ignored by the
+        base class but accepted here for forward-compatibility.
+
+        Args:
+            default_packages: Base set of Python packages installed into the
+                sandbox image. If ``None`` a sane default list is used. The
+                final set of installed packages is the union of
+                ``default_packages`` and ``pip_packages``.
+            apt_packages: Debian/Ubuntu APT packages to install into the image
+                prior to ``pip install``. Defaults to an empty list.  Always
+                installed *in addition to* the basics required by TinyAgent
+                (git, curl, …) so you only need to specify the extras.
+            python_version: Python version used for the sandbox image. If
+                ``None`` the current interpreter version is used.
+        """
+
+        # Resolve default values ------------------------------------------------
+        if default_packages is None:
+            default_packages = [
+                "cloudpickle",
+                "requests",
+                "tinyagent-py[all]",
+                "gradio",
+                "arize-phoenix-otel",
+            ]
+
+        if apt_packages is None:
+            apt_packages = ["git", "curl", "nodejs", "npm"]
+
+        if python_version is None:
+            python_version = self.PYTHON_VERSION
+
+        # Keep references so callers can introspect / mutate later -------------
+        self.default_packages: List[str] = default_packages
+        self.apt_packages: List[str] = apt_packages
+        self.python_version: str = python_version
+
+        # ----------------------------------------------------------------------
+        final_packages = list(set(self.default_packages + (pip_packages or [])))
         
         super().__init__(
             log_manager=log_manager,
@@ -62,9 +97,14 @@ class ModalProvider(CodeExecutionProvider):
         execution_mode = "🏠 LOCAL" if self.local_execution else "☁️ REMOTE"
         print(f"{execution_mode} ModalProvider setting up Modal app")
         
-        agent_image = modal.Image.debian_slim(python_version=self.PYTHON_VERSION).pip_install(
-            *self.pip_packages
-        )
+        agent_image = modal.Image.debian_slim(python_version=self.python_version)
+
+        # Install APT packages first (if any were requested)
+        if self.apt_packages:
+            agent_image = agent_image.apt_install(*self.apt_packages)
+
+        # Then install pip packages (including the union of default + user)
+        agent_image = agent_image.pip_install(*self.pip_packages)
         
         self.app = modal.App(
             name=self.sandbox_name,
