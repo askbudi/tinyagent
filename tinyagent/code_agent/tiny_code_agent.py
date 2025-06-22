@@ -62,6 +62,7 @@ class TinyCodeAgent:
         self.user_variables = user_variables or {}
         self.pip_packages = pip_packages or []
         self.local_execution = local_execution
+        self.provider = provider  # Store provider type for reuse
         
         # Create the code execution provider
         self.code_provider = self._create_provider(provider, self.provider_config)
@@ -96,8 +97,13 @@ class TinyCodeAgent:
             config_pip_packages = config.get("pip_packages", [])
             final_pip_packages = list(set(self.pip_packages + config_pip_packages))
             
+            # Merge authorized_imports from both sources (direct parameter and provider_config)
+            config_authorized_imports = config.get("authorized_imports", [])
+            final_authorized_imports = list(set(self.authorized_imports + config_authorized_imports))
+            
             final_config = config.copy()
             final_config["pip_packages"] = final_pip_packages
+            final_config["authorized_imports"] = final_authorized_imports
             
             return ModalProvider(
                 log_manager=self.log_manager,
@@ -441,6 +447,69 @@ class TinyCodeAgent:
         """
         return self.pip_packages.copy()
     
+    def add_authorized_imports(self, imports: List[str]):
+        """
+        Add additional authorized imports to the execution environment.
+        
+        Args:
+            imports: List of import names to authorize
+        """
+        self.authorized_imports.extend(imports)
+        self.authorized_imports = list(set(self.authorized_imports))  # Remove duplicates
+        
+        # Update the provider with the new authorized imports
+        # This requires recreating the provider
+        print("⚠️  Warning: Adding authorized imports after initialization requires recreating the Modal environment.")
+        print("   For better performance, set authorized_imports during TinyCodeAgent initialization.")
+        
+        # Recreate the provider with new authorized imports
+        self.code_provider = self._create_provider(self.provider, self.provider_config)
+        
+        # Re-set user variables if they exist
+        if self.user_variables:
+            self.code_provider.set_user_variables(self.user_variables)
+        
+        # Rebuild system prompt to include new authorized imports
+        self.system_prompt = self._build_system_prompt()
+        # Update the agent's system prompt
+        self.agent.system_prompt = self.system_prompt
+    
+    def get_authorized_imports(self) -> List[str]:
+        """
+        Get a copy of current authorized imports.
+        
+        Returns:
+            List of authorized imports
+        """
+        return self.authorized_imports.copy()
+    
+    def remove_authorized_import(self, import_name: str):
+        """
+        Remove an authorized import.
+        
+        Args:
+            import_name: Import name to remove
+        """
+        if import_name in self.authorized_imports:
+            self.authorized_imports.remove(import_name)
+            
+            # Update the provider with the new authorized imports
+            # This requires recreating the provider
+            print("⚠️  Warning: Removing authorized imports after initialization requires recreating the Modal environment.")
+            print("   For better performance, set authorized_imports during TinyCodeAgent initialization.")
+            
+            # Recreate the provider with updated authorized imports
+            self.code_provider = self._create_provider(self.provider, self.provider_config)
+            
+            # Re-set user variables if they exist
+            if self.user_variables:
+                self.code_provider.set_user_variables(self.user_variables)
+            
+            # Rebuild system prompt to reflect updated authorized imports
+            self.system_prompt = self._build_system_prompt()
+            # Update the agent's system prompt
+            self.agent.system_prompt = self.system_prompt
+    
     async def close(self):
         """Clean up resources."""
         await self.code_provider.cleanup()
@@ -498,6 +567,7 @@ async def run_example():
         user_variables={
             "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
         },
+        authorized_imports=["tinyagent", "gradio", "requests", "numpy", "pandas"],  # Explicitly specify authorized imports
         local_execution=False  # Remote execution via Modal (default)
     )
     
@@ -524,6 +594,7 @@ async def run_example():
         user_variables={
             "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
         },
+        authorized_imports=["tinyagent", "gradio", "requests"],  # More restricted imports for local execution
         local_execution=True  # Local execution
     )
     
@@ -549,6 +620,18 @@ async def run_example():
     # Add a new code tool to both agents
     agent_remote.add_code_tool(validator)
     agent_local.add_code_tool(validator)
+    
+    # Demonstrate adding authorized imports dynamically
+    print("\n" + "="*80)
+    print("🔧 Testing with dynamically added authorized imports")
+    agent_remote.add_authorized_imports(["matplotlib", "seaborn"])
+    
+    # Test with visualization libraries
+    viz_prompt = "Create a simple plot of the sample_data and save it as a base64 encoded image string."
+    
+    response_viz = await agent_remote.run(viz_prompt)
+    print("Remote Agent Visualization Response:")
+    print(response_viz)
     
     print("\n" + "="*80)
     print("🔧 Testing with dynamically added tools")

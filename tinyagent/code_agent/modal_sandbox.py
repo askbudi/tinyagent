@@ -63,6 +63,7 @@ def create_sandbox(
     pip_install: Sequence[str] | None = None,
     image_name: str = "tinyagent-sandbox-image",
     app_name: str = "persistent-code-session",
+    force_build: bool = False,
     **sandbox_kwargs,
 ) -> Tuple[modal.Sandbox, modal.App]:
     """Create (or lookup) a `modal.Sandbox` pre-configured for code execution.
@@ -99,7 +100,7 @@ def create_sandbox(
 
     # Build image -----------------------------------------------------------
     agent_image = (
-        modal.Image.debian_slim(python_version=python_version)
+        modal.Image.debian_slim(python_version=python_version,force_build=force_build)
         .apt_install(*apt_packages)
         .pip_install(*full_pip_list)
     )
@@ -196,6 +197,7 @@ class SandboxSession:
         modal_secrets: modal.Secret,
         *,
         timeout: int = 5 * 60,
+        
         **create_kwargs,
     ) -> None:
         self.modal_secrets = modal_secrets

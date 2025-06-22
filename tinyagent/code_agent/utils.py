@@ -1,6 +1,7 @@
 import sys
 import cloudpickle
 from typing import Dict, Any
+from .safety import validate_code_safety
 
 
 def clean_response(resp: Dict[str, Any]) -> Dict[str, Any]:
@@ -40,7 +41,13 @@ def make_session_blob(ns: dict) -> bytes:
     return cloudpickle.dumps(clean)
 
 
-def _run_python(code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dict[str, Any] = None):
+def _run_python(
+    code: str,
+    globals_dict: Dict[str, Any] | None = None,
+    locals_dict: Dict[str, Any] | None = None,
+    authorized_imports: list[str] | None = None,
+    trusted_code: bool = False,
+):
     """
     Execute Python code in a controlled environment with proper error handling.
     
@@ -48,6 +55,8 @@ def _run_python(code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dic
         code: Python code to execute
         globals_dict: Global variables dictionary
         locals_dict: Local variables dictionary
+        authorized_imports: List of authorized imports that user code may access. Wildcards (e.g. "numpy.*") are supported. A value of None disables the allow-list and only blocks dangerous modules.
+        trusted_code: If True, skip security checks. Should only be used for framework code, tools, or default executed code.
         
     Returns:
         Dictionary containing execution results
@@ -56,16 +65,26 @@ def _run_python(code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dic
     import traceback
     import io
     import ast
-    
+    import builtins  # Needed for import hook
+
+    # ------------------------------------------------------------------
+    # 1. Static safety analysis – refuse code containing dangerous imports
+    # ------------------------------------------------------------------
+    validate_code_safety(code, authorized_imports=authorized_imports, trusted_code=trusted_code)
+
+
     # Make copies to avoid mutating the original parameters
     globals_dict = globals_dict or {}
     locals_dict = locals_dict or {}
     updated_globals = globals_dict.copy()
     updated_locals = locals_dict.copy()
     
-    # Pre-import essential modules into the global namespace
-    # This ensures they're available for imports inside functions
-    essential_modules = ['requests', 'json', 'os', 'sys', 'time', 'datetime', 're', 'random', 'math']
+    # Only pre-import a **minimal** set of safe modules so that common helper
+    # functions work out of the box without giving user code access to the
+    # full standard library.  Anything outside this list must be imported
+    # explicitly by the user – and will be blocked by the safety layer above
+    # if considered dangerous.
+    essential_modules = ['requests', 'json', 'time', 'datetime', 're', 'random', 'math','cloudpickle']
     
     for module_name in essential_modules:
         try:

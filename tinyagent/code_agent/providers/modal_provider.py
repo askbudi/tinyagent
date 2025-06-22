@@ -26,6 +26,7 @@ class ModalProvider(CodeExecutionProvider):
         default_packages: Optional[List[str]] = None,
         apt_packages: Optional[List[str]] = None,
         python_version: Optional[str] = None,
+        authorized_imports: list[str] | None = None,
         modal_secrets: Dict[str, Union[str, None]] | None = None,
         lazy_init: bool = True,
         sandbox_name: str = "tinycodeagent-sandbox",
@@ -48,6 +49,7 @@ class ModalProvider(CodeExecutionProvider):
                 (git, curl, …) so you only need to specify the extras.
             python_version: Python version used for the sandbox image. If
                 ``None`` the current interpreter version is used.
+            authorized_imports: Optional allow-list of modules the user code is permitted to import. Supports wildcard patterns (e.g. "pandas.*"). If ``None`` the safety layer blocks only the predefined dangerous modules.
         """
 
         # Resolve default values ------------------------------------------------
@@ -70,6 +72,7 @@ class ModalProvider(CodeExecutionProvider):
         self.default_packages: List[str] = default_packages
         self.apt_packages: List[str] = apt_packages
         self.python_version: str = python_version
+        self.authorized_imports = authorized_imports
 
         # ----------------------------------------------------------------------
         final_packages = list(set(self.default_packages + (pip_packages or [])))
@@ -89,6 +92,7 @@ class ModalProvider(CodeExecutionProvider):
         self.modal_secrets = modal.Secret.from_dict(self.secrets)
         self.app = None
         self._app_run_python = None
+        self.is_trusted_code = kwargs.get("trust_code", False)
         
         self._setup_modal_app()
         
@@ -164,18 +168,30 @@ class ModalProvider(CodeExecutionProvider):
         if self.executed_default_codes:
             print("✔️ default codes already executed")
             full_code = "\n".join(self.code_tools_definitions) +"\n\n"+code
+            # Code tools and default code are trusted, user code is not
         else:
             full_code = "\n".join(self.code_tools_definitions) +"\n\n"+ "\n".join(self.default_python_codes) + "\n\n" + code
             self.executed_default_codes = True
+            # First execution includes framework code which is trusted
         
         # Use Modal's native execution methods
         if self.local_execution:
-            # Use Modal's .local() method for local execution
-            return self._app_run_python.local(full_code, globals_dict or {}, locals_dict or {})
+            return self._app_run_python.local(
+                full_code,
+                globals_dict or {},
+                locals_dict or {},
+                self.authorized_imports,
+                self.is_trusted_code,
+            )
         else:
-            # Use Modal's .remote() method for remote execution
             with self.app.run():
-                return self._app_run_python.remote(full_code, globals_dict or {}, locals_dict or {})
+                return self._app_run_python.remote(
+                    full_code,
+                    globals_dict or {},
+                    locals_dict or {},
+                    self.authorized_imports,
+                    self.is_trusted_code,
+                )
     
     def _log_response(self, response: Dict[str, Any]):
         """Log the response from code execution."""
@@ -184,15 +200,18 @@ class ModalProvider(CodeExecutionProvider):
         print("#########################<printed_output>#########################")
         print(response["printed_output"])
         print("#########################</printed_output>#########################")
-        print("#########################<return_value>#########################")
-        print(response["return_value"])
-        print("#########################</return_value>#########################")
-        print("#########################<stderr>#########################")
-        print(response["stderr"])
-        print("#########################</stderr>#########################")
-        print("#########################<traceback>#########################")
-        print(response["error_traceback"])
-        print("#########################</traceback>#########################")
+        if response.get("return_value",None) not in [None,""]:
+            print("#########################<return_value>#########################")
+            print(response["return_value"])
+            print("#########################</return_value>#########################")
+        if response.get("stderr",None) not in [None,""]:
+            print("#########################<stderr>#########################")
+            print(response["stderr"])
+            print("#########################</stderr>#########################")
+        if response.get("error_traceback",None) not in [None,""]:
+            print("#########################<traceback>#########################")
+            print(response["error_traceback"])
+            print("#########################</traceback>#########################")
     
     async def cleanup(self):
         """Clean up Modal resources."""
