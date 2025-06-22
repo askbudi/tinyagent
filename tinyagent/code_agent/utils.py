@@ -1,7 +1,7 @@
 import sys
 import cloudpickle
-from typing import Dict, Any
-from .safety import validate_code_safety
+from typing import Dict, Any, List
+from .safety import validate_code_safety, function_safety_context
 
 
 def clean_response(resp: Dict[str, Any]) -> Dict[str, Any]:
@@ -45,7 +45,8 @@ def _run_python(
     code: str,
     globals_dict: Dict[str, Any] | None = None,
     locals_dict: Dict[str, Any] | None = None,
-    authorized_imports: list[str] | None = None,
+    authorized_imports: List[str] | None = None,
+    authorized_functions: List[str] | None = None,
     trusted_code: bool = False,
 ):
     """
@@ -56,6 +57,7 @@ def _run_python(
         globals_dict: Global variables dictionary
         locals_dict: Local variables dictionary
         authorized_imports: List of authorized imports that user code may access. Wildcards (e.g. "numpy.*") are supported. A value of None disables the allow-list and only blocks dangerous modules.
+        authorized_functions: List of authorized dangerous functions that user code may access. A value of None disables the allow-list and blocks all dangerous functions.
         trusted_code: If True, skip security checks. Should only be used for framework code, tools, or default executed code.
         
     Returns:
@@ -68,10 +70,10 @@ def _run_python(
     import builtins  # Needed for import hook
 
     # ------------------------------------------------------------------
-    # 1. Static safety analysis – refuse code containing dangerous imports
+    # 1. Static safety analysis – refuse code containing dangerous imports or functions
     # ------------------------------------------------------------------
-    validate_code_safety(code, authorized_imports=authorized_imports, trusted_code=trusted_code)
-
+    validate_code_safety(code, authorized_imports=authorized_imports, 
+                        authorized_functions=authorized_functions, trusted_code=trusted_code)
 
     # Make copies to avoid mutating the original parameters
     globals_dict = globals_dict or {}
@@ -112,7 +114,9 @@ def _run_python(
             merged_globals.update(updated_locals)
             
             # Execute with only globals - this fixes generator expression scoping issues
-            output = exec(code, merged_globals)
+            # Use the function_safety_context to block dangerous functions during execution
+            with function_safety_context(authorized_functions=authorized_functions, trusted_code=trusted_code):
+                output = exec(code, merged_globals)
             
             # Update both dictionaries with any new variables created during execution
             for key, value in merged_globals.items():

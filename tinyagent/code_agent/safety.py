@@ -15,6 +15,10 @@
 # 2.  Runtime patching of the built-in `__import__` hook so that *dynamic*
 #     imports carried out via `importlib` or `__import__(…)` are blocked at
 #     execution time as well.
+# 3.  Static AST inspection to detect calls to dangerous functions like `exec`,
+#     `eval`, `compile`, etc. that could be used to bypass security measures.
+# 4.  Runtime patching of built-in dangerous functions to prevent their use
+#     at execution time.
 #
 # The chosen approach keeps the TinyAgent runtime *fast* and *lean* while
 # still providing a reasonable first line of defence against obviously
@@ -25,12 +29,16 @@ from __future__ import annotations
 import ast
 import builtins
 import warnings
-from typing import Iterable, List, Set, Sequence
+from typing import Iterable, List, Set, Sequence, Any, Callable
+import contextlib
 
 __all__ = [
     "DANGEROUS_MODULES",
+    "DANGEROUS_FUNCTIONS",
+    "RUNTIME_BLOCKED_FUNCTIONS",
     "validate_code_safety",
     "install_import_hook",
+    "function_safety_context",
 ]
 
 # ---------------------------------------------------------------------------
@@ -58,6 +66,24 @@ DANGEROUS_MODULES: Set[str] = {
     "tempfile",
     "threading",
     "webbrowser",
+}
+
+# List of dangerous built-in functions that could be used to bypass security
+# measures or execute arbitrary code
+DANGEROUS_FUNCTIONS: Set[str] = {
+    "exec",
+    "eval",
+    "compile",
+    "__import__",
+    "open",
+    "input",
+    "breakpoint",
+}
+
+# Functions that should be blocked at runtime (a subset of DANGEROUS_FUNCTIONS)
+RUNTIME_BLOCKED_FUNCTIONS: Set[str] = {
+    "exec",
+    "eval",
 }
 
 # Essential modules that are always allowed, even in untrusted code
@@ -121,7 +147,151 @@ def _extract_module_roots(node: ast.AST) -> List[str]:
     return roots
 
 
-def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None = None, trusted_code: bool = False) -> None:
+def _check_for_dangerous_function_calls(tree: ast.AST, authorized_functions: Sequence[str] | None = None) -> Set[str]:
+    """
+    Check for calls to dangerous functions in the AST.
+    
+    Parameters
+    ----------
+    tree
+        The AST to check
+    authorized_functions
+        Optional white-list of dangerous functions that are allowed
+        
+    Returns
+    -------
+    Set[str]
+        Set of dangerous function names found in the code
+    """
+    dangerous_calls = set()
+    
+    # Convert authorized_functions to a set if it's not None
+    authorized_set = set(authorized_functions) if authorized_functions is not None else set()
+    
+    for node in ast.walk(tree):
+        # Check for direct function calls: func()
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            if func_name in DANGEROUS_FUNCTIONS and func_name not in authorized_set:
+                dangerous_calls.add(func_name)
+        
+        # Check for calls via string literals in exec/eval: exec("import os")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ["exec", "eval"]:
+            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                dangerous_calls.add(f"{node.func.id} with string literal")
+        
+        # Check for attribute access: builtins.exec()
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in DANGEROUS_FUNCTIONS:
+                if isinstance(node.func.value, ast.Name):
+                    module_name = node.func.value.id
+                    func_name = f"{module_name}.{node.func.attr}"
+                    if node.func.attr not in authorized_set:
+                        dangerous_calls.add(func_name)
+        
+        # Check for string manipulation that could be used to bypass security
+        # For example: e = "e" + "x" + "e" + "c"; e("import os")
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and isinstance(node.value, ast.BinOp):
+                    # Check if we're building a string that could be a dangerous function name
+                    potential_name = _extract_string_from_binop(node.value)
+                    if potential_name in DANGEROUS_FUNCTIONS:
+                        dangerous_calls.add(f"string manipulation to create '{potential_name}'")
+        
+        # Check for getattr(builtins, "exec") pattern
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr":
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                attr_name = node.args[1].value
+                if attr_name in DANGEROUS_FUNCTIONS and attr_name not in authorized_set:
+                    if isinstance(node.args[0], ast.Name):
+                        module_name = node.args[0].id
+                        dangerous_calls.add(f"getattr({module_name}, '{attr_name}')")
+    
+    return dangerous_calls
+
+
+def _extract_string_from_binop(node: ast.BinOp) -> str:
+    """
+    Attempt to extract a string from a binary operation node.
+    This helps detect string concatenation that builds dangerous function names.
+    
+    For example: "e" + "x" + "e" + "c" -> "exec"
+    
+    Parameters
+    ----------
+    node
+        The binary operation node
+        
+    Returns
+    -------
+    str
+        The extracted string, or empty string if not extractable
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    
+    if not isinstance(node, ast.BinOp):
+        return ""
+    
+    # Handle string concatenation
+    if isinstance(node.op, ast.Add):
+        left_str = _extract_string_from_binop(node.left)
+        right_str = _extract_string_from_binop(node.right)
+        return left_str + right_str
+    
+    return ""
+
+
+def _detect_string_obfuscation(tree: ast.AST) -> bool:
+    """
+    Detect common string obfuscation techniques that might be used to bypass security.
+    
+    Parameters
+    ----------
+    tree
+        The AST to check
+        
+    Returns
+    -------
+    bool
+        True if suspicious string manipulation is detected
+    """
+    suspicious_patterns = False
+    
+    for node in ast.walk(tree):
+        # Check for chr() usage to build strings
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "chr":
+            suspicious_patterns = True
+            break
+            
+        # Check for ord() usage in combination with string operations
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ord":
+            suspicious_patterns = True
+            break
+            
+        # Check for suspicious string joins with list comprehensions
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and 
+            node.func.attr == "join" and isinstance(node.args[0], ast.ListComp)):
+            suspicious_patterns = True
+            break
+            
+        # Check for base64 decoding
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and 
+            node.func.attr in ["b64decode", "b64encode", "b32decode", "b32encode", "b16decode", "b16encode"]):
+            suspicious_patterns = True
+            break
+            
+        # Check for string formatting that might be used to build dangerous code
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            suspicious_patterns = True
+            break
+            
+    return suspicious_patterns
+
+
+def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None = None, 
+                        authorized_functions: Sequence[str] | None = None, trusted_code: bool = False) -> None:
     """Static validation of user code.
 
     Parameters
@@ -133,6 +303,8 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
         *None* every module that is not in :pydata:`DANGEROUS_MODULES` is
         allowed.  Wildcards are supported – e.g. ``["numpy.*"]`` allows any
         sub-package of *numpy*.
+    authorized_functions
+        Optional white-list of dangerous functions that are allowed.
     trusted_code
         If True, skip security checks. This should only be used for code that is part of the
         framework, developer-provided tools, or default executed code.
@@ -195,6 +367,20 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
                 and _node.func.value.id == "builtins"
             ):
                 raise ValueError("Usage of builtins.__import__ is not allowed in untrusted code.")
+
+    # ------------------------------------------------------------------
+    # Detect calls to dangerous functions (e.g. exec, eval) in *untrusted* code
+    # ------------------------------------------------------------------
+    dangerous_calls = _check_for_dangerous_function_calls(tree, authorized_functions)
+    if dangerous_calls:
+        offenders = ", ".join(sorted(dangerous_calls))
+        raise ValueError(f"Usage of dangerous function(s) {offenders} is not allowed in untrusted code.")
+
+    # ------------------------------------------------------------------
+    # Detect string obfuscation techniques that might be used to bypass security
+    # ------------------------------------------------------------------
+    if _detect_string_obfuscation(tree):
+        raise ValueError("Suspicious string manipulation detected that could be used to bypass security.")
 
     if blocked:
         offenders = ", ".join(sorted(blocked))
@@ -288,3 +474,62 @@ def install_import_hook(
 
     builtins.__import__ = _safe_import  # type: ignore[assignment]
     setattr(builtins, "__tinyagent_import_hook_installed", True)
+
+
+# ---------------------------------------------------------------------------
+# Runtime function hook
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def function_safety_context(
+    *,
+    blocked_functions: Set[str] | None = None,
+    authorized_functions: Sequence[str] | None = None,
+    trusted_code: bool = False,
+):
+    """
+    Context manager for safely executing code with dangerous functions blocked.
+    
+    Parameters
+    ----------
+    blocked_functions
+        Set of function names to block. Defaults to RUNTIME_BLOCKED_FUNCTIONS.
+    authorized_functions
+        Optional white-list of dangerous functions that are allowed.
+    trusted_code
+        If True, skip security checks. This should only be used for code that is part of the
+        framework, developer-provided tools, or default executed code.
+    """
+    if trusted_code:
+        yield
+        return
+        
+    # Install the function hook
+    blocked_functions = blocked_functions or RUNTIME_BLOCKED_FUNCTIONS
+    
+    # Convert authorized_functions to a set if it's not None
+    authorized_set = set(authorized_functions) if authorized_functions is not None else set()
+    
+    # Store original functions
+    original_functions = {}
+    
+    # Replace dangerous functions with safe versions
+    for func_name in blocked_functions:
+        if hasattr(builtins, func_name) and func_name not in authorized_set:
+            original_functions[func_name] = getattr(builtins, func_name)
+            
+            # Create a closure to capture the function name
+            def make_safe_function(name):
+                def safe_function(*args, **kwargs):
+                    raise RuntimeError(f"Function '{name}' is blocked by TinyAgent safety policy")
+                return safe_function
+            
+            # Replace the function
+            setattr(builtins, func_name, make_safe_function(func_name))
+    
+    try:
+        yield
+    finally:
+        # Restore original functions
+        for func_name, original_func in original_functions.items():
+            setattr(builtins, func_name, original_func)
