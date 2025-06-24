@@ -843,13 +843,10 @@ class GradioCallback:
                             value=self._get_token_usage_text()
                         )
 
-                    # Footer
-                    gr.Markdown(
-                         "<div style='text-align: center; margin-top: 20px;'>"
-                        "Built with ❤️ by <a href='https://github.com/askbudi/tinyagent' target='_blank'>TinyAgent</a>"
-                        "<br>Start building your own AI agents with TinyAgent"
-                        "</div>"
-                    )
+                # Footer
+                gr.Markdown(
+                    "<div style='text-align: center; margin-top: 20px;'>Build your own AI Agent Today</div>"
+                )
 
                 # -- Right Chat Column (unchanged) --
                 with gr.Column(scale=3):
