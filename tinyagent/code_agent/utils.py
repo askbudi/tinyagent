@@ -116,22 +116,34 @@ def _run_python(
     #updated_globals['print'] = custom_print
     
     # Parse the code
-    tree = ast.parse(code, mode="exec")
-    compiled = compile(tree, filename="<ast>", mode="exec")
+    try:
+        tree = ast.parse(code, mode="exec")
+        compiled = compile(tree, filename="<ast>", mode="exec")
+    except SyntaxError as e:
+        # Return syntax error without executing
+        return {
+            "printed_output": "", 
+            "return_value": None, 
+            "stderr": "", 
+            "error_traceback": f"Syntax error: {str(e)}",
+            "updated_globals": updated_globals,
+            "updated_locals": updated_locals
+        }
+    
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()   
     # Execute with exception handling
     error_traceback = None
     output = None
 
+    # Merge all variables into globals to avoid scoping issues with generator expressions
+    # When exec() is called with both globals and locals, generator expressions can't
+    # access local variables. By using only globals, everything runs in global scope.
+    merged_globals = updated_globals.copy()
+    merged_globals.update(updated_locals)
+
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
         try:
-            # Merge all variables into globals to avoid scoping issues with generator expressions
-            # When exec() is called with both globals and locals, generator expressions can't
-            # access local variables. By using only globals, everything runs in global scope.
-            merged_globals = updated_globals.copy()
-            merged_globals.update(updated_locals)
-            
             # Add 'exec' to authorized_functions for internal use
             internal_authorized_functions = ['exec','eval']
             if authorized_functions is not None and not isinstance(authorized_functions, bool):
@@ -152,6 +164,18 @@ def _run_python(
         except Exception:
             # Capture the full traceback as a string
             error_traceback = traceback.format_exc()
+            
+            # CRITICAL FIX: Even when an exception occurs, we need to update the globals and locals
+            # with any variables that were successfully created/modified before the exception
+            for key, value in merged_globals.items():
+                # Skip special variables and modules
+                if key.startswith('__') or key in ['builtins', 'traceback', 'contextlib', 'io', 'ast', 'sys']:
+                    continue
+                    
+                # Update both dictionaries with the current state
+                if key in updated_locals or key not in updated_globals:
+                    updated_locals[key] = value
+                updated_globals[key] = value
 
     # Join all captured output
     #printed_output = ''.join(output_buffer)  

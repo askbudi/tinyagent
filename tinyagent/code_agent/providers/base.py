@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 from tinyagent.hooks.logging_manager import LoggingManager
+import cloudpickle
 
 
 class CodeExecutionProvider(ABC):
@@ -69,8 +70,6 @@ class CodeExecutionProvider(ABC):
         Args:
             tools: List of tool objects to add
         """
-        import cloudpickle
-        
         tools_str_list = ["import cloudpickle"]
         tools_str_list.append("###########<tools>###########\n")
         for tool in tools:
@@ -82,6 +81,22 @@ class CodeExecutionProvider(ABC):
         tools_str_list.append("\n\n")
         self.code_tools_definitions.extend(tools_str_list)
     
+    def set_code_tools(self, tools: List[Any]) -> None:
+        """
+        Set the code tools available in the execution environment.
+        Replaces any existing tools with the new list.
+        
+        Args:
+            tools: List of tool objects to set
+        """
+        # Clear existing tools
+        self.code_tools = tools.copy()
+        self.code_tools_definitions = []
+        
+        # Add the new tools
+        if tools:
+            self.add_tools(tools)
+    
     def set_user_variables(self, variables: Dict[str, Any]) -> None:
         """
         Set user variables that will be available in the Python environment.
@@ -89,8 +104,6 @@ class CodeExecutionProvider(ABC):
         Args:
             variables: Dictionary of variable name -> value pairs
         """
-        import cloudpickle
-        
         self._user_variables = variables.copy()
         
         # Add variables to the execution environment by serializing them
@@ -149,4 +162,46 @@ class CodeExecutionProvider(ABC):
         Returns:
             Dictionary of current user variables
         """
-        return self._user_variables.copy() 
+        return self._user_variables.copy()
+    
+    def update_user_variables_from_globals(self, globals_dict: Dict[str, Any]) -> None:
+        """
+        Extract and update user variables from the globals dictionary after code execution.
+        This ensures that any modifications to user variables during code execution are preserved.
+        
+        Args:
+            globals_dict: The globals dictionary after code execution
+        """
+        if not globals_dict or not self._user_variables:
+            return
+            
+        # Update user variables with values from globals
+        for var_name in list(self._user_variables.keys()):
+            if var_name in globals_dict:
+                try:
+                    # Try to serialize the value to ensure it's valid
+                    cloudpickle.dumps(globals_dict[var_name])
+                    # Update the user variable with the new value
+                    self._user_variables[var_name] = globals_dict[var_name]
+                except Exception:
+                    # If serialization fails, keep the old value
+                    pass
+                    
+        # Check for new variables that might have been created
+        # This handles cases where LLM creates new variables that should be preserved
+        for var_name, var_value in globals_dict.items():
+            # Skip special variables, modules, and functions
+            if (var_name.startswith('__') or 
+                var_name in ['builtins', 'cloudpickle'] or
+                callable(var_value) or
+                var_name in self._user_variables):
+                continue
+                
+            try:
+                # Try to serialize the value to ensure it's valid
+                cloudpickle.dumps(var_value)
+                # Add the new variable to user variables
+                self._user_variables[var_name] = var_value
+            except Exception:
+                # If serialization fails, skip this variable
+                pass 

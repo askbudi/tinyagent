@@ -261,7 +261,16 @@ class TinyCodeAgent:
         async def run_python(code_lines: List[str], timeout: int = 120) -> str:
             """Execute Python code using the configured provider."""
             try:
+                # Before execution, ensure provider has the latest user variables
+                if self.user_variables:
+                    self.code_provider.set_user_variables(self.user_variables)
+                    
                 result = await self.code_provider.execute_python(code_lines, timeout)
+                
+                # After execution, update TinyCodeAgent's user_variables from the provider
+                # This ensures they stay in sync
+                self.user_variables = self.code_provider.get_user_variables()
+                
                 return str(result)
             except Exception as e:
                 print("!"*100)
@@ -272,6 +281,11 @@ class TinyCodeAgent:
                 print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
                 print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
                 print("!"*100)
+                
+                # Even after an exception, update user_variables from the provider
+                # This ensures any variables that were successfully created/modified are preserved
+                self.user_variables = self.code_provider.get_user_variables()
+                
                 return f"Error executing code: {str(e)}"
         
         self.agent.add_tool(run_python)

@@ -143,17 +143,28 @@ class ModalProvider(CodeExecutionProvider):
         print(full_code)
         print("#" * 100)
 
-
         
         # Use Modal's native execution methods
         response = self._python_executor(full_code, self._globals_dict, self._locals_dict)
         
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!<response>!!!!!!!!!!!!!!!!!!!!!!!!!")
         
-        # Update the instance globals and locals with the execution results
-        self._globals_dict = cloudpickle.loads(make_session_blob(response["updated_globals"]))
-        self._locals_dict = cloudpickle.loads(make_session_blob(response["updated_locals"]))
-
+        # Always update globals and locals dictionaries, regardless of whether there was an error
+        # This ensures variables are preserved even when code execution fails
+        try:
+            # Update globals and locals from the response
+            if "updated_globals" in response:
+                self._globals_dict = cloudpickle.loads(make_session_blob(response["updated_globals"]))
+                
+            if "updated_locals" in response:
+                self._locals_dict = cloudpickle.loads(make_session_blob(response["updated_locals"]))
+                
+            # Update user variables from the updated globals and locals
+            # This preserves any changes made to variables by the LLM
+            self.update_user_variables_from_globals(self._globals_dict)
+            self.update_user_variables_from_globals(self._locals_dict)
+        except Exception as e:
+            print(f"Warning: Failed to update globals/locals after execution: {str(e)}")
         
         self._log_response(response)
         
