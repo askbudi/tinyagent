@@ -18,6 +18,16 @@ Inspired by:
 ## Quick Links
 - [Build your own Tiny Agent](https://askdev.ai/github/askbudi/tinyagent)
 
+
+## Live Projects using TinyAgent (🔥)
+- [AskDev.AI](https://askdev.ai) - Understand, chat, and summarize codebase of any project on GitHub.
+- [HackBuddy AI](https://huggingface.co/spaces/ask-dev/HackBuddyAI) - A Hackathon Assistant Agent, built with TinyCodeAgent and Gradio. Match invdividuals to teams based on their skills, interests and organizer preferences.
+
+- [TinyCodeAgent Demo](https://huggingface.co/spaces/ask-dev/TinyCodeAgent) - A playground for TinyCodeAgent, built with tinyagent, Gradio and Modal.com
+
+** Building something with TinyAgent? Let us know and I'll add it here!**
+
+
 ## Overview
 This is a tiny agent framework that uses MCP and LiteLLM to interact with language models. You have full control over the agent, you can add any tools you like from MCP and extend the agent using its event system.
 
