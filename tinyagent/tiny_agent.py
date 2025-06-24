@@ -725,13 +725,10 @@ class TinyAgent:
                     next_turn_should_call_tools = False
                 else:
                     # No tool calls in this message
-                    if num_turns > 0:
-                    #if next_turn_should_call_tools and num_turns > 0:
-                        # If we expected tool calls but didn't get any, we're done
-                        await self._run_callbacks("agent_end", result=assistant_msg["content"] or "")
-                        return assistant_msg["content"] or ""
-                    
-                    next_turn_should_call_tools = True
+                    # If the model provides a direct answer without tool calls, we should return it
+                    # This handles the case where the LLM gives a direct answer without using tools
+                    await self._run_callbacks("agent_end", result=assistant_msg["content"] or "")
+                    return assistant_msg["content"] or ""
                 
                 num_turns += 1
                 if num_turns >= max_turns:

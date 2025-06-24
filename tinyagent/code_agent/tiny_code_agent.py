@@ -264,6 +264,14 @@ class TinyCodeAgent:
                 result = await self.code_provider.execute_python(code_lines, timeout)
                 return str(result)
             except Exception as e:
+                print("!"*100)
+                COLOR = {
+                        "RED": "\033[91m",
+                        "ENDC": "\033[0m",
+                    }
+                print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
+                print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
+                print("!"*100)
                 return f"Error executing code: {str(e)}"
         
         self.agent.add_tool(run_python)

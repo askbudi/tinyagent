@@ -210,7 +210,20 @@ class ModalProvider(CodeExecutionProvider):
             print("#########################</stderr>#########################")
         if response.get("error_traceback",None) not in [None,""]:
             print("#########################<traceback>#########################")
-            print(response["error_traceback"])
+            # Check if this is a security exception and highlight it in red if so
+            error_text = response["error_traceback"]
+            if "SECURITY" in error_text:
+                try:
+                    from ..modal_sandbox import COLOR
+                except ImportError:
+                    # Fallback colors if modal_sandbox is not available
+                    COLOR = {
+                        "RED": "\033[91m",
+                        "ENDC": "\033[0m",
+                    }
+                print(f"{COLOR['RED']}{error_text}{COLOR['ENDC']}")
+            else:
+                print(error_text)
             print("#########################</traceback>#########################")
     
     async def cleanup(self):

@@ -165,28 +165,32 @@ def _check_for_dangerous_function_calls(tree: ast.AST, authorized_functions: Seq
     """
     dangerous_calls = set()
     
-    # Convert authorized_functions to a set if it's not None
-    authorized_set = set(authorized_functions) if authorized_functions is not None else set()
+    # Convert authorized_functions to a set if it's not None and not a boolean
+    authorized_set = set(authorized_functions) if authorized_functions is not None and not isinstance(authorized_functions, bool) else set()
     
     for node in ast.walk(tree):
         # Check for direct function calls: func()
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
+            # Only flag if it's a known dangerous function
             if func_name in DANGEROUS_FUNCTIONS and func_name not in authorized_set:
                 dangerous_calls.add(func_name)
         
         # Check for calls via string literals in exec/eval: exec("import os")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ["exec", "eval"]:
-            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                dangerous_calls.add(f"{node.func.id} with string literal")
+            # Only check if the function itself is not authorized
+            if node.func.id not in authorized_set:
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    dangerous_calls.add(f"{node.func.id} with string literal")
         
         # Check for attribute access: builtins.exec()
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr in DANGEROUS_FUNCTIONS:
                 if isinstance(node.func.value, ast.Name):
                     module_name = node.func.value.id
-                    func_name = f"{module_name}.{node.func.attr}"
-                    if node.func.attr not in authorized_set:
+                    # Focus on builtins module access
+                    if module_name == "builtins" and node.func.attr not in authorized_set:
+                        func_name = f"{module_name}.{node.func.attr}"
                         dangerous_calls.add(func_name)
         
         # Check for string manipulation that could be used to bypass security
@@ -196,7 +200,7 @@ def _check_for_dangerous_function_calls(tree: ast.AST, authorized_functions: Seq
                 if isinstance(target, ast.Name) and isinstance(node.value, ast.BinOp):
                     # Check if we're building a string that could be a dangerous function name
                     potential_name = _extract_string_from_binop(node.value)
-                    if potential_name in DANGEROUS_FUNCTIONS:
+                    if potential_name in DANGEROUS_FUNCTIONS and potential_name not in authorized_set:
                         dangerous_calls.add(f"string manipulation to create '{potential_name}'")
         
         # Check for getattr(builtins, "exec") pattern
@@ -204,7 +208,7 @@ def _check_for_dangerous_function_calls(tree: ast.AST, authorized_functions: Seq
             if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
                 attr_name = node.args[1].value
                 if attr_name in DANGEROUS_FUNCTIONS and attr_name not in authorized_set:
-                    if isinstance(node.args[0], ast.Name):
+                    if isinstance(node.args[0], ast.Name) and node.args[0].id == "builtins":
                         module_name = node.args[0].id
                         dangerous_calls.add(f"getattr({module_name}, '{attr_name}')")
     
@@ -322,9 +326,9 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
 
     blocked: set[str] = set()
     
-    # Convert authorized_imports to a set if it's not None
+    # Convert authorized_imports to a set if it's not None and not a boolean
     combined_allowed = None
-    if authorized_imports is not None:
+    if authorized_imports is not None and not isinstance(authorized_imports, bool):
         combined_allowed = set(list(authorized_imports) + list(ESSENTIAL_MODULES))
     
     
@@ -348,7 +352,7 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
             if root in DANGEROUS_MODULES and not allowed:
                 blocked.add(root)
             # If there is an explicit allow-list, block everything not on it
-            elif authorized_imports is not None and not allowed and root not in ESSENTIAL_MODULES:
+            elif authorized_imports is not None and not isinstance(authorized_imports, bool) and not allowed and root not in ESSENTIAL_MODULES:
                 blocked.add(root)
 
     # ------------------------------------------------------------------
@@ -358,7 +362,8 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
         if isinstance(_node, ast.Call):
             # Pattern: __import__(...)
             if isinstance(_node.func, ast.Name) and _node.func.id == "__import__":
-                raise ValueError("Usage of __import__ is not allowed in untrusted code.")
+                # Check if it's a direct call to the built-in __import__
+                raise ValueError("SECURITY VIOLATION: Usage of __import__ is not allowed in untrusted code.")
             # Pattern: builtins.__import__(...)
             if (
                 isinstance(_node.func, ast.Attribute)
@@ -366,7 +371,7 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
                 and _node.func.attr == "__import__"
                 and _node.func.value.id == "builtins"
             ):
-                raise ValueError("Usage of builtins.__import__ is not allowed in untrusted code.")
+                raise ValueError("SECURITY VIOLATION: Usage of builtins.__import__ is not allowed in untrusted code.")
 
     # ------------------------------------------------------------------
     # Detect calls to dangerous functions (e.g. exec, eval) in *untrusted* code
@@ -374,18 +379,18 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
     dangerous_calls = _check_for_dangerous_function_calls(tree, authorized_functions)
     if dangerous_calls:
         offenders = ", ".join(sorted(dangerous_calls))
-        raise ValueError(f"Usage of dangerous function(s) {offenders} is not allowed in untrusted code.")
+        raise ValueError(f"SECURITY VIOLATION: Usage of dangerous function(s) {offenders} is not allowed in untrusted code.")
 
     # ------------------------------------------------------------------
     # Detect string obfuscation techniques that might be used to bypass security
     # ------------------------------------------------------------------
     if _detect_string_obfuscation(tree):
-        raise ValueError("Suspicious string manipulation detected that could be used to bypass security.")
+        raise ValueError("SECURITY VIOLATION: Suspicious string manipulation detected that could be used to bypass security.")
 
     if blocked:
         offenders = ", ".join(sorted(blocked))
-        msg = f"Importing module(s) {offenders} is not allowed."
-        if authorized_imports is not None:
+        msg = f"SECURITY VIOLATION: Importing module(s) {offenders} is not allowed."
+        if authorized_imports is not None and not isinstance(authorized_imports, bool):
             msg += " Allowed imports are: " + ", ".join(sorted(authorized_imports))
         raise ValueError(msg)
 
@@ -426,8 +431,8 @@ def install_import_hook(
 
     blocked_modules = blocked_modules or DANGEROUS_MODULES
     
-    # Convert authorized_imports to a set if it's not None
-    authorized_set = set(authorized_imports) if authorized_imports is not None else None
+    # Convert authorized_imports to a set if it's not None and not a boolean
+    authorized_set = set(authorized_imports) if authorized_imports is not None and not isinstance(authorized_imports, bool) else None
     
     # Create a combined set for allowed modules (essential + authorized)
     combined_allowed = None
@@ -462,13 +467,15 @@ def install_import_hook(
                 stacklevel=2,
             )
         elif root in blocked_modules and not allowed:
-            raise ImportError(
-                f"Import of module '{name}' is blocked by TinyAgent safety policy"
-            )
+            error_msg = f"SECURITY VIOLATION: Import of module '{name}' is blocked by TinyAgent security policy"
+            if authorized_set is not None:
+                error_msg += f". Allowed imports are: {', '.join(sorted(authorized_set))}"
+            raise ImportError(error_msg)
         elif authorized_set is not None and not allowed and root not in ESSENTIAL_MODULES:
-            raise ImportError(
-                f"Import of module '{name}' is not in the authorized imports list: {', '.join(sorted(authorized_set))}"
-            )
+            error_msg = f"SECURITY VIOLATION: Import of module '{name}' is not in the authorized imports list"
+            if authorized_set:
+                error_msg += f": {', '.join(sorted(authorized_set))}"
+            raise ImportError(error_msg)
 
         return original_import(name, globals, locals, fromlist, level)
 
@@ -507,21 +514,25 @@ def function_safety_context(
     # Install the function hook
     blocked_functions = blocked_functions or RUNTIME_BLOCKED_FUNCTIONS
     
-    # Convert authorized_functions to a set if it's not None
-    authorized_set = set(authorized_functions) if authorized_functions is not None else set()
+    # Convert authorized_functions to a set if it's not None and not a boolean
+    authorized_set = set(authorized_functions) if authorized_functions is not None and not isinstance(authorized_functions, bool) else set()
     
     # Store original functions
     original_functions = {}
     
     # Replace dangerous functions with safe versions
     for func_name in blocked_functions:
+        # Only block functions that exist in builtins
         if hasattr(builtins, func_name) and func_name not in authorized_set:
             original_functions[func_name] = getattr(builtins, func_name)
             
             # Create a closure to capture the function name
             def make_safe_function(name):
                 def safe_function(*args, **kwargs):
-                    raise RuntimeError(f"Function '{name}' is blocked by TinyAgent safety policy")
+                    error_msg = f"SECURITY VIOLATION: Function '{name}' is blocked by TinyAgent security policy"
+                    if authorized_functions and not isinstance(authorized_functions, bool) and isinstance(authorized_functions, (list, tuple, set)):
+                        error_msg += f". Allowed functions are: {', '.join(sorted(authorized_set))}"
+                    raise RuntimeError(error_msg)
                 return safe_function
             
             # Replace the function

@@ -68,6 +68,7 @@ def _run_python(
     import io
     import ast
     import builtins  # Needed for import hook
+    import sys
 
     # ------------------------------------------------------------------
     # 1. Static safety analysis – refuse code containing dangerous imports or functions
@@ -96,12 +97,30 @@ def _run_python(
         except ImportError:
             print(f"⚠️  Warning: {module_name} module not available")
     
+    # Variable to store print output
+    output_buffer = []
+    
+    # Create a custom print function that captures output
+    def custom_print(*args, **kwargs):
+        # Get the sep and end kwargs, defaulting to ' ' and '\n'
+        sep = kwargs.get('sep', ' ')
+        end = kwargs.get('end', '\n')
+        
+        # Convert all arguments to strings and join them
+        output = sep.join(str(arg) for arg in args) + end
+        
+        # Store the output
+        output_buffer.append(output)
+    
+    # Add the custom print function to the globals
+    #updated_globals['print'] = custom_print
+    
+    # Parse the code
     tree = ast.parse(code, mode="exec")
     compiled = compile(tree, filename="<ast>", mode="exec")
     stdout_buf = io.StringIO()
-    stderr_buf = io.StringIO()
-
-    # Execute with stdout+stderr capture and exception handling
+    stderr_buf = io.StringIO()   
+    # Execute with exception handling
     error_traceback = None
     output = None
 
@@ -113,10 +132,15 @@ def _run_python(
             merged_globals = updated_globals.copy()
             merged_globals.update(updated_locals)
             
+            # Add 'exec' to authorized_functions for internal use
+            internal_authorized_functions = ['exec','eval']
+            if authorized_functions is not None and not isinstance(authorized_functions, bool):
+                internal_authorized_functions.extend(authorized_functions)
+            
             # Execute with only globals - this fixes generator expression scoping issues
             # Use the function_safety_context to block dangerous functions during execution
-            with function_safety_context(authorized_functions=authorized_functions, trusted_code=trusted_code):
-                output = exec(code, merged_globals)
+            with function_safety_context(authorized_functions=internal_authorized_functions, trusted_code=trusted_code):
+                output = exec(compiled, merged_globals)
             
             # Update both dictionaries with any new variables created during execution
             for key, value in merged_globals.items():
@@ -129,6 +153,8 @@ def _run_python(
             # Capture the full traceback as a string
             error_traceback = traceback.format_exc()
 
+    # Join all captured output
+    #printed_output = ''.join(output_buffer)  
     printed_output = stdout_buf.getvalue()
     stderr_output = stderr_buf.getvalue()
     error_traceback_output = error_traceback
