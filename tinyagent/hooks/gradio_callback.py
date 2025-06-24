@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import time
+import io
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 
@@ -36,6 +37,7 @@ class GradioCallback:
         show_thinking: bool = True,
         show_tool_calls: bool = True,
         logger: Optional[logging.Logger] = None,
+        log_manager: Optional[Any] = None,
     ):
         """
         Initialize the Gradio callback.
@@ -46,6 +48,7 @@ class GradioCallback:
             show_thinking: Whether to show the thinking process
             show_tool_calls: Whether to show tool calls
             logger: Optional logger to use
+            log_manager: Optional LoggingManager instance to capture logs from
         """
         self.logger = logger or logging.getLogger(__name__)
         self.show_thinking = show_thinking
@@ -81,6 +84,37 @@ class GradioCallback:
         # References to Gradio UI components (will be set in create_app)
         self._chatbot_component = None
         self._token_usage_component = None
+        
+        # Log stream for displaying logs in the UI
+        self.log_stream = io.StringIO()
+        self._log_component = None
+        
+        # Setup logging
+        self.log_manager = log_manager
+        if log_manager:
+            # Create a handler that writes to our StringIO stream
+            self.log_handler = logging.StreamHandler(self.log_stream)
+            self.log_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+            )
+            self.log_handler.setLevel(logging.DEBUG)
+            
+            # Add the handler to the LoggingManager
+            log_manager.configure_handler(
+                self.log_handler,
+                format_string='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+                level=logging.DEBUG
+            )
+            self.logger.debug("Added log handler to LoggingManager")
+        elif logger:
+            # Fall back to single logger if no LoggingManager is provided
+            self.log_handler = logging.StreamHandler(self.log_stream)
+            self.log_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+            )
+            self.log_handler.setLevel(logging.DEBUG)
+            logger.addHandler(self.log_handler)
+            self.logger.debug("Added log handler to logger")
 
         self.logger.debug("GradioCallback initialized")
     
@@ -525,7 +559,7 @@ class GradioCallback:
         typing_message_index = len(chatbot_history) - 1
  
         # Initial yield to show user message and typing indicator
-        yield chatbot_history, self._get_token_usage_text()
+        yield chatbot_history, self._get_token_usage_text(), self.log_stream.getvalue() if self._log_component else None
  
         # Kick off the agent in the background
         loop = asyncio.get_event_loop()
@@ -632,9 +666,10 @@ class GradioCallback:
                             del in_progress_tool_calls[tid]
                             self.logger.debug(f"Updated tool call to completed: {tname}")
  
-                # yield updated history + token usage
+                # yield updated history + token usage + logs
                 token_text = self._get_token_usage_text()
-                yield chatbot_history, token_text
+                logs = self.log_stream.getvalue() if self._log_component else None
+                yield chatbot_history, token_text, logs
                 self.last_update_yield_time = now
  
             await asyncio.sleep(update_interval)
@@ -657,8 +692,9 @@ class GradioCallback:
             )
             self.logger.debug(f"Added final result: {final_text[:50]}...")
  
-        # final token usage
-        yield chatbot_history, self._get_token_usage_text()
+        # final token usage and logs
+        logs = self.log_stream.getvalue() if self._log_component else None
+        yield chatbot_history, self._get_token_usage_text(), logs
 
     def _format_response(self, response_text):
         """
@@ -839,6 +875,22 @@ class GradioCallback:
                     # Clear button
                     clear_btn = gr.Button("Clear Conversation")
                     
+                    # Log accordion - similar to the example provided
+                    with gr.Accordion("Agent Logs", open=False) as log_accordion:
+                        self._log_component = gr.Code(
+                            label="Live Logs",
+                            lines=15,
+                            interactive=False,
+                            value=self.log_stream.getvalue()
+                        )
+                        refresh_logs_btn = gr.Button("🔄 Refresh Logs")
+                        refresh_logs_btn.click(
+                            fn=lambda: self.log_stream.getvalue(),
+                            inputs=None,
+                            outputs=[self._log_component],
+                            queue=False
+                        )
+                    
                     # Store processed input temporarily between steps
                     processed_input_state = gr.State("")
 
@@ -859,7 +911,7 @@ class GradioCallback:
                         # 3. Run the main interaction loop (this yields updates)
                         fn=self.interact_with_agent,
                         inputs=[processed_input_state, self._chatbot_component],
-                        outputs=[self._chatbot_component, self._token_usage_component], # Update chat and tokens
+                        outputs=[self._chatbot_component, self._token_usage_component, self._log_component], # Update chat, tokens, and logs
                         queue=True # Explicitly enable queue for this async generator
                     ).then(
                         # 4. Re-enable the button after interaction finishes
@@ -885,7 +937,7 @@ class GradioCallback:
                         # 3. Run the main interaction loop (this yields updates)
                         fn=self.interact_with_agent,
                         inputs=[processed_input_state, self._chatbot_component],
-                        outputs=[self._chatbot_component, self._token_usage_component], # Update chat and tokens
+                        outputs=[self._chatbot_component, self._token_usage_component, self._log_component], # Update chat, tokens, and logs
                         queue=True # Explicitly enable queue for this async generator
                     ).then(
                         # 4. Re-enable the button after interaction finishes
@@ -899,8 +951,8 @@ class GradioCallback:
                     clear_btn.click(
                         fn=self.clear_conversation,
                         inputs=None, # No inputs needed
-                        # Outputs: Clear chatbot and reset token text
-                        outputs=[self._chatbot_component, self._token_usage_component],
+                        # Outputs: Clear chatbot, reset token text, and update logs
+                        outputs=[self._chatbot_component, self._token_usage_component, self._log_component],
                         queue=False # Run quickly
                     )
 
@@ -917,6 +969,12 @@ class GradioCallback:
         self.assistant_text_responses = []
         self.token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.is_running = False
+        
+        # Clear log stream
+        if hasattr(self, 'log_stream'):
+            self.log_stream.seek(0)
+            self.log_stream.truncate(0)
+            self.logger.info("Log stream cleared")
 
         # Completely reset the agent state with a new session
         try:
@@ -965,8 +1023,9 @@ class GradioCallback:
         except Exception as e:
             self.logger.error(f"Failed to reset TinyAgent completely: {e}")
 
-        # Return cleared UI components: empty chat + fresh token usage
-        return [], self._get_token_usage_text()
+        # Return cleared UI components: empty chat + fresh token usage + empty logs
+        logs = self.log_stream.getvalue() if hasattr(self, 'log_stream') else ""
+        return [], self._get_token_usage_text(), logs
 
     def launch(self, agent, title="TinyAgent Chat", description=None, share=False, **kwargs):
         """
@@ -1028,21 +1087,31 @@ async def run_example():
     from tinyagent import TinyAgent  # Assuming TinyAgent is importable
     from tinyagent.hooks.logging_manager import LoggingManager  # Assuming LoggingManager exists
 
-    # --- Logging Setup (Simplified) ---
+    # --- Logging Setup (Similar to the example provided) ---
     log_manager = LoggingManager(default_level=logging.INFO)
     log_manager.set_levels({
         'tinyagent.hooks.gradio_callback': logging.DEBUG,
         'tinyagent.tiny_agent': logging.DEBUG,
         'tinyagent.mcp_client': logging.DEBUG,
+        'tinyagent.code_agent': logging.DEBUG,
     })
+    
+    # Console handler for terminal output
     console_handler = logging.StreamHandler(sys.stdout)
     log_manager.configure_handler(
         console_handler,
         format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.DEBUG
     )
+    
+    # The Gradio UI will automatically set up its own log handler
+    # through the LoggingManager when we pass it to GradioCallback
+    
+    # Get loggers for different components
     ui_logger = log_manager.get_logger('tinyagent.hooks.gradio_callback')
     agent_logger = log_manager.get_logger('tinyagent.tiny_agent')
+    mcp_logger = log_manager.get_logger('tinyagent.mcp_client')
+    
     ui_logger.info("--- Starting GradioCallback Example ---")
     # --- End Logging Setup ---
 
@@ -1064,12 +1133,13 @@ async def run_example():
 
     agent.add_tool(get_weather)
 
-    # Create the Gradio callback
+    # Create the Gradio callback with LoggingManager integration
     gradio_ui = GradioCallback(
         file_upload_folder=upload_folder,
         show_thinking=True,
         show_tool_calls=True,
-        logger=ui_logger # Pass the specific logger
+        logger=ui_logger,
+        log_manager=log_manager  # Pass the LoggingManager for comprehensive logging
     )
     agent.add_callback(gradio_ui)
 
@@ -1084,25 +1154,9 @@ async def run_example():
         ui_logger.error(f"Failed to connect to MCP servers: {e}", exc_info=True)
         # Continue without servers - we still have the local get_weather tool
 
-    # Create the Gradio app but don't launch it yet
-    #app = gradio_ui.create_app(
-    #    agent,
-    #    title="TinyAgent Chat Interface",
-    #    description="Chat with TinyAgent. Try asking: 'Plan a trip to Toronto for 7 days in the next month.'",
-    #)
-    
-    # Configure the queue without extra parameters
-    #app.queue()
-    
-    # Launch the app in a way that doesn't block our event loop
+    # Launch the Gradio interface
     ui_logger.info("Launching Gradio interface...")
     try:
-        # Launch without blocking
-        #app.launch(
-        #    share=False,
-        #    prevent_thread_lock=True,  # Critical to not block our event loop
-        #    show_error=True
-        #)
         gradio_ui.launch(
             agent,
             title="TinyAgent Chat Interface",
@@ -1113,9 +1167,19 @@ async def run_example():
         )
         ui_logger.info("Gradio interface launched (non-blocking).")
         
+        # Generate some log messages to demonstrate the log panel
+        # These will appear in both the terminal and the Gradio UI log panel
+        ui_logger.info("UI component initialized successfully")
+        agent_logger.debug("Agent ready to process requests")
+        mcp_logger.info("MCP connection established")
+        
+        for i in range(3):
+            ui_logger.info(f"Example log message {i+1} from UI logger")
+            agent_logger.debug(f"Example debug message {i+1} from agent logger")
+            mcp_logger.warning(f"Example warning {i+1} from MCP logger")
+            await asyncio.sleep(1)
+        
         # Keep the main event loop running to handle both Gradio and MCP operations
-        # This is the key part - we need to keep our main event loop running
-        # but also allow it to process both Gradio and MCP client operations
         while True:
             await asyncio.sleep(1)  # More efficient than an Event().wait()
             
