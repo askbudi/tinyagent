@@ -122,7 +122,8 @@ agent = TinyCodeAgent(
     api_key="your-api-key",
     provider="modal",
     tools=[],
-    authorized_imports=["requests", "pandas", "numpy"]
+    authorized_imports=["requests", "pandas", "numpy"],
+    check_string_obfuscation=True  # Control string obfuscation detection
 )
 ```
 
@@ -133,7 +134,8 @@ agent = TinyCodeAgent(
 modal_config = {
     "modal_secrets": {"OPENAI_API_KEY": "your-key"},
     "pip_packages": ["requests", "pandas"],
-    "sandbox_name": "my-sandbox"
+    "sandbox_name": "my-sandbox",
+    "check_string_obfuscation": False  # Allow base64 and other string manipulations
 }
 
 agent = TinyCodeAgent(
@@ -149,6 +151,7 @@ agent = TinyCodeAgent(
 - Session persistence across executions
 - Error handling and debugging support
 - Automatic dependency management
+- Configurable security checks for legitimate use cases
 
 ### Integration
 - Gradio UI support for interactive chat
@@ -185,6 +188,25 @@ Check the weather and traffic for Toronto, Montreal,
 New York, Paris, and San Francisco
 """)
 ```
+
+### Base64 Encoding/Decoding
+
+By default, TinyCodeAgent blocks code that uses base64 encoding/decoding as a security measure. 
+For legitimate use cases, you can disable this check:
+
+```python
+# Create agent with string obfuscation detection disabled
+agent = TinyCodeAgent(
+    model="gpt-4.1-mini",
+    check_string_obfuscation=False  # Allow base64 encoding/decoding
+)
+
+# Or toggle at runtime
+agent.set_check_string_obfuscation(False)  # Disable check
+agent.set_check_string_obfuscation(True)   # Re-enable check
+```
+
+See `examples/base64_example.py` for a complete example.
 
 ## Best Practices
 
