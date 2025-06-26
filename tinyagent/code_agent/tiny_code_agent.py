@@ -31,6 +31,7 @@ class TinyCodeAgent:
         user_variables: Optional[Dict[str, Any]] = None,
         pip_packages: Optional[List[str]] = None,
         local_execution: bool = False,
+        check_string_obfuscation: bool = True,
         **agent_kwargs
     ):
         """
@@ -50,6 +51,8 @@ class TinyCodeAgent:
             pip_packages: List of additional Python packages to install in Modal environment
             local_execution: If True, uses Modal's .local() method for local execution. 
                                 If False, uses Modal's .remote() method for cloud execution (default: False)
+            check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow 
+                                legitimate use of base64 encoding and other string manipulations.
             **agent_kwargs: Additional arguments passed to TinyAgent
         """
         self.model = model
@@ -63,6 +66,7 @@ class TinyCodeAgent:
         self.pip_packages = pip_packages or []
         self.local_execution = local_execution
         self.provider = provider  # Store provider type for reuse
+        self.check_string_obfuscation = check_string_obfuscation
         
         # Create the code execution provider
         self.code_provider = self._create_provider(provider, self.provider_config)
@@ -104,6 +108,7 @@ class TinyCodeAgent:
             final_config = config.copy()
             final_config["pip_packages"] = final_pip_packages
             final_config["authorized_imports"] = final_authorized_imports
+            final_config["check_string_obfuscation"] = self.check_string_obfuscation
             
             return ModalProvider(
                 log_manager=self.log_manager,
@@ -551,6 +556,20 @@ class TinyCodeAgent:
         """Get the session ID."""
         return self.agent.session_id 
 
+    def set_check_string_obfuscation(self, enabled: bool):
+        """
+        Enable or disable string obfuscation detection.
+        
+        Args:
+            enabled: If True, check for string obfuscation techniques. If False, allow
+                    legitimate use of base64 encoding and other string manipulations.
+        """
+        self.check_string_obfuscation = enabled
+        
+        # Update the provider with the new setting
+        if hasattr(self.code_provider, 'check_string_obfuscation'):
+            self.code_provider.check_string_obfuscation = enabled
+
 
 # Example usage demonstrating both LLM tools and code tools
 async def run_example():
@@ -590,7 +609,8 @@ async def run_example():
             "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
         },
         authorized_imports=["tinyagent", "gradio", "requests", "numpy", "pandas"],  # Explicitly specify authorized imports
-        local_execution=False  # Remote execution via Modal (default)
+        local_execution=False,  # Remote execution via Modal (default)
+        check_string_obfuscation=True
     )
     
     # Connect to MCP servers
@@ -617,7 +637,8 @@ async def run_example():
             "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
         },
         authorized_imports=["tinyagent", "gradio", "requests"],  # More restricted imports for local execution
-        local_execution=True  # Local execution
+        local_execution=True,  # Local execution
+        check_string_obfuscation=True
     )
     
     # Connect to MCP servers

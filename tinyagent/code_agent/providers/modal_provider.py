@@ -27,25 +27,39 @@ class ModalProvider(CodeExecutionProvider):
         apt_packages: Optional[List[str]] = None,
         python_version: Optional[str] = None,
         authorized_imports: list[str] | None = None,
+        authorized_functions: list[str] | None = None,
         modal_secrets: Dict[str, Union[str, None]] | None = None,
         lazy_init: bool = True,
         sandbox_name: str = "tinycodeagent-sandbox",
         local_execution: bool = False,
+        check_string_obfuscation: bool = True,
         **kwargs
     ):
-        """Create a ModalProvider instance.
-
-        Additional keyword arguments (passed via **kwargs) are ignored by the
-        base class but accepted here for forward-compatibility.
-
+        """
+        Initialize Modal-based code execution provider.
+        
         Args:
-            default_packages: Base set of Python packages installed into the
-                sandbox image. If ``None`` a sane default list is used. The
-                final set of installed packages is the union of
-                ``default_packages`` and ``pip_packages``.
-            apt_packages: Debian/Ubuntu APT packages to install into the image
-                prior to ``pip install``. Defaults to an empty list.  Always
-                installed *in addition to* the basics required by TinyAgent
+            log_manager: Log manager instance
+            default_python_codes: List of Python code snippets to execute before user code
+            code_tools: List of code tools to make available
+            pip_packages: List of pip packages to install in the sandbox
+            default_packages: List of default pip packages to install in the sandbox
+            apt_packages: List of apt packages to install in the sandbox
+            python_version: Python version to use in the sandbox
+            authorized_imports: Optional allow-list of modules the user code is permitted to import
+            authorized_functions: Optional allow-list of dangerous functions the user code is permitted to use
+            modal_secrets: Dictionary of secrets to make available to the sandbox
+            lazy_init: Whether to initialize Modal app lazily
+            sandbox_name: Name of the Modal sandbox
+            local_execution: Whether to execute code locally
+            check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow legitimate use of base64 encoding and other string manipulations.
+            **kwargs: Additional keyword arguments
+        
+        Note:
+            The Modal sandbox is a secure environment for executing untrusted code.
+            It provides isolation from the host system and other sandboxes.
+            
+            Default packages are always installed, while pip_packages are added to
                 (git, curl, …) so you only need to specify the extras.
             python_version: Python version used for the sandbox image. If
                 ``None`` the current interpreter version is used.
@@ -74,6 +88,8 @@ class ModalProvider(CodeExecutionProvider):
         self.python_version: str = python_version
         self.authorized_imports = authorized_imports
 
+        self.authorized_functions = authorized_functions or []
+        self.check_string_obfuscation = check_string_obfuscation
         # ----------------------------------------------------------------------
         final_packages = list(set(self.default_packages + (pip_packages or [])))
         
@@ -139,7 +155,7 @@ class ModalProvider(CodeExecutionProvider):
         full_code = "\n".join(code_lines)
         
         print("#" * 100)
-        print("#########################code#########################")
+        print("##########################################code##########################################")
         print(full_code)
         print("#" * 100)
 
@@ -191,8 +207,10 @@ class ModalProvider(CodeExecutionProvider):
                 full_code,
                 globals_dict or {},
                 locals_dict or {},
-                self.authorized_imports,
-                self.is_trusted_code,
+                authorized_imports=self.authorized_imports,
+                authorized_functions=self.authorized_functions,
+                trusted_code=self.is_trusted_code,
+                check_string_obfuscation=self.check_string_obfuscation,
             )
         else:
             with self.app.run():
@@ -200,8 +218,10 @@ class ModalProvider(CodeExecutionProvider):
                     full_code,
                     globals_dict or {},
                     locals_dict or {},
-                    self.authorized_imports,
-                    self.is_trusted_code,
+                    authorized_imports=self.authorized_imports,
+                    authorized_functions=self.authorized_functions,
+                    trusted_code=self.is_trusted_code,
+                    check_string_obfuscation=self.check_string_obfuscation,
                 )
     
     def _log_response(self, response: Dict[str, Any]):

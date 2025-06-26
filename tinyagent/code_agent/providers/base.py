@@ -129,14 +129,14 @@ class CodeExecutionProvider(ABC):
         if variables_str_list:
             # Find where to insert (after tools section if it exists)
             insert_index = 0
-            for i, code in enumerate(self.default_python_codes):
+            for i, code in enumerate(self.code_tools_definitions):
                 if "###########</tools>###########" in code:
                     insert_index = i + 1
                     break
             
             # Insert the variables code
             for j, var_code in enumerate(variables_str_list):
-                self.default_python_codes.insert(insert_index + j, var_code)
+                self.code_tools_definitions.insert(insert_index + j, var_code)
     
     def _remove_existing_user_variables(self) -> None:
         """Remove existing user variables from default python codes."""
@@ -144,16 +144,16 @@ class CodeExecutionProvider(ABC):
         start_index = None
         end_index = None
         
-        for i, code in enumerate(self.default_python_codes):
+        for i, code in enumerate(self.code_tools_definitions):
             if "###########<user_variables>###########" in code:
-                start_index = i - 1 if i > 0 and "import cloudpickle" in self.default_python_codes[i-1] else i
+                start_index = i - 1 if i > 0 and "import cloudpickle" in self.code_tools_definitions[i-1] else i
             elif "###########</user_variables>###########" in code:
                 end_index = i + 2  # Include the newline after
                 break
         
         if start_index is not None and end_index is not None:
             # Remove the old variables section
-            del self.default_python_codes[start_index:end_index]
+            del self.code_tools_definitions[start_index:end_index]
     
     def get_user_variables(self) -> Dict[str, Any]:
         """

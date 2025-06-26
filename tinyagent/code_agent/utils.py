@@ -48,6 +48,7 @@ def _run_python(
     authorized_imports: List[str] | None = None,
     authorized_functions: List[str] | None = None,
     trusted_code: bool = False,
+    check_string_obfuscation: bool = True,
 ):
     """
     Execute Python code in a controlled environment with proper error handling.
@@ -59,6 +60,7 @@ def _run_python(
         authorized_imports: List of authorized imports that user code may access. Wildcards (e.g. "numpy.*") are supported. A value of None disables the allow-list and only blocks dangerous modules.
         authorized_functions: List of authorized dangerous functions that user code may access. A value of None disables the allow-list and blocks all dangerous functions.
         trusted_code: If True, skip security checks. Should only be used for framework code, tools, or default executed code.
+        check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow legitimate use of base64 encoding and other string manipulations.
         
     Returns:
         Dictionary containing execution results
@@ -74,7 +76,8 @@ def _run_python(
     # 1. Static safety analysis – refuse code containing dangerous imports or functions
     # ------------------------------------------------------------------
     validate_code_safety(code, authorized_imports=authorized_imports, 
-                        authorized_functions=authorized_functions, trusted_code=trusted_code)
+                        authorized_functions=authorized_functions, trusted_code=trusted_code,
+                        check_string_obfuscation=check_string_obfuscation)
 
     # Make copies to avoid mutating the original parameters
     globals_dict = globals_dict or {}

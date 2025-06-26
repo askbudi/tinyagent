@@ -295,7 +295,8 @@ def _detect_string_obfuscation(tree: ast.AST) -> bool:
 
 
 def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None = None, 
-                        authorized_functions: Sequence[str] | None = None, trusted_code: bool = False) -> None:
+                        authorized_functions: Sequence[str] | None = None, trusted_code: bool = False,
+                        check_string_obfuscation: bool = True) -> None:
     """Static validation of user code.
 
     Parameters
@@ -312,6 +313,9 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
     trusted_code
         If True, skip security checks. This should only be used for code that is part of the
         framework, developer-provided tools, or default executed code.
+    check_string_obfuscation
+        If True (default), check for string obfuscation techniques. Set to False to allow
+        legitimate use of base64 encoding and other string manipulations.
     """
     # Skip security checks for trusted code
     if trusted_code:
@@ -384,7 +388,7 @@ def validate_code_safety(code: str, *, authorized_imports: Sequence[str] | None 
     # ------------------------------------------------------------------
     # Detect string obfuscation techniques that might be used to bypass security
     # ------------------------------------------------------------------
-    if _detect_string_obfuscation(tree):
+    if check_string_obfuscation and _detect_string_obfuscation(tree):
         raise ValueError("SECURITY VIOLATION: Suspicious string manipulation detected that could be used to bypass security.")
 
     if blocked:
