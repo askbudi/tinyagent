@@ -1,4 +1,5 @@
 import traceback
+import os
 from textwrap import dedent
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -27,11 +28,13 @@ class TinyCodeAgent:
         code_tools: Optional[List[Any]] = None,
         authorized_imports: Optional[List[str]] = None,
         system_prompt_template: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         provider_config: Optional[Dict[str, Any]] = None,
         user_variables: Optional[Dict[str, Any]] = None,
         pip_packages: Optional[List[str]] = None,
         local_execution: bool = False,
         check_string_obfuscation: bool = True,
+        default_workdir: Optional[str] = None,
         **agent_kwargs
     ):
         """
@@ -53,6 +56,7 @@ class TinyCodeAgent:
                                 If False, uses Modal's .remote() method for cloud execution (default: False)
             check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow 
                                 legitimate use of base64 encoding and other string manipulations.
+            default_workdir: Default working directory for shell commands. If None, the current working directory is used.
             **agent_kwargs: Additional arguments passed to TinyAgent
         """
         self.model = model
@@ -67,6 +71,7 @@ class TinyCodeAgent:
         self.local_execution = local_execution
         self.provider = provider  # Store provider type for reuse
         self.check_string_obfuscation = check_string_obfuscation
+        self.default_workdir = default_workdir or os.getcwd()  # Default to current working directory if not specified
         
         # Create the code execution provider
         self.code_provider = self._create_provider(provider, self.provider_config)
@@ -76,7 +81,8 @@ class TinyCodeAgent:
             self.code_provider.set_user_variables(self.user_variables)
         
         # Build system prompt
-        self.system_prompt = self._build_system_prompt(system_prompt_template)
+        self.static_system_prompt= system_prompt
+        self.system_prompt =  self._build_system_prompt(system_prompt_template)
         
         # Create the underlying TinyAgent
         self.agent = TinyAgent(
@@ -87,8 +93,8 @@ class TinyCodeAgent:
             **agent_kwargs
         )
         
-        # Add the code execution tool
-        self._setup_code_execution_tool()
+        # Add the code execution tools
+        self._setup_code_execution_tools()
         
         # Add LLM tools (not code tools - those go to the provider)
         if self.tools:
@@ -122,7 +128,9 @@ class TinyCodeAgent:
     def _build_system_prompt(self, template_path: Optional[str] = None) -> str:
         """Build the system prompt for the code agent."""
         # Use default template if none provided
-        if template_path is None:
+        if self.static_system_prompt is not None:
+            return self.static_system_prompt
+        elif template_path is None :
             template_path = str(Path(__file__).parent.parent / "prompts" / "code_agent.yaml")
         
         # Translate code tools to code agent format
@@ -247,8 +255,8 @@ class TinyCodeAgent:
         
         return "\n".join(code_tools_lines)
     
-    def _setup_code_execution_tool(self):
-        """Set up the run_python tool using the code provider."""
+    def _setup_code_execution_tools(self):
+        """Set up the code execution tools using the code provider."""
         @tool(name="run_python", description=dedent("""
         This tool receives Python code and executes it in a sandboxed environment.
         During each intermediate step, you can use 'print()' to save important information.
@@ -293,7 +301,128 @@ class TinyCodeAgent:
                 
                 return f"Error executing code: {str(e)}"
         
+        @tool(name="bash", description=dedent("""
+        This tool executes shell commands securely in a sandboxed environment.
+        Only a limited set of safe commands are allowed for security reasons.
+        Before executing the command, please follow these steps:
+          
+          1. Directory Verification:
+             - If the command will create new directories or files, first use ls to verify the parent directory exists and is the correct location
+             - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
+          
+          2. Command Execution:
+             - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
+             - Examples of proper quoting:
+               - cd "/Users/name/My Documents" (correct)
+               - cd /Users/name/My Documents (incorrect - will fail)
+               - python "/path/with spaces/script.py" (correct)
+               - python /path/with spaces/script.py (incorrect - will fail)
+             - After ensuring proper quoting, execute the command.
+             - Capture the output of the command.
+          
+          Usage notes:
+            - The command argument is required.
+            - You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested, batch your tool calls together for optimal performance.
+            - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
+            - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
+            - If the output exceeds 30000 characters, output will be truncated before being returned to you.
+            - VERY IMPORTANT: You MUST avoid using search commands like `find` and `grep`. Instead use Grep, Glob, or Task to search. You MUST avoid read tools like `cat`, `head`, `tail`, and `ls`, and use Read and LS to read files.
+           - If you _still_ need to run `grep`, STOP. ALWAYS USE ripgrep at `rg` first, which all ${PRODUCT_NAME} users have pre-installed.
+          "  - When issuing multiple commands, use the ; or && operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).\n" +
+            - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.
+              <good-example>
+              pytest /foo/bar/tests
+              </good-example>
+              <bad-example>
+              cd /foo/bar && pytest tests
+              </bad-example>
+
+        Args:
+            command: list[str]: The shell command to execute as a list of strings.
+                Example: ["ls", "-la"] or ["cat", "file.txt"]
+                
+            Absolute_workdir could be presented workdir in the system prompt or one of the subdirectories of the workdir.
+            this is the only allowed path, and accessing else will result in an error.
+            description: str: A clear, concise description of what this command does in 5-10 words.
+            timeout: int: Maximum execution time in seconds (default: 30)
+        Returns:
+            Dictionary with stdout, stderr, and exit_code from the command execution.
+            If the command is rejected for security reasons, stderr will contain the reason.
+            The stdout will include information about which working directory was used.
+        """))
+        async def run_shell(command: List[str], absolute_workdir: str,  description: str, timeout: int = 30) -> str:
+            """Execute shell commands securely using the configured provider."""
+            try:
+                # Use the default working directory if none is specified
+                effective_workdir = absolute_workdir or self.default_workdir
+                print(f" {command} to {description}")
+                # Verify that the working directory exists
+                if effective_workdir and not os.path.exists(effective_workdir):
+                    return str({
+                        "stdout": "",
+                        "stderr": f"Working directory does not exist: {effective_workdir}",
+                        "exit_code": 1
+                    })
+                
+                if effective_workdir and not os.path.isdir(effective_workdir):
+                    return str({
+                        "stdout": "",
+                        "stderr": f"Path is not a directory: {effective_workdir}",
+                        "exit_code": 1
+                    })
+                
+                result = await self.code_provider.execute_shell(command, timeout, effective_workdir)
+                return str(result)
+            except Exception as e:
+                COLOR = {
+                    "RED": "\033[91m",
+                    "ENDC": "\033[0m",
+                }
+                print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
+                print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
+                
+                return f"Error executing shell command: {str(e)}"
+        
         self.agent.add_tool(run_python)
+        self.agent.add_tool(run_shell)
+    
+    def set_default_workdir(self, workdir: str, create_if_not_exists: bool = False):
+        """
+        Set the default working directory for shell commands.
+        
+        Args:
+            workdir: The path to use as the default working directory
+            create_if_not_exists: If True, create the directory if it doesn't exist
+        
+        Raises:
+            ValueError: If the directory doesn't exist and create_if_not_exists is False
+            OSError: If there's an error creating the directory
+        """
+        workdir = os.path.expanduser(workdir)  # Expand user directory if needed
+        
+        if not os.path.exists(workdir):
+            if create_if_not_exists:
+                try:
+                    os.makedirs(workdir, exist_ok=True)
+                    print(f"Created directory: {workdir}")
+                except OSError as e:
+                    raise OSError(f"Failed to create directory {workdir}: {str(e)}")
+            else:
+                raise ValueError(f"Directory does not exist: {workdir}")
+        
+        if not os.path.isdir(workdir):
+            raise ValueError(f"Path is not a directory: {workdir}")
+            
+        self.default_workdir = workdir
+    
+    def get_default_workdir(self) -> str:
+        """
+        Get the current default working directory for shell commands.
+        
+        Returns:
+            The current default working directory path
+        """
+        return self.default_workdir
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
         """
@@ -307,6 +436,22 @@ class TinyCodeAgent:
             The agent's response
         """
         return await self.agent.run(user_input, max_turns)
+    
+    async def resume(self, max_turns: int = 10) -> str:
+        """
+        Resume the conversation without adding a new user message.
+        
+        This method continues the conversation from the current state,
+        allowing the agent to process the existing conversation history
+        and potentially take additional actions.
+        
+        Args:
+            max_turns: Maximum number of conversation turns
+            
+        Returns:
+            The agent's response
+        """
+        return await self.agent.resume(max_turns)
     
     async def connect_to_server(self, command: str, args: List[str], **kwargs):
         """Connect to an MCP server."""
@@ -581,6 +726,7 @@ async def run_example():
     Code tools: Available in the Python execution environment
     """
     from tinyagent import tool
+    import os
     
     # Example LLM tool - available to the LLM for direct calling
     @tool(name="search_web", description="Search the web for information")
@@ -610,7 +756,8 @@ async def run_example():
         },
         authorized_imports=["tinyagent", "gradio", "requests", "numpy", "pandas"],  # Explicitly specify authorized imports
         local_execution=False,  # Remote execution via Modal (default)
-        check_string_obfuscation=True
+        check_string_obfuscation=True,
+        default_workdir=os.path.join(os.getcwd(), "examples")  # Set a default working directory for shell commands
     )
     
     # Connect to MCP servers
@@ -625,6 +772,13 @@ async def run_example():
     
     print("Remote Agent Response:")
     print(response_remote)
+    print("\n" + "="*80 + "\n")
+    
+    # Test the resume functionality
+    print("🔄 Testing resume functionality (continuing without new user input)")
+    resume_response = await agent_remote.resume(max_turns=3)
+    print("Resume Response:")
+    print(resume_response)
     print("\n" + "="*80 + "\n")
     
     # Now test with local execution
@@ -689,6 +843,44 @@ async def run_example():
     response2_local = await agent_local.run(validation_prompt)
     print("Local Agent Validation Response:")
     print(response2_local)
+    
+    # Test shell execution
+    print("\n" + "="*80)
+    print("🐚 Testing shell execution")
+    
+    shell_prompt = "Run 'ls -la' to list files in the current directory."
+    
+    response_shell = await agent_remote.run(shell_prompt)
+    print("Shell Execution Response:")
+    print(response_shell)
+    
+    # Test default working directory functionality
+    print("\n" + "="*80)
+    print("🏠 Testing default working directory functionality")
+    
+    # Set a custom default working directory
+    custom_dir = os.path.expanduser("~")  # Use home directory as an example
+    agent_remote.set_default_workdir(custom_dir)
+    print(f"Set default working directory to: {custom_dir}")
+    
+    # Create a new directory for testing
+    test_dir = os.path.join(os.getcwd(), "test_workdir")
+    print(f"Setting default working directory with auto-creation: {test_dir}")
+    agent_remote.set_default_workdir(test_dir, create_if_not_exists=True)
+    
+    # Run shell command without specifying workdir - should use the default
+    shell_prompt_default_dir = "Run 'pwd' to show the current working directory."
+    
+    response_shell_default = await agent_remote.run(shell_prompt_default_dir)
+    print("Shell Execution with Default Working Directory:")
+    print(response_shell_default)
+    
+    # Run shell command with explicit workdir - should override the default
+    shell_prompt_explicit_dir = "Run 'pwd' in the /tmp directory."
+    
+    response_shell_explicit = await agent_remote.run(shell_prompt_explicit_dir)
+    print("Shell Execution with Explicit Working Directory:")
+    print(response_shell_explicit)
     
     await agent_remote.close()
     await agent_local.close()

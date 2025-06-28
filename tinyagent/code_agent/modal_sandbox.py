@@ -78,7 +78,7 @@ def create_sandbox(
 
     if apt_packages is None:
         # Always install the basics required for most workflows
-        apt_packages = ("git", "curl", "nodejs", "npm")
+        apt_packages = ("git", "curl", "nodejs", "npm","ripgrep")
 
     if default_packages is None:
         default_packages = (

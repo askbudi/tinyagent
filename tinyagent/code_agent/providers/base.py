@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 from tinyagent.hooks.logging_manager import LoggingManager
 import cloudpickle
 
@@ -35,6 +35,14 @@ class CodeExecutionProvider(ABC):
         self._locals_dict = kwargs.get("locals_dict", {})
         self._user_variables = {}
         self.code_tools_definitions = []
+        # Safe shell commands that don't modify the system or access sensitive data
+        self.safe_shell_commands: Set[str] = {
+            "ls", "cat", "grep", "find", "echo", "pwd", "whoami", "date", 
+            "head", "tail", "wc", "sort", "uniq", "tr", "cut", "sed", "awk",
+            "ps", "df", "du", "uname", "which", "type", "file", "stat","rg",""
+        }
+        # Safe control operators for shell commands
+        self.safe_control_operators: Set[str] = {"&&", "||", ";", "|"}
     
     @abstractmethod
     async def execute_python(
@@ -57,6 +65,71 @@ class CodeExecutionProvider(ABC):
             - error_traceback: exception traceback if any error occurred
         """
         pass
+    
+    @abstractmethod
+    async def execute_shell(
+        self,
+        command: List[str],
+        timeout: int = 10,
+        workdir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute a shell command securely and return the result.
+        
+        Args:
+            command: List of command parts to execute
+            timeout: Maximum execution time in seconds
+            workdir: Working directory for command execution
+            
+        Returns:
+            Dictionary containing execution results with keys:
+            - stdout: stdout from the execution
+            - stderr: stderr from the execution
+            - exit_code: exit code from the command
+        """
+        pass
+    
+    def is_safe_command(self, command: List[str]) -> Dict[str, Any]:
+        """
+        Check if a shell command is safe to execute.
+        
+        Args:
+            command: List of command parts to check
+            
+        Returns:
+            Dictionary with:
+            - safe: Boolean indicating if command is safe
+            - reason: Reason why command is not safe (if applicable)
+        """
+        if not command or not isinstance(command, list) or len(command) == 0:
+            return {"safe": False, "reason": "Empty or invalid command"}
+            
+        # Check if it's a direct command execution
+        bin_name = command[0].split("/")[-1]
+        if bin_name in self.safe_shell_commands:
+            return {"safe": True}
+            
+        # Check if it's a bash -c execution
+        if bin_name == "bash" and len(command) >= 3 and command[1] in ["-c", "-lc"]:
+            shell_expr = command[2]
+            
+            # Simple parsing to check for unsafe commands
+            # This is a basic implementation - a real implementation would use a proper shell parser
+            parts = shell_expr.split()
+            for i, part in enumerate(parts):
+                # Skip control operators
+                if part in self.safe_control_operators:
+                    continue
+                    
+                # Check if it's a command (not a flag or argument)
+                if i == 0 or parts[i-1] in self.safe_control_operators:
+                    cmd = part.split("/")[-1]
+                    if cmd not in self.safe_shell_commands:
+                        return {"safe": False, "reason": f"Unsafe command: {cmd}"}
+            
+            return {"safe": True}
+            
+        return {"safe": False, "reason": f"Command not in safe list: {bin_name}"}
     
     @abstractmethod
     async def cleanup(self):
@@ -205,3 +278,17 @@ class CodeExecutionProvider(ABC):
             except Exception:
                 # If serialization fails, skip this variable
                 pass 
+    
+    def shell_response_to_llm_understandable(self, response: Dict[str, Any]) -> str:
+        """
+        Convert a shell command response to a format that is understandable by the LLM.
+        """
+        if response.get('stderr',None) not in [None,""]:
+            error_message = "Bash Error: " + response['stderr']
+            if "No such file or directory" in response['stderr']:
+                error_message.replace("No such file or directory", "No such file or directory, Have you provided the correct absolute path? If you are unsure use ls first to make sure the path exists")
+            if "Command timed out after" in response['stderr']:
+                error_message += ", Make sure your command is specific enough. And only if it is the most specific and optimized command then try to increase the timeout parameter if you need to more time for this command."
+            return error_message
+        else:
+            return response['stdout']

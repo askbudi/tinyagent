@@ -1,9 +1,22 @@
 import sys
 import modal
 import cloudpickle
+from pprint import pprint
 from typing import Dict, List, Any, Optional, Union
 from .base import CodeExecutionProvider
-from ..utils import clean_response, make_session_blob, _run_python
+from ..utils import clean_response, make_session_blob, _run_python, _run_shell
+try:
+    from ..modal_sandbox import COLOR
+except ImportError:
+    # Fallback colors if modal_sandbox is not available
+    COLOR = {
+    "HEADER": "\033[95m",
+    "BLUE": "\033[94m",
+    "GREEN": "\033[92m",
+    "RED": "\033[91m",
+    "ENDC": "\033[0m",
+}
+
 
 
 class ModalProvider(CodeExecutionProvider):
@@ -16,6 +29,7 @@ class ModalProvider(CodeExecutionProvider):
     """
     
     PYTHON_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
+    TIMEOUT_MAX = 120
     
     def __init__(
         self,
@@ -77,7 +91,7 @@ class ModalProvider(CodeExecutionProvider):
             ]
 
         if apt_packages is None:
-            apt_packages = ["git", "curl", "nodejs", "npm"]
+            apt_packages = ["git", "curl", "nodejs", "npm","ripgrep"]
 
         if python_version is None:
             python_version = self.PYTHON_VERSION
@@ -108,6 +122,7 @@ class ModalProvider(CodeExecutionProvider):
         self.modal_secrets = modal.Secret.from_dict(self.secrets)
         self.app = None
         self._app_run_python = None
+        self._app_run_shell = None
         self.is_trusted_code = kwargs.get("trust_code", False)
         
         self._setup_modal_app()
@@ -133,6 +148,7 @@ class ModalProvider(CodeExecutionProvider):
         )
         
         self._app_run_python = self.app.function()(_run_python)
+        self._app_run_shell = self.app.function()(_run_shell)
         
         # Add tools if provided
         if self.code_tools:
@@ -185,6 +201,89 @@ class ModalProvider(CodeExecutionProvider):
         self._log_response(response)
         
         return clean_response(response)
+    
+    async def execute_shell(
+        self,
+        command: List[str],
+        timeout: int = 30,
+        workdir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute a shell command securely using Modal.
+        
+        Args:
+            command: List of command parts to execute
+            timeout: Maximum execution time in seconds
+            workdir: Working directory for command execution
+            
+        Returns:
+            Dictionary containing execution results with keys:
+            - stdout: stdout from the execution
+            - stderr: stderr from the execution
+            - exit_code: exit code from the command
+        """
+        # First, check if the command is safe to execute
+        timeout = min(timeout, self.TIMEOUT_MAX)
+
+        print("#########################<Bash>#########################")
+        print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
+        safety_check = self.is_safe_command(command)
+        if not safety_check["safe"]:
+            
+            response = {
+                "stdout": "",
+                "stderr": f"Command rejected for security reasons: {safety_check.get('reason', 'Unsafe command')}",
+                "exit_code": 1
+            }
+            print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+            return response
+        #execution_mode = "🏠 LOCALLY" if self.local_execution else "☁️ REMOTELY"
+        #print(f"Executing shell command {execution_mode} via Modal: {' '.join(command)}")
+        
+        # Show working directory information
+        #if workdir:
+        #    print(f"Working directory: {workdir}")
+        
+        # If using Modal for remote execution
+        if not self.local_execution:
+            try:
+                with self.app.run():
+                    result = self._app_run_shell.remote(
+                        command=command,
+                        timeout=timeout,
+                        workdir=workdir
+                    )
+                
+                
+                print(f"{COLOR['GREEN']}{result}{COLOR['ENDC']}")
+                return result
+            except Exception as e:
+                response = {
+                    "stdout": "",
+                    "stderr": f"Error executing shell command: {str(e)}",
+                    "exit_code": 1
+                }
+                
+                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+                return response
+        # If executing locally
+        else:
+            try:
+                result = self._app_run_shell.local(
+                    command=command,
+                    timeout=timeout,
+                    workdir=workdir
+                )
+                print(f"{COLOR['GREEN']}{result}{COLOR['ENDC']}")
+                return result
+            except Exception as e:
+                response = {
+                    "stdout": "",
+                    "stderr": f"Error executing shell command: {str(e)}",
+                    "exit_code": 1
+                }
+                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+                return response
     
     def _python_executor(self, code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dict[str, Any] = None):
         """Execute Python code using Modal's native .local() or .remote() methods."""
@@ -244,14 +343,7 @@ class ModalProvider(CodeExecutionProvider):
             # Check if this is a security exception and highlight it in red if so
             error_text = response["error_traceback"]
             if "SECURITY" in error_text:
-                try:
-                    from ..modal_sandbox import COLOR
-                except ImportError:
-                    # Fallback colors if modal_sandbox is not available
-                    COLOR = {
-                        "RED": "\033[91m",
-                        "ENDC": "\033[0m",
-                    }
+                
                 print(f"{COLOR['RED']}{error_text}{COLOR['ENDC']}")
             else:
                 print(error_text)

@@ -1,5 +1,7 @@
 import sys
 import cloudpickle
+import subprocess
+import os
 from typing import Dict, Any, List
 from .safety import validate_code_safety, function_safety_context
 
@@ -39,6 +41,58 @@ def make_session_blob(ns: dict) -> bytes:
             clean[name] = val
 
     return cloudpickle.dumps(clean)
+
+
+def _run_shell(
+    command: List[str],
+    timeout: int = 10,
+    workdir: str = None
+) -> Dict[str, Any]:
+    """
+    Execute a shell command securely with proper timeout and error handling.
+    
+    Args:
+        command: List of command parts to execute
+        timeout: Maximum execution time in seconds
+        workdir: Working directory for command execution
+        
+    Returns:
+        Dictionary containing execution results with keys:
+        - stdout: stdout from the execution
+        - stderr: stderr from the execution
+        - exit_code: exit code from the command
+    """
+    try:
+        # Set working directory if provided
+        cwd = os.path.expanduser(workdir) if workdir else None
+        
+        # Execute the command with timeout
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            check=False  # Don't raise exception on non-zero exit code
+        )
+        
+        return {
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "exit_code": process.returncode
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "stdout": "",
+            "stderr": f"Command timed out after {timeout} seconds",
+            "exit_code": 124  # Standard timeout exit code
+        }
+    except Exception as e:
+        return {
+            "stdout": "",
+            "stderr": f"Error executing command: {str(e)}",
+            "exit_code": 1
+        }
 
 
 def _run_python(
