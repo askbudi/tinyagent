@@ -586,6 +586,42 @@ class TinyAgent:
         self.messages.append(user_message)
         await self._run_callbacks("message_add", message=self.messages[-1])
         
+        return await self._run_agent_loop(max_turns)
+    
+    async def resume(self, max_turns: int = 10) -> str:
+        """
+        Resume the conversation without adding a new user message.
+        
+        This method continues the conversation from the current state,
+        allowing the agent to process the existing conversation history
+        and potentially take additional actions.
+        
+        Args:
+            max_turns: Maximum number of conversation turns
+            
+        Returns:
+            The agent's response
+        """
+        # Ensure any deferred session-load happens exactly once
+        if self._needs_session_load:
+            self.logger.debug(f"Deferred session load detected for {self.session_id}; loading now")
+        await self.init_async()
+        
+        # Notify start with resume flag
+        await self._run_callbacks("agent_start", resume=True)
+        
+        return await self._run_agent_loop(max_turns)
+    
+    async def _run_agent_loop(self, max_turns: int = 10) -> str:
+        """
+        Internal method that runs the agent's main loop.
+        
+        Args:
+            max_turns: Maximum number of conversation turns
+            
+        Returns:
+            The agent's response
+        """
         # Initialize loop control variables
         num_turns = 0
         next_turn_should_call_tools = True
@@ -994,7 +1030,13 @@ async def run_example():
     agent_logger.info(f"Running agent with input: {user_input}")
     result = await agent.run(user_input)
     
-    agent_logger.info(f"Final result: {result}")
+    agent_logger.info(f"Initial result: {result}")
+    
+    # Now demonstrate the resume functionality
+    agent_logger.info("Resuming the conversation without new user input")
+    resume_result = await agent.resume(max_turns=3)
+    
+    agent_logger.info(f"Resume result: {resume_result}")
     
     # Clean up
     await agent.close()
