@@ -340,7 +340,7 @@ class TinyCodeAgent:
             - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
             - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
             - If the output exceeds 30000 characters, output will be truncated before being returned to you.
-            - VERY IMPORTANT: You MUST avoid using search commands like `find` and `grep`. Instead use Grep, Glob, or Task to search. You MUST avoid read tools like `cat`, `head`, `tail`, and `ls`, and use Read and LS to read files.
+            
            - If you _still_ need to run `grep`, STOP. ALWAYS USE ripgrep at `rg` first, which all ${PRODUCT_NAME} users have pre-installed.
           "  - When issuing multiple commands, use the ; or && operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).\n" +
             - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.
@@ -352,10 +352,9 @@ class TinyCodeAgent:
               </bad-example>
 
         Args:
-            command: list[str]: The shell command to execute as a list of strings.
-                Example: ["ls", "-la"] or ["cat", "file.txt"]
+            command: list[str]: The shell command to execute as a list of strings.  Example: ["ls", "-la"] or ["cat", "file.txt"]
                 
-            Absolute_workdir could be presented workdir in the system prompt or one of the subdirectories of the workdir.
+            absolute_workdir could be presented workdir in the system prompt or one of the subdirectories of the workdir.
             this is the only allowed path, and accessing else will result in an error.
             description: str: A clear, concise description of what this command does in 5-10 words.
             timeout: int: Maximum execution time in seconds (default: 30)

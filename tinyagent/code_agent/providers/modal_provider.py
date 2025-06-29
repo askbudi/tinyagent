@@ -224,6 +224,8 @@ class ModalProvider(CodeExecutionProvider):
         """
         # First, check if the command is safe to execute
         timeout = min(timeout, self.TIMEOUT_MAX)
+        if type(command) == str:
+            command = command.split(" ")
 
         print("#########################<Bash>#########################")
         print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
@@ -241,8 +243,8 @@ class ModalProvider(CodeExecutionProvider):
         #print(f"Executing shell command {execution_mode} via Modal: {' '.join(command)}")
         
         # Show working directory information
-        #if workdir:
-        #    print(f"Working directory: {workdir}")
+        if workdir:
+            print(f"Working directory: {workdir}")
         
         # If using Modal for remote execution
         if not self.local_execution:

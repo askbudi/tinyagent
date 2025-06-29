@@ -105,33 +105,37 @@ class CodeExecutionProvider(ABC):
             command = command.split(" ")
         if not command or not isinstance(command, list) or len(command) == 0:
             return {"safe": False, "reason": "Empty or invalid command"}
+        
+        # Shell operators that might be passed as separate arguments
+        shell_operators = ['|', '>', '<', '>>', '<<', '&&', '||', ';']
+        
+        # Extract actual commands from the command list, ignoring shell operators
+        commands_to_check = []
+        i = 0
+        while i < len(command):
+            if command[i] in shell_operators:
+                i += 1
+                continue
             
-        # Check if it's a direct command execution
-        bin_name = command[0].split("/")[-1]
-        if bin_name in self.safe_shell_commands:
-            return {"safe": True}
+            # Extract the binary name
+            bin_name = command[i].split("/")[-1]
+            commands_to_check.append(bin_name)
             
-        # Check if it's a bash -c execution
-        if bin_name == "bash" and len(command) >= 3 and command[1] in ["-c", "-lc"]:
-            shell_expr = command[2]
-            
-            # Simple parsing to check for unsafe commands
-            # This is a basic implementation - a real implementation would use a proper shell parser
-            parts = shell_expr.split()
-            for i, part in enumerate(parts):
-                # Skip control operators
-                if part in self.safe_control_operators:
-                    continue
-                    
-                # Check if it's a command (not a flag or argument)
-                if i == 0 or parts[i-1] in self.safe_control_operators:
-                    cmd = part.split("/")[-1]
-                    if cmd not in self.safe_shell_commands:
-                        return {"safe": False, "reason": f"Unsafe command: {cmd}"}
-            
-            return {"safe": True}
-            
-        return {"safe": False, "reason": f"Command not in safe list: {bin_name}"}
+            # Skip to next command after an operator
+            i += 1
+            while i < len(command) and command[i] not in shell_operators:
+                i += 1
+        
+        # Check if all commands are in the safe list
+        for cmd in commands_to_check:
+            # Handle wildcards in command names (e.g., *.py)
+            if '*' in cmd or '?' in cmd:
+                continue
+                
+            if cmd not in self.safe_shell_commands:
+                return {"safe": False, "reason": f"Unsafe command: {cmd}"}
+        
+        return {"safe": True}
     
     @abstractmethod
     async def cleanup(self):

@@ -4,6 +4,7 @@ import subprocess
 import os
 from typing import Dict, Any, List
 from .safety import validate_code_safety, function_safety_context
+import shlex
 
 
 def clean_response(resp: Dict[str, Any]) -> Dict[str, Any]:
@@ -66,15 +67,53 @@ def _run_shell(
         # Set working directory if provided
         cwd = os.path.expanduser(workdir) if workdir else None
         
-        # Execute the command with timeout
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
-            check=False  # Don't raise exception on non-zero exit code
-        )
+        # Check if this is a command that needs bash -c wrapping
+        if len(command) > 0:
+            # If the command already uses bash -c, use it directly
+            if command[0] == "bash" and len(command) >= 3 and command[1] in ["-c", "-lc"]:
+                process = subprocess.run(
+                    command,
+                    shell=False,  # No need for shell=True as we're explicitly using bash -c
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=cwd,
+                    check=False
+                )
+            else:
+                # For all other commands, wrap in bash -c to handle shell operators
+                # and properly quote arguments that need quoting
+                
+                # Shell operators that should not be quoted
+                shell_operators = ['|', '&&', '||', '>', '<', '>>', '<<', ';']
+                
+                # Quote each part that needs quoting
+                quoted_parts = []
+                for part in command:
+                    if part in shell_operators:
+                        # Don't quote shell operators
+                        quoted_parts.append(part)
+                    else:
+                        # Use shlex.quote to properly escape special characters
+                        quoted_parts.append(shlex.quote(part))
+                
+                shell_command = " ".join(quoted_parts)
+                process = subprocess.run(
+                    ["bash", "-c", shell_command],
+                    shell=False,  # Using explicit bash -c instead of shell=True
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=cwd,
+                    check=False
+                )
+        else:
+            # Empty command
+            return {
+                "stdout": "",
+                "stderr": "Empty command",
+                "exit_code": 1
+            }
         
         return {
             "stdout": process.stdout,
