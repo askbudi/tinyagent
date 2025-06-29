@@ -126,7 +126,6 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
                 try:
                     # e.g., ":param user_id: The ID of the user."
                     parts = line.split(" ", 2)
-                    print(f"parts: {parts}")
                     if len(parts) >= 3:
                         param_name = parts[1].strip().split(" ")[0]
                         param_descriptions[param_name] = parts[2].strip()
@@ -145,7 +144,6 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
                 # Check for continued description from previous param
                 elif current_param and line.startswith((' ', '\t')):
                     param_descriptions[current_param] += " " + line.strip()
-    print(f"param_descriptions: {param_descriptions}")
     # Skip 'self' parameter for methods
     params = {
         name: param for name, param in sig.parameters.items() 
