@@ -10,6 +10,14 @@ from .providers.modal_provider import ModalProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
 
 
+DEFAULT_SUMMARY_SYSTEM_PROMPT = (
+    "You are an expert coding assistant. Your goal is to generate a concise, structured summary "
+    "of the conversation below that captures all essential information needed to continue "
+    "development after context replacement. Include tasks performed, code areas modified or "
+    "reviewed, key decisions or assumptions, test results or errors, and outstanding tasks or next steps."
+    
+)
+
 class TinyCodeAgent:
     """
     A TinyAgent specialized for code execution tasks.
@@ -35,6 +43,7 @@ class TinyCodeAgent:
         local_execution: bool = False,
         check_string_obfuscation: bool = True,
         default_workdir: Optional[str] = None,
+        summary_config: Optional[Dict[str, Any]] = None,
         **agent_kwargs
     ):
         """
@@ -57,6 +66,7 @@ class TinyCodeAgent:
             check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow 
                                 legitimate use of base64 encoding and other string manipulations.
             default_workdir: Default working directory for shell commands. If None, the current working directory is used.
+            summary_config: Optional configuration for generating conversation summaries
             **agent_kwargs: Additional arguments passed to TinyAgent
         """
         self.model = model
@@ -84,12 +94,16 @@ class TinyCodeAgent:
         self.static_system_prompt= system_prompt
         self.system_prompt =  self._build_system_prompt(system_prompt_template)
         
-        # Create the underlying TinyAgent
+        
+        self.summary_config = summary_config or {}
+
+        # Create the underlying TinyAgent with summary configuration
         self.agent = TinyAgent(
             model=model,
             api_key=api_key,
             system_prompt=self.system_prompt,
             logger=log_manager.get_logger('tinyagent.tiny_agent') if log_manager else None,
+            summary_config=summary_config,
             **agent_kwargs
         )
         
@@ -714,6 +728,33 @@ class TinyCodeAgent:
         # Update the provider with the new setting
         if hasattr(self.code_provider, 'check_string_obfuscation'):
             self.code_provider.check_string_obfuscation = enabled
+
+    async def summarize(self) -> str:
+        """
+        Generate a summary of the current conversation history.
+        
+        Args:
+        Returns:
+            A string containing the conversation summary
+        """
+        # Use the underlying TinyAgent's summarize_conversation method
+        return await self.agent.summarize()
+        
+    async def compact(self) -> bool:
+        """
+        Compact the conversation history by replacing it with a summary.
+        
+        This method delegates to the underlying TinyAgent's compact method,
+        which:
+        1. Generates a summary of the current conversation
+        2. If successful, replaces the conversation with just [system, user] messages
+           where the user message contains the summary
+        3. Returns True if compaction was successful, False otherwise
+        
+        Returns:
+            Boolean indicating whether the compaction was successful
+        """
+        return await self.agent.compact()
 
 
 # Example usage demonstrating both LLM tools and code tools

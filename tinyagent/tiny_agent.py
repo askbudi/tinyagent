@@ -132,6 +132,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "If a tool you need isn't available, just say so."
 )
 
+DEFAULT_SUMMARY_SYSTEM_PROMPT = (
+    "You are an expert assistant. Your goal is to generate a concise, structured summary "
+    "of the conversation below that captures all essential information needed to continue "
+    "development after context replacement. Include tasks performed, code areas modified or "
+    "reviewed, key decisions or assumptions, test results or errors, and outstanding tasks or next steps."
+)
+
 class TinyAgent:
     """
     A minimal implementation of an agent powered by MCP and LiteLLM,
@@ -154,7 +161,8 @@ class TinyAgent:
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
-        persist_tool_configs: bool = False
+        persist_tool_configs: bool = False,
+        summary_config: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the Tiny Agent.
@@ -168,6 +176,8 @@ class TinyAgent:
             metadata: Optional metadata for the session
             storage: Optional storage backend for persistence
             persist_tool_configs: Whether to persist tool configurations
+            summary_model: Optional model to use for generating conversation summaries
+            summary_system_prompt: Optional system prompt for the summary model
         """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
@@ -196,6 +206,8 @@ class TinyAgent:
             "role": "system",
             "content": system_prompt or DEFAULT_SYSTEM_PROMPT
         }]
+        
+        self.summary_config = summary_config or {}
         
         # This list now accumulates tools from *all* connected MCP servers:
         self.available_tools: List[Dict[str, Any]] = []
@@ -969,6 +981,154 @@ class TinyAgent:
                     self.session_state[key] = value
             
             # Tool configs would be handled separately if needed
+
+    async def summarize(self) -> str:
+        """
+        Generate a summary of the current conversation history.
+        
+        Args:
+            custom_model: Optional model to use for summary generation (overrides self.summary_model)
+            custom_system_prompt: Optional system prompt for summary generation (overrides self.summary_system_prompt)
+            
+        Returns:
+            A string containing the conversation summary
+        """
+        # Skip if there are no messages or just the system message
+        if len(self.messages) <= 1:
+            return "No conversation to summarize."
+        
+        # Use provided parameters or defaults
+        system_prompt = self.summary_config.get("system_prompt",DEFAULT_SUMMARY_SYSTEM_PROMPT)
+        
+        # Format the conversation into a single string
+        conversation_text = self._format_conversation_for_summary()
+        
+        # Build the prompt for the summary model
+        summary_messages = [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": f"Here is the conversation so far:\n{conversation_text}\n\nPlease summarize this conversation, covering:\n0. What is the task its requirments, goals and constraints\n1. Tasks performed and outcomes\n2. Code files, modules, or functions modified or examined\n3. Important decisions or assumptions made\n4. Errors encountered and test or build results\n5. Remaining tasks, open questions, or next steps\nProvide the summary in a clear, concise format."
+            }
+        ]
+        
+        try:
+            # Log that we're generating a summary
+            self.logger.info(f"Generating conversation summary using model {self.summary_config.get('model',self.model)}")
+            
+            # Call the LLM to generate the summary
+            response = await litellm.acompletion(
+                model=self.summary_config.get("model",self.model),
+                api_key=self.summary_config.get("api_key",self.api_key),
+                messages=summary_messages,
+                temperature=self.summary_config.get("temperature",self.temperature),  # Use low temperature for consistent summaries
+                max_tokens=self.summary_config.get("max_tokens",8000)   # Reasonable limit for summary length
+            )
+            
+            # Extract the summary from the response
+            summary = response.choices[0].message.content
+            return summary
+            
+        except Exception as e:
+            self.logger.error(f"Error generating conversation summary: {str(e)}")
+            return f"Failed to generate summary: {str(e)}"
+    
+    async def compact(self) -> bool:
+        """
+        Compact the conversation history by replacing it with a summary.
+        
+        This method:
+        1. Generates a summary of the current conversation
+        2. If successful, replaces the conversation with just [system, user] messages
+           where the user message contains the summary
+        3. Returns True if compaction was successful, False otherwise
+        
+        Returns:
+            Boolean indicating whether the compaction was successful
+        """
+        # Skip if there are no messages or just the system message
+        if len(self.messages) <= 1:
+            self.logger.info("No conversation to compact.")
+            return False
+        
+        # Generate the summary
+        summary = await self.summarize()
+        
+        # Check if the summary generation was successful
+        if summary.startswith("Failed to generate summary:") or summary == "No conversation to summarize.":
+            self.logger.error(f"Compaction failed: {summary}")
+            return False
+        
+        # Save the system message
+        system_message = self.messages[0]
+        
+        
+        # Create a new user message with the summary
+        summary_message = {
+            "role": "user",
+            "content": f"CONVERSATION SUMMARY:\n\n{summary}",
+            "created_at": int(time.time())
+        }
+        
+        # Replace the conversation with just [system, user] messages
+        self.messages = [system_message, summary_message]
+        
+        # Notify about the compaction
+        self.logger.info("🤐Conversation successfully compacted.")
+        await self._run_callbacks("message_add", message=summary_message)
+        
+        return True
+    
+    def _format_conversation_for_summary(self) -> str:
+        """
+        Format the conversation history into a string for summarization.
+        
+        Returns:
+            A string representing the conversation in the format:
+            user: content
+            assistant: content
+            tool_call: tool name and args
+            tool_response: response content
+            ...
+        """
+        formatted_lines = []
+        
+        # Skip the system message (index 0)
+        for message in self.messages[1:]:
+            role = message.get("role", "unknown")
+            
+            if role == "user":
+                formatted_lines.append(f"user: {message.get('content', '')}")
+            
+            elif role == "assistant":
+                content = message.get("content", "")
+                tool_calls = message.get("tool_calls", [])
+                
+                # Add assistant message content if present
+                if content:
+                    formatted_lines.append(f"assistant: {content}")
+                
+                # Add tool calls if present
+                for tool_call in tool_calls:
+                    function_info = tool_call.get("function", {})
+                    tool_name = function_info.get("name", "unknown_tool")
+                    arguments = function_info.get("arguments", "{}")
+                    
+                    formatted_lines.append(f"tool_call: {tool_name} with args {arguments}")
+            
+            elif role == "tool":
+                tool_name = message.get("name", "unknown_tool")
+                content = message.get("content", "")
+                formatted_lines.append(f"tool_response: {content}")
+            
+            else:
+                # Handle any other message types
+                formatted_lines.append(f"{role}: {message.get('content', '')}")
+        
+        return "\n".join(formatted_lines)
 
 async def run_example():
     """Example usage of TinyAgent with proper logging."""

@@ -39,7 +39,7 @@ class CodeExecutionProvider(ABC):
         self.safe_shell_commands: Set[str] = {
             "ls", "cat", "grep", "find", "echo", "pwd", "whoami", "date", 
             "head", "tail", "wc", "sort", "uniq", "tr", "cut", "sed", "awk",
-            "ps", "df", "du", "uname", "which", "type", "file", "stat","rg",""
+            "ps", "df", "du", "uname", "which", "type", "file", "stat","rg","if"
         }
         # Safe control operators for shell commands
         self.safe_control_operators: Set[str] = {"&&", "||", ";", "|"}
@@ -101,6 +101,8 @@ class CodeExecutionProvider(ABC):
             - safe: Boolean indicating if command is safe
             - reason: Reason why command is not safe (if applicable)
         """
+        if type(command) == str:
+            command = command.split(" ")
         if not command or not isinstance(command, list) or len(command) == 0:
             return {"safe": False, "reason": "Empty or invalid command"}
             
