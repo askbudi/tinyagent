@@ -39,6 +39,11 @@ def tool(name: Optional[str] = None, description: Optional[str] = None,
         # Get the description (use provided description or docstring)
         tool_description = description or inspect.getdoc(func_or_class) or f"Tool based on {tool_name}"
         
+        # Temporarily attach the description to the function/class
+        # This allows _generate_schema_from_function to access it for param extraction
+        if description:
+            func_or_class._temp_tool_description = description
+        
         # Generate schema if not provided
         tool_schema = schema or {}
         if not tool_schema:
@@ -49,6 +54,10 @@ def tool(name: Optional[str] = None, description: Optional[str] = None,
             else:
                 # For functions, use the function itself
                 tool_schema = _generate_schema_from_function(func_or_class)
+        
+        # Clean up temporary attribute
+        if hasattr(func_or_class, '_temp_tool_description'):
+            delattr(func_or_class, '_temp_tool_description')
         
         # Attach metadata to the function or class
         func_or_class._tool_metadata = {
@@ -76,21 +85,67 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
     sig = inspect.signature(func)
     type_hints = get_type_hints(func)
     
-    # Simple docstring parser for parameter descriptions
-    docstring = inspect.getdoc(func)
+    # Extract parameter descriptions from docstring
     param_descriptions = {}
+    
+    # First check if we have a tool decorator description (has higher priority)
+    decorator_description = None
+    if hasattr(func, '_temp_tool_description'):
+        decorator_description = func._temp_tool_description
+    
+    # Get function docstring
+    docstring = inspect.getdoc(func) or ""
+    
+    # Combine sources to check for parameter descriptions
+    sources_to_check = []
+    if decorator_description:
+        sources_to_check.append(decorator_description)
     if docstring:
-        for line in docstring.split('\n'):
+        sources_to_check.append(docstring)
+    
+    # Parse parameter descriptions from all sources
+    for source in sources_to_check:
+        lines = source.split('\n')
+        in_args_section = False
+        current_param = None
+        
+        for line in lines:
             line = line.strip()
+            
+            # Check for Args/Parameters section markers
+            if line.lower() in ('args:', 'arguments:', 'parameters:'):
+                in_args_section = True
+                continue
+                
+            # Check for other section markers that would end the args section
+            if line.lower() in ('returns:', 'raises:', 'yields:', 'examples:') and in_args_section:
+                in_args_section = False
+                
+            # Look for :param or :arg style parameter descriptions
             if line.startswith((":param", ":arg")):
                 try:
                     # e.g., ":param user_id: The ID of the user."
-                    _, name, desc = line.split(":", 2)
-                    param_name = name.strip().split(" ")[0]
-                    param_descriptions[param_name] = desc.strip()
-                except ValueError:
-                    continue  # Skip malformed lines
-
+                    parts = line.split(" ", 2)
+                    print(f"parts: {parts}")
+                    if len(parts) >= 3:
+                        param_name = parts[1].strip().split(" ")[0]
+                        param_descriptions[param_name] = parts[2].strip()
+                except (ValueError, IndexError):
+                    continue
+                    
+            # Look for indented parameter descriptions in Args section
+            elif in_args_section and line.strip():
+                # Check for param: description pattern
+                param_match = line.lstrip().split(":", 1)
+                if len(param_match) == 2:
+                    param_name = param_match[0].strip()
+                    description = param_match[1].strip()
+                    param_descriptions[param_name] = description
+                    current_param = param_name
+                # Check for continued description from previous param
+                elif current_param and line.startswith((' ', '\t')):
+                    param_descriptions[current_param] += " " + line.strip()
+    print(f"param_descriptions: {param_descriptions}")
     # Skip 'self' parameter for methods
     params = {
         name: param for name, param in sig.parameters.items() 
