@@ -354,10 +354,9 @@ class TinyCodeAgent:
         Args:
             command: list[str]: The shell command to execute as a list of strings.  Example: ["ls", "-la"] or ["cat", "file.txt"]
                 
-            absolute_workdir could be presented workdir in the system prompt or one of the subdirectories of the workdir.
-            this is the only allowed path, and accessing else will result in an error.
+            absolute_workdir: str: could be presented workdir in the system prompt or one of the subdirectories of the workdir. This is the only allowed path, and accessing else will result in an error.
             description: str: A clear, concise description of what this command does in 5-10 words.
-            timeout: int: Maximum execution time in seconds (default: 30)
+            timeout: int: Maximum execution time in seconds (default: 30).
         Returns:
             Dictionary with stdout, stderr, and exit_code from the command execution.
             If the command is rejected for security reasons, stderr will contain the reason.
