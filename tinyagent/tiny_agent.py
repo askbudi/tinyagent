@@ -76,6 +76,21 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
     sig = inspect.signature(func)
     type_hints = get_type_hints(func)
     
+    # Simple docstring parser for parameter descriptions
+    docstring = inspect.getdoc(func)
+    param_descriptions = {}
+    if docstring:
+        for line in docstring.split('\n'):
+            line = line.strip()
+            if line.startswith((":param", ":arg")):
+                try:
+                    # e.g., ":param user_id: The ID of the user."
+                    _, name, desc = line.split(":", 2)
+                    param_name = name.strip().split(" ")[0]
+                    param_descriptions[param_name] = desc.strip()
+                except ValueError:
+                    continue  # Skip malformed lines
+
     # Skip 'self' parameter for methods
     params = {
         name: param for name, param in sig.parameters.items() 
@@ -91,9 +106,12 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
         param_type = type_hints.get(name, Any)
         
         # Create property schema
-        prop_schema = {"description": ""}
+        prop_schema = {}
+        description = param_descriptions.get(name)
+        if description:
+            prop_schema["description"] = description
         
-        # Map Python types to JSON schema types
+        # Handle different types of type annotations
         if param_type == str:
             prop_schema["type"] = "string"
         elif param_type == int:
@@ -107,7 +125,113 @@ def _generate_schema_from_function(func: Callable) -> Dict[str, Any]:
         elif param_type == dict or param_type == Dict:
             prop_schema["type"] = "object"
         else:
-            prop_schema["type"] = "string"  # Default to string for complex types
+            # Handle generic types
+            origin = getattr(param_type, "__origin__", None)
+            args = getattr(param_type, "__args__", None)
+            
+            if origin is not None and args is not None:
+                # Handle List[X], Sequence[X], etc.
+                if origin in (list, List) or (hasattr(origin, "__name__") and "List" in origin.__name__):
+                    prop_schema["type"] = "array"
+                    # Add items type if we can determine it
+                    if args and len(args) == 1:
+                        item_type = args[0]
+                        if item_type == str:
+                            prop_schema["items"] = {"type": "string"}
+                        elif item_type == int:
+                            prop_schema["items"] = {"type": "integer"}
+                        elif item_type == float:
+                            prop_schema["items"] = {"type": "number"}
+                        elif item_type == bool:
+                            prop_schema["items"] = {"type": "boolean"}
+                        else:
+                            prop_schema["items"] = {"type": "string"}
+                
+                # Handle Dict[K, V], Mapping[K, V], etc.
+                elif origin in (dict, Dict) or (hasattr(origin, "__name__") and "Dict" in origin.__name__):
+                    prop_schema["type"] = "object"
+                    # We could add additionalProperties for value type, but it's not always needed
+                    if args and len(args) == 2:
+                        value_type = args[1]
+                        if value_type == str:
+                            prop_schema["additionalProperties"] = {"type": "string"}
+                        elif value_type == int:
+                            prop_schema["additionalProperties"] = {"type": "integer"}
+                        elif value_type == float:
+                            prop_schema["additionalProperties"] = {"type": "number"}
+                        elif value_type == bool:
+                            prop_schema["additionalProperties"] = {"type": "boolean"}
+                        else:
+                            prop_schema["additionalProperties"] = {"type": "string"}
+                
+                # Handle Union types (Optional is Union[T, None])
+                elif origin is Union:
+                    # Check if this is Optional[X] (Union[X, None])
+                    if type(None) in args:
+                        # Get the non-None type
+                        non_none_types = [arg for arg in args if arg is not type(None)]
+                        if non_none_types:
+                            # Use the first non-None type
+                            main_type = non_none_types[0]
+                            # Recursively process this type
+                            if main_type == str:
+                                prop_schema["type"] = "string"
+                            elif main_type == int:
+                                prop_schema["type"] = "integer"
+                            elif main_type == float:
+                                prop_schema["type"] = "number"
+                            elif main_type == bool:
+                                prop_schema["type"] = "boolean"
+                            elif main_type == list or main_type == List:
+                                prop_schema["type"] = "array"
+                            elif main_type == dict or main_type == Dict:
+                                prop_schema["type"] = "object"
+                            else:
+                                # Try to handle generic types like List[str]
+                                inner_origin = getattr(main_type, "__origin__", None)
+                                inner_args = getattr(main_type, "__args__", None)
+                                
+                                if inner_origin is not None and inner_args is not None:
+                                    if inner_origin in (list, List) or (hasattr(inner_origin, "__name__") and "List" in inner_origin.__name__):
+                                        prop_schema["type"] = "array"
+                                        if inner_args and len(inner_args) == 1:
+                                            inner_item_type = inner_args[0]
+                                            if inner_item_type == str:
+                                                prop_schema["items"] = {"type": "string"}
+                                            elif inner_item_type == int:
+                                                prop_schema["items"] = {"type": "integer"}
+                                            elif inner_item_type == float:
+                                                prop_schema["items"] = {"type": "number"}
+                                            elif inner_item_type == bool:
+                                                prop_schema["items"] = {"type": "boolean"}
+                                            else:
+                                                prop_schema["items"] = {"type": "string"}
+                                    elif inner_origin in (dict, Dict) or (hasattr(inner_origin, "__name__") and "Dict" in inner_origin.__name__):
+                                        prop_schema["type"] = "object"
+                                        # Add additionalProperties for value type
+                                        if inner_args and len(inner_args) == 2:
+                                            value_type = inner_args[1]
+                                            if value_type == str:
+                                                prop_schema["additionalProperties"] = {"type": "string"}
+                                            elif value_type == int:
+                                                prop_schema["additionalProperties"] = {"type": "integer"}
+                                            elif value_type == float:
+                                                prop_schema["additionalProperties"] = {"type": "number"}
+                                            elif value_type == bool:
+                                                prop_schema["additionalProperties"] = {"type": "boolean"}
+                                            else:
+                                                prop_schema["additionalProperties"] = {"type": "string"}
+                                    else:
+                                        prop_schema["type"] = "string"  # Default for complex types
+                                else:
+                                    prop_schema["type"] = "string"  # Default for complex types
+                    else:
+                        # For non-Optional Union types, default to string
+                        prop_schema["type"] = "string"
+                else:
+                    prop_schema["type"] = "string"  # Default for other complex types
+            else:
+                prop_schema["type"] = "string"  # Default to string for complex types
         
         properties[name] = prop_schema
         
