@@ -39,7 +39,8 @@ class CodeExecutionProvider(ABC):
         self.safe_shell_commands: Set[str] = {
             "ls", "cat", "grep", "find", "echo", "pwd", "whoami", "date", 
             "head", "tail", "wc", "sort", "uniq", "tr", "cut", "sed", "awk",
-            "ps", "df", "du", "uname", "which", "type", "file", "stat","rg","if"
+            "ps", "df", "du", "uname", "which", "type", "file", "stat","rg","if",
+            "tree"
         }
         # Safe control operators for shell commands
         self.safe_control_operators: Set[str] = {"&&", "||", ";", "|"}
@@ -106,6 +107,58 @@ class CodeExecutionProvider(ABC):
         if not command or not isinstance(command, list) or len(command) == 0:
             return {"safe": False, "reason": "Empty or invalid command"}
         
+        # Special handling for bash -c or bash -lc commands
+        if len(command) >= 3 and command[0] == "bash" and command[1] in ["-c", "-lc"]:
+            # For bash -c or bash -lc, we need to parse the command string that follows
+            # We'll extract commands from the bash command string and check them
+            bash_cmd_str = command[2]
+            
+            # Simple parsing of the bash command to extract command names
+            # This is a basic implementation and might not cover all edge cases
+            import shlex
+            import re
+            
+            try:
+                # Shell script keywords that should be allowed
+                shell_keywords = {
+                    "if", "then", "else", "elif", "fi", "for", "do", "done", 
+                    "while", "until", "case", "esac", "in", "function", "select",
+                    "time", "coproc", "true", "false"
+                }
+                
+                # Split the command by common shell operators
+                cmd_parts = re.split(r'(\||;|&&|\|\||>|>>|<|<<)', bash_cmd_str)
+                commands_to_check = []
+                
+                for part in cmd_parts:
+                    part = part.strip()
+                    if part and part not in ['|', ';', '&&', '||', '>', '>>', '<', '<<']:
+                        # Get the first word which is typically the command
+                        try:
+                            words = shlex.split(part)
+                            if words:
+                                cmd_name = words[0].split('/')[-1]  # Extract binary name
+                                
+                                # Skip shell keywords
+                                if cmd_name in shell_keywords:
+                                    continue
+                                    
+                                # Skip variable assignments (e.g., VAR=value)
+                                if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', cmd_name):
+                                    continue
+                                
+                                if cmd_name not in self.safe_shell_commands and '*' not in cmd_name and '?' not in cmd_name:
+                                    return {"safe": False, "reason": f"Unsafe command in bash script: {cmd_name}"}
+                        except Exception:
+                            # If parsing fails, be cautious and reject
+                            return {"safe": False, "reason": "Could not parse bash command safely"}
+                
+                # All commands in the bash script are safe
+                return {"safe": True}
+            except Exception as e:
+                return {"safe": False, "reason": f"Error parsing bash command: {str(e)}"}
+        
+        # Normal command processing for non-bash -c commands
         # Shell operators that might be passed as separate arguments
         shell_operators = ['|', '>', '<', '>>', '<<', '&&', '||', ';']
         

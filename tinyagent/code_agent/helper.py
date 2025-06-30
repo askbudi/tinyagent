@@ -47,13 +47,13 @@ You are an Agent, You need to solve the task, not suggesting user about how to s
 
                             """)
 
-def load_template(path: str) -> str:
+def load_template(path: str,key:str="system_prompt") -> str:
     """
     Load the YAML file and extract its 'system_prompt' field.
     """
     with open(path, "r") as f:
         data = yaml.safe_load(f)
-    return data["system_prompt"]
+    return data[key]
 
 def render_system_prompt(template_str: str,
                          tools: dict,

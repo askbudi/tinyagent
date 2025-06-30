@@ -12,9 +12,20 @@ import uuid
 from .storage import Storage    # ← your abstract base
 import traceback
 import time  # Add time import for Unix timestamps
+from pathlib import Path
+
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
+
+def load_template(path: str,key:str="system_prompt") -> str:
+    """
+    Load the YAML file and extract its 'system_prompt' field.
+    """
+    import yaml
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return data[key]
 
 def tool(name: Optional[str] = None, description: Optional[str] = None, 
          schema: Optional[Dict[str, Any]] = None):
@@ -1179,6 +1190,8 @@ class TinyAgent:
         
         # Format the conversation into a single string
         conversation_text = self._format_conversation_for_summary()
+
+        task_prompt = load_template(str(Path(__file__).parent / "prompts" / "summarize.yaml"),"user_prompt")
         
         # Build the prompt for the summary model
         summary_messages = [
@@ -1188,7 +1201,12 @@ class TinyAgent:
             },
             {
                 "role": "user",
-                "content": f"Here is the conversation so far:\n{conversation_text}\n\nPlease summarize this conversation, covering:\n0. What is the task its requirments, goals and constraints\n1. Tasks performed and outcomes\n2. Code files, modules, or functions modified or examined\n3. Important decisions or assumptions made\n4. Errors encountered and test or build results\n5. Remaining tasks, open questions, or next steps\nProvide the summary in a clear, concise format."
+                #"content": f"Here is the conversation so far:\n{conversation_text}\n\nPlease summarize this conversation, covering:\n0. What is the task its requirments, goals and constraints\n1. Tasks performed and outcomes\n2. Code files, modules, or functions modified or examined\n3. Important decisions or assumptions made\n4. Errors encountered and test or build results\n5. Remaining tasks, open questions, or next steps\nProvide the summary in a clear, concise format."
+                "content":conversation_text
+            },
+            {
+                "role": "user",
+                "content": task_prompt
             }
         ]
         
@@ -1246,7 +1264,7 @@ class TinyAgent:
         # Create a new user message with the summary
         summary_message = {
             "role": "user",
-            "content": f"CONVERSATION SUMMARY:\n\n{summary}",
+            "content": f"This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:\n{summary}",
             "created_at": int(time.time())
         }
         
@@ -1305,7 +1323,8 @@ class TinyAgent:
                 # Handle any other message types
                 formatted_lines.append(f"{role}: {message.get('content', '')}")
         
-        return "\n".join(formatted_lines)
+        return [{'type': 'text', 'text': f"{x}"} for x in formatted_lines]
+        #return "\n".join(formatted_lines)
 
 async def run_example():
     """Example usage of TinyAgent with proper logging."""
