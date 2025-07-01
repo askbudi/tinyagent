@@ -887,6 +887,10 @@ class TinyAgent:
                         function_info = tool_call.function
                         tool_name = function_info.name
                         
+                        await self._run_callbacks("tool_start", tool_call=tool_call)
+
+                        tool_result_content = ""
+                        
                         # Create a tool message
                         tool_message = {
                             "role": "tool",
@@ -907,28 +911,32 @@ class TinyAgent:
                             # Handle control flow tools
                             if tool_name == "final_answer":
                                 # Add a response for this tool call before returning
-                                tool_message["content"] = tool_args.get("content", "Task completed without final answer.!!!")
+                                tool_result_content = tool_args.get("content", "Task completed without final answer.!!!")
+                                tool_message["content"] = tool_result_content
                                 self.messages.append(tool_message)
                                 await self._run_callbacks("message_add", message=tool_message)
                                 await self._run_callbacks("agent_end", result="Task completed.")
+                                await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
                                 return tool_message["content"] 
                             elif tool_name == "ask_question":
                                 question = tool_args.get("question", "Could you provide more details?")
                                 # Add a response for this tool call before returning
-                                tool_message["content"] = f"Question asked: {question}"
+                                tool_result_content = f"Question asked: {question}"
+                                tool_message["content"] = tool_result_content
                                 self.messages.append(tool_message)
                                 await self._run_callbacks("message_add", message=tool_message)
                                 await self._run_callbacks("agent_end", result=f"I need more information: {question}")
+                                await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
                                 return f"I need more information: {question}"
                             else:
                                 # Check if it's a custom tool first
                                 if tool_name in self.custom_tool_handlers:
-                                    tool_message["content"] = await self._execute_custom_tool(tool_name, tool_args)
+                                    tool_result_content = await self._execute_custom_tool(tool_name, tool_args)
                                 else:
                                     # Dispatch to the proper MCPClient
                                     client = self.tool_to_client.get(tool_name)
                                     if not client:
-                                        tool_message["content"] = f"No MCP server registered for tool '{tool_name}'"
+                                        tool_result_content = f"No MCP server registered for tool '{tool_name}'"
                                     else:
                                         try:
                                             self.logger.debug(f"Calling tool {tool_name} with args: {tool_args}")
@@ -939,22 +947,25 @@ class TinyAgent:
                                             if content_list:
                                                 # Try different ways to extract the content
                                                 if hasattr(content_list[0], 'text'):
-                                                    tool_message["content"] = content_list[0].text
+                                                    tool_result_content = content_list[0].text
                                                 elif isinstance(content_list[0], dict) and 'text' in content_list[0]:
-                                                    tool_message["content"] = content_list[0]['text']
+                                                    tool_result_content = content_list[0]['text']
                                                 else:
-                                                    tool_message["content"] = str(content_list)
+                                                    tool_result_content = str(content_list)
                                             else:
-                                                tool_message["content"] = "Tool returned no content"
+                                                tool_result_content = "Tool returned no content"
                                         except Exception as e:
                                             self.logger.error(f"Error calling tool {tool_name}: {str(e)}")
-                                            tool_message["content"] = f"Error executing tool {tool_name}: {str(e)}"
+                                            tool_result_content = f"Error executing tool {tool_name}: {str(e)}"
                         except Exception as e:
                             # If any error occurs during tool call processing, make sure we still have a tool response
                             self.logger.error(f"Unexpected error processing tool call {tool_call_id}: {str(e)}")
-                            tool_message["content"] = f"Error processing tool call: {str(e)}"
-                        
-                        # Always add the tool message to ensure each tool call has a response
+                            tool_result_content = f"Error processing tool call: {str(e)}"
+                        finally:
+                            # Always add the tool message to ensure each tool call has a response
+                            tool_message["content"] = tool_result_content
+                            await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
+
                         self.messages.append(tool_message)
                         await self._run_callbacks("message_add", message=tool_message)
                     

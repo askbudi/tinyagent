@@ -1,10 +1,13 @@
 import traceback
 import os
+import json
 from textwrap import dedent
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from tinyagent import TinyAgent, tool
 from tinyagent.hooks.logging_manager import LoggingManager
+from tinyagent.hooks.rich_code_ui_callback import RichCodeUICallback
+from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback
 from .providers.base import CodeExecutionProvider
 from .providers.modal_provider import ModalProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
@@ -44,6 +47,7 @@ class TinyCodeAgent:
         check_string_obfuscation: bool = True,
         default_workdir: Optional[str] = None,
         summary_config: Optional[Dict[str, Any]] = None,
+        ui: Optional[str] = None,
         **agent_kwargs
     ):
         """
@@ -67,6 +71,7 @@ class TinyCodeAgent:
                                 legitimate use of base64 encoding and other string manipulations.
             default_workdir: Default working directory for shell commands. If None, the current working directory is used.
             summary_config: Optional configuration for generating conversation summaries
+            ui: The user interface callback to use ('rich', 'jupyter', or None).
             **agent_kwargs: Additional arguments passed to TinyAgent
         """
         self.model = model
@@ -113,6 +118,10 @@ class TinyCodeAgent:
         # Add LLM tools (not code tools - those go to the provider)
         if self.tools:
             self.agent.add_tools(self.tools)
+
+        # Add the selected UI callback
+        if ui:
+            self.add_ui_callback(ui)
     
     def _create_provider(self, provider_type: str, config: Dict[str, Any]) -> CodeExecutionProvider:
         """Create a code execution provider based on the specified type."""
@@ -298,7 +307,7 @@ class TinyCodeAgent:
                 # This ensures they stay in sync
                 self.user_variables = self.code_provider.get_user_variables()
                 
-                return str(result)
+                return json.dumps(result)
             except Exception as e:
                 print("!"*100)
                 COLOR = {
@@ -313,7 +322,7 @@ class TinyCodeAgent:
                 # This ensures any variables that were successfully created/modified are preserved
                 self.user_variables = self.code_provider.get_user_variables()
                 
-                return f"Error executing code: {str(e)}"
+                return json.dumps({"error": f"Error executing code: {str(e)}"})
         
         @tool(name="bash", description=dedent("""
         This tool executes shell commands securely in a sandboxed environment.
@@ -370,21 +379,21 @@ class TinyCodeAgent:
                 print(f" {command} to {description}")
                 # Verify that the working directory exists
                 if effective_workdir and not os.path.exists(effective_workdir):
-                    return str({
+                    return json.dumps({
                         "stdout": "",
                         "stderr": f"Working directory does not exist: {effective_workdir}",
                         "exit_code": 1
                     })
                 
                 if effective_workdir and not os.path.isdir(effective_workdir):
-                    return str({
+                    return json.dumps({
                         "stdout": "",
                         "stderr": f"Path is not a directory: {effective_workdir}",
                         "exit_code": 1
                     })
                 
                 result = await self.code_provider.execute_shell(command, timeout, effective_workdir)
-                return str(result)
+                return json.dumps(result)
             except Exception as e:
                 COLOR = {
                     "RED": "\033[91m",
@@ -393,7 +402,7 @@ class TinyCodeAgent:
                 print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
                 print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
                 
-                return f"Error executing shell command: {str(e)}"
+                return json.dumps({"error": f"Error executing shell command: {str(e)}"})
         
         self.agent.add_tool(run_python)
         self.agent.add_tool(run_shell)
@@ -753,6 +762,21 @@ class TinyCodeAgent:
             Boolean indicating whether the compaction was successful
         """
         return await self.agent.compact()
+
+    def add_ui_callback(self, ui_type: str):
+        """Adds a UI callback to the agent based on the type."""
+        if ui_type == 'rich':
+            ui_callback = RichCodeUICallback(
+                logger=self.log_manager.get_logger('tinyagent.hooks.rich_code_ui_callback') if self.log_manager else None
+            )
+            self.add_callback(ui_callback)
+        elif ui_type == 'jupyter':
+            ui_callback = JupyterNotebookCallback(
+                logger=self.log_manager.get_logger('tinyagent.hooks.jupyter_notebook_callback') if self.log_manager else None
+            )
+            self.add_callback(ui_callback)
+        else:
+            self.log_manager.get_logger(__name__).warning(f"Unknown UI type: {ui_type}. No UI callback will be added.")
 
 
 # Example usage demonstrating both LLM tools and code tools
