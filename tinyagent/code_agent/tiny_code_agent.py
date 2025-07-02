@@ -763,17 +763,33 @@ class TinyCodeAgent:
         """
         return await self.agent.compact()
 
-    def add_ui_callback(self, ui_type: str):
-        """Adds a UI callback to the agent based on the type."""
+    def add_ui_callback(self, ui_type: str, optimized: bool = True):
+        """
+        Adds a UI callback to the agent based on the type.
+        
+        Args:
+            ui_type: The type of UI callback ('rich' or 'jupyter')
+            optimized: Whether to use the optimized version (default: True for better performance)
+        """
         if ui_type == 'rich':
             ui_callback = RichCodeUICallback(
                 logger=self.log_manager.get_logger('tinyagent.hooks.rich_code_ui_callback') if self.log_manager else None
             )
             self.add_callback(ui_callback)
         elif ui_type == 'jupyter':
-            ui_callback = JupyterNotebookCallback(
-                logger=self.log_manager.get_logger('tinyagent.hooks.jupyter_notebook_callback') if self.log_manager else None
-            )
+            if optimized:
+                from tinyagent.hooks.jupyter_notebook_callback import OptimizedJupyterNotebookCallback
+                ui_callback = OptimizedJupyterNotebookCallback(
+                    logger=self.log_manager.get_logger('tinyagent.hooks.jupyter_notebook_callback') if self.log_manager else None,
+                    max_visible_turns=20,    # Limit visible turns for performance
+                    max_content_length=100000,  # Limit total content
+                    enable_markdown=True,    # Keep markdown but optimized
+                    show_raw_responses=False # Show formatted responses
+                )
+            else:
+                ui_callback = JupyterNotebookCallback(
+                    logger=self.log_manager.get_logger('tinyagent.hooks.jupyter_notebook_callback') if self.log_manager else None
+                )
             self.add_callback(ui_callback)
         else:
             self.log_manager.get_logger(__name__).warning(f"Unknown UI type: {ui_type}. No UI callback will be added.")
