@@ -19,6 +19,13 @@ from rich.text import Text
 from rich.json import JSON
 from rich.rule import Rule
 
+# Import token tracking for usage display
+try:
+    from .token_tracker import TokenTracker, create_token_tracker
+    TOKEN_TRACKING_AVAILABLE = True
+except ImportError:
+    TOKEN_TRACKING_AVAILABLE = False
+
 # Try to import markdown for enhanced rendering
 try:
     import markdown
@@ -44,7 +51,8 @@ class OptimizedJupyterNotebookCallback:
         max_content_length: int = 100000,  # Limit total HTML content length
         max_visible_turns: int = 20,       # Limit visible conversation turns
         enable_markdown: bool = True,      # Whether to process markdown
-        show_raw_responses: bool = False   # Show raw responses instead of formatted
+        show_raw_responses: bool = False,  # Show raw responses instead of formatted
+        enable_token_tracking: bool = True # Whether to show token tracking accordion
     ):
         """
         Initialize the optimized callback.
@@ -57,6 +65,7 @@ class OptimizedJupyterNotebookCallback:
             max_visible_turns: Maximum visible conversation turns (older ones get archived)
             enable_markdown: Whether to process markdown (set False for better performance)
             show_raw_responses: Show raw responses instead of formatted (better performance)
+            enable_token_tracking: Whether to show token tracking accordion
         """
         self.logger = logger or logging.getLogger(__name__)
         self.max_turns = max_turns
@@ -64,6 +73,7 @@ class OptimizedJupyterNotebookCallback:
         self.max_visible_turns = max_visible_turns
         self.enable_markdown = enable_markdown
         self.show_raw_responses = show_raw_responses
+        self.enable_token_tracking = enable_token_tracking and TOKEN_TRACKING_AVAILABLE
         self.agent: Optional[Any] = None
         self._auto_display = auto_display
 
@@ -72,10 +82,21 @@ class OptimizedJupyterNotebookCallback:
         self.turn_count = 0
         self.archived_turns = 0
 
+        # Token tracking
+        self.token_tracker: Optional[TokenTracker] = None
+        self._last_token_update = 0  # Throttle token updates
+        self._token_update_interval = 2.0  # Update every 2 seconds at most
+        
         # Single widgets for the entire UI
         self.content_html = HTML(value="")
         self._create_footer()
-        self.main_container = VBox([self.content_html, self.footer_box])
+        self._create_token_accordion()
+        
+        # Build main container with token tracking if enabled
+        if self.enable_token_tracking:
+            self.main_container = VBox([self.content_html, self.footer_box, self.token_accordion])
+        else:
+            self.main_container = VBox([self.content_html, self.footer_box])
 
         if self._auto_display:
             self._initialize_ui()
@@ -194,6 +215,206 @@ class OptimizedJupyterNotebookCallback:
         self.resume_button.on_click(on_resume_click)
         self.clear_button.on_click(on_clear_click)
 
+    def _create_token_accordion(self):
+        """Create the token tracking accordion widget."""
+        if not self.enable_token_tracking:
+            self.token_accordion = VBox()  # Empty container
+            return
+            
+        # Create the content area for token information
+        self.token_content = HTML(value=self._get_initial_token_display())
+        
+        # Create refresh button
+        self.refresh_tokens_button = Button(
+            description="🔄 Refresh",
+            tooltip="Refresh token usage information",
+            button_style='info',
+            layout={'width': 'auto'}
+        )
+        self.refresh_tokens_button.on_click(self._refresh_token_display)
+        
+        # Create the accordion content
+        token_box = VBox([
+            HBox([self.refresh_tokens_button]),
+            self.token_content
+        ])
+        
+        # Create the accordion
+        self.token_accordion = Accordion(
+            children=[token_box],
+            titles=["💰 Token Usage & Costs"],
+            selected_index=None  # Start collapsed
+        )
+
+    def _get_initial_token_display(self) -> str:
+        """Get the initial token display HTML."""
+        return """
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 15px;">
+            <div style="color: #666; text-align: center; padding: 20px;">
+                <p>🔌 <strong>Token tracking will appear here once the agent starts running.</strong></p>
+                <p style="font-size: 0.9em;">Real-time token counts and costs will be displayed automatically.</p>
+            </div>
+        </div>
+        """
+
+    def _refresh_token_display(self, button=None):
+        """Refresh the token display manually."""
+        if self.token_tracker:
+            self._update_token_display()
+        else:
+            # Try to find token tracker from agent callbacks
+            if self.agent and hasattr(self.agent, 'callbacks'):
+                for callback in self.agent.callbacks:
+                    if hasattr(callback, 'get_total_usage'):  # Duck typing check for TokenTracker
+                        self.token_tracker = callback
+                        self._update_token_display()
+                        return
+            
+            # No tracker found
+            self.token_content.value = """
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 15px;">
+                <div style="color: #ff6b6b; text-align: center; padding: 20px; border: 1px solid #ff6b6b; border-radius: 5px; background-color: #fff5f5;">
+                    <p><strong>⚠️ No token tracker found</strong></p>
+                    <p style="font-size: 0.9em;">Add a TokenTracker to your agent to see usage information:<br>
+                    <code>agent.add_callback(create_token_tracker("my_agent"))</code></p>
+                </div>
+            </div>
+            """
+
+    def _update_token_display(self):
+        """Update the token display with current usage information."""
+        if not self.token_tracker or not self.enable_token_tracking:
+            return
+            
+        try:
+            # Get usage data
+            total_usage = self.token_tracker.get_total_usage(include_children=True)
+            model_breakdown = self.token_tracker.get_model_breakdown(include_children=True)
+            provider_breakdown = self.token_tracker.get_provider_breakdown(include_children=True)
+            session_duration = self.token_tracker.get_session_duration()
+            
+            # Build HTML display
+            html_content = self._build_token_display_html(
+                total_usage, model_breakdown, provider_breakdown, session_duration
+            )
+            
+            self.token_content.value = html_content
+            
+        except Exception as e:
+            self.logger.error(f"Error updating token display: {e}")
+            self.token_content.value = f"""
+            <div style="color: #ff6b6b; padding: 15px; border: 1px solid #ff6b6b; border-radius: 5px; background-color: #fff5f5;">
+                <p><strong>❌ Error updating token display:</strong></p>
+                <p style="font-size: 0.9em;">{html.escape(str(e))}</p>
+            </div>
+            """
+
+    def _build_token_display_html(self, total_usage, model_breakdown, provider_breakdown, session_duration) -> str:
+        """Build the HTML content for token display."""
+        
+        # Main stats
+        total_tokens = f"{total_usage.total_tokens:,}" if total_usage.total_tokens else "0"
+        total_cost = f"${total_usage.cost:.6f}" if total_usage.cost else "$0.000000"
+        api_calls = f"{total_usage.call_count}" if total_usage.call_count else "0"
+        duration_mins = f"{session_duration/60:.1f}" if session_duration else "0.0"
+        
+        html_parts = [
+            """
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 15px;">
+            """,
+            # Main summary
+            f"""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <h3 style="margin: 0 0 10px 0; font-size: 1.1em;">📊 Overall Usage</h3>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 0.9em;">
+                    <div><strong>Total Tokens:</strong> {total_tokens}</div>
+                    <div><strong>Total Cost:</strong> {total_cost}</div>
+                    <div><strong>API Calls:</strong> {api_calls}</div>
+                    <div><strong>Session Time:</strong> {duration_mins} min</div>
+                </div>
+            </div>
+            """
+        ]
+        
+        # Token breakdown
+        if total_usage.prompt_tokens or total_usage.completion_tokens:
+            html_parts.append(f"""
+            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 1em;">🔢 Token Breakdown</h4>
+                <div style="font-size: 0.85em; color: #6c757d;">
+                    <div>📝 <strong>Prompt tokens:</strong> {total_usage.prompt_tokens:,}</div>
+                    <div>💬 <strong>Completion tokens:</strong> {total_usage.completion_tokens:,}</div>
+            """)
+            
+            # Add special token types if present
+            if total_usage.thinking_tokens > 0:
+                html_parts.append(f"<div>🤔 <strong>Thinking tokens:</strong> {total_usage.thinking_tokens:,}</div>")
+            if total_usage.reasoning_tokens > 0:
+                html_parts.append(f"<div>🧠 <strong>Reasoning tokens:</strong> {total_usage.reasoning_tokens:,}</div>")
+            if total_usage.cache_creation_input_tokens > 0:
+                html_parts.append(f"<div>💾 <strong>Cache creation:</strong> {total_usage.cache_creation_input_tokens:,}</div>")
+            if total_usage.cache_read_input_tokens > 0:
+                html_parts.append(f"<div>📖 <strong>Cache read:</strong> {total_usage.cache_read_input_tokens:,}</div>")
+                
+            html_parts.append("</div></div>")
+        
+        # Model breakdown
+        if len(model_breakdown) > 0:
+            html_parts.append("""
+            <div style="background-color: #e3f2fd; border: 1px solid #bbdefb; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #1565c0; font-size: 1em;">🤖 By Model</h4>
+                <div style="font-size: 0.85em;">
+            """)
+            
+            for model, stats in sorted(model_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+                cost_str = f"${stats.cost:.6f}" if stats.cost else "$0.000000"
+                html_parts.append(f"""
+                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e3f2fd;">
+                    <span><strong>{html.escape(model)}</strong></span>
+                    <span>{stats.total_tokens:,} tokens • {cost_str}</span>
+                </div>
+                """)
+            
+            html_parts.append("</div></div>")
+        
+        # Provider breakdown (if multiple providers)
+        if len(provider_breakdown) > 1:
+            html_parts.append("""
+            <div style="background-color: #e8f5e8; border: 1px solid #c8e6c9; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #2e7d32; font-size: 1em;">🏢 By Provider</h4>
+                <div style="font-size: 0.85em;">
+            """)
+            
+            for provider, stats in sorted(provider_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+                cost_str = f"${stats.cost:.6f}" if stats.cost else "$0.000000"
+                html_parts.append(f"""
+                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e8f5e8;">
+                    <span><strong>{html.escape(provider.title())}</strong></span>
+                    <span>{stats.total_tokens:,} tokens • {cost_str}</span>
+                </div>
+                """)
+            
+            html_parts.append("</div></div>")
+        
+        # Cost efficiency (if we have data)
+        if total_usage.call_count > 0 and total_usage.total_tokens > 0:
+            avg_cost_per_call = total_usage.cost / total_usage.call_count
+            cost_per_1k_tokens = (total_usage.cost / total_usage.total_tokens) * 1000
+            
+            html_parts.append(f"""
+            <div style="background-color: #fff3e0; border: 1px solid #ffcc02; border-radius: 6px; padding: 12px;">
+                <h4 style="margin: 0 0 8px 0; color: #ef6c00; font-size: 1em;">💡 Efficiency</h4>
+                <div style="font-size: 0.85em; color: #ef6c00;">
+                    <div>📊 <strong>Avg cost/call:</strong> ${avg_cost_per_call:.6f}</div>
+                    <div>📈 <strong>Cost per 1K tokens:</strong> ${cost_per_1k_tokens:.6f}</div>
+                </div>
+            </div>
+            """)
+        
+        html_parts.append("</div>")
+        
+        return "".join(html_parts)
+
     def _get_base_styles(self) -> str:
         """Get base CSS styles for formatting."""
         return """
@@ -291,10 +512,51 @@ class OptimizedJupyterNotebookCallback:
         if self.agent is None:
             self.agent = agent
             self._setup_footer_handlers()
+            self._setup_token_tracking()
             
         handler = getattr(self, f"_handle_{event_name}", None)
         if handler:
             await handler(agent, **kwargs)
+        
+        # Update token display after LLM events (with throttling to prevent UI freeze)
+        if event_name in ["llm_end", "agent_end"] and self.enable_token_tracking:
+            self._update_token_display_throttled()
+
+    def _update_token_display_throttled(self):
+        """Update the token display with throttling to prevent UI freeze."""
+        import time
+        current_time = time.time()
+        
+        # Only update if enough time has passed since last update
+        if current_time - self._last_token_update < self._token_update_interval:
+            return
+            
+        self._last_token_update = current_time
+        self._update_token_display()
+
+    def _setup_token_tracking(self):
+        """Set up token tracking by finding or creating a token tracker."""
+        if not self.enable_token_tracking or self.token_tracker:
+            return
+            
+        # Try to find existing token tracker in agent callbacks
+        if self.agent and hasattr(self.agent, 'callbacks'):
+            for callback in self.agent.callbacks:
+                if hasattr(callback, 'get_total_usage'):  # Duck typing check for TokenTracker
+                    self.token_tracker = callback
+                    self.logger.debug(f"Found existing TokenTracker: {callback.name if hasattr(callback, 'name') else type(callback).__name__}")
+                    # Force an initial update to populate the display
+                    try:
+                        self._update_token_display()
+                    except Exception as e:
+                        self.logger.warning(f"Failed to update token display after setup: {e}")
+                    return
+        
+        # If no tracker found, suggest adding one in the display
+        self.logger.debug("No TokenTracker found in agent callbacks")
+        # Update display to show the "no tracker" message
+        if hasattr(self, 'token_content'):
+            self._refresh_token_display()
 
     async def _handle_agent_start(self, agent: Any, **kwargs: Any):
         """Handle agent start event."""
@@ -422,17 +684,29 @@ class JupyterNotebookCallback:
     UI within a Jupyter Notebook environment using ipywidgets with enhanced markdown support.
     """
 
-    def __init__(self, logger: Optional[logging.Logger] = None, auto_display: bool = True, max_turns: int = 30):
+    def __init__(self, logger: Optional[logging.Logger] = None, auto_display: bool = True, max_turns: int = 30, enable_token_tracking: bool = True):
         self.logger = logger or logging.getLogger(__name__)
         self.max_turns = max_turns
         self._token = None
         self.agent: Optional[Any] = None
         self._auto_display = auto_display
+        self.enable_token_tracking = enable_token_tracking and TOKEN_TRACKING_AVAILABLE
+
+        # Token tracking
+        self.token_tracker: Optional[TokenTracker] = None
+        self._last_token_update = 0  # Throttle token updates
+        self._token_update_interval = 2.0  # Update every 2 seconds at most
 
         # 1. Create the main UI structure for this instance.
         self.root_container = VBox()
         self._create_footer()
-        self.main_container = VBox([self.root_container, self.footer_box])
+        self._create_token_accordion()
+        
+        # Build main container with token tracking if enabled
+        if self.enable_token_tracking:
+            self.main_container = VBox([self.root_container, self.footer_box, self.token_accordion])
+        else:
+            self.main_container = VBox([self.root_container, self.footer_box])
 
         # 2. Always set up a new context stack for this instance.
         # This ensures each callback instance gets its own UI display.
@@ -572,6 +846,222 @@ class JupyterNotebookCallback:
         self.input_text.on_submit(on_submit)
         self.submit_button.on_click(on_submit_click)
         self.resume_button.on_click(on_resume_click)
+
+    def _create_token_accordion(self):
+        """Create the token tracking accordion widget."""
+        if not self.enable_token_tracking:
+            self.token_accordion = VBox()  # Empty container
+            return
+            
+        # Create the content area for token information
+        self.token_content = HTML(value=self._get_initial_token_display())
+        
+        # Create refresh button
+        self.refresh_tokens_button = Button(
+            description="🔄 Refresh",
+            tooltip="Refresh token usage information",
+            button_style='info',
+            layout={'width': 'auto'}
+        )
+        self.refresh_tokens_button.on_click(self._refresh_token_display)
+        
+        # Create the accordion content
+        token_box = VBox([
+            HBox([self.refresh_tokens_button]),
+            self.token_content
+        ])
+        
+        # Create the accordion
+        self.token_accordion = Accordion(
+            children=[token_box],
+            titles=["💰 Token Usage & Costs"],
+            selected_index=None  # Start collapsed
+        )
+
+    def _get_initial_token_display(self) -> str:
+        """Get the initial token display HTML."""
+        return """
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 15px;">
+            <div style="color: #666; text-align: center; padding: 20px;">
+                <p>🔌 <strong>Token tracking will appear here once the agent starts running.</strong></p>
+                <p style="font-size: 0.9em;">Real-time token counts and costs will be displayed automatically.</p>
+            </div>
+        </div>
+        """
+
+    def _refresh_token_display(self, button=None):
+        """Refresh the token display manually."""
+        if self.token_tracker:
+            self._update_token_display()
+        else:
+            # Try to find token tracker from agent callbacks
+            if self.agent and hasattr(self.agent, 'callbacks'):
+                for callback in self.agent.callbacks:
+                    if hasattr(callback, 'get_total_usage'):  # Duck typing check for TokenTracker
+                        self.token_tracker = callback
+                        self._update_token_display()
+                        return
+            
+            # No tracker found
+            self.token_content.value = """
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 15px;">
+                <div style="color: #ff6b6b; text-align: center; padding: 20px; border: 1px solid #ff6b6b; border-radius: 5px; background-color: #fff5f5;">
+                    <p><strong>⚠️ No token tracker found</strong></p>
+                    <p style="font-size: 0.9em;">Add a TokenTracker to your agent to see usage information:<br>
+                    <code>agent.add_callback(create_token_tracker("my_agent"))</code></p>
+                </div>
+            </div>
+            """
+
+    def _update_token_display(self):
+        """Update the token display with current usage information."""
+        if not self.token_tracker or not self.enable_token_tracking:
+            return
+            
+        try:
+            # Get usage data
+            total_usage = self.token_tracker.get_total_usage(include_children=True)
+            model_breakdown = self.token_tracker.get_model_breakdown(include_children=True)
+            provider_breakdown = self.token_tracker.get_provider_breakdown(include_children=True)
+            session_duration = self.token_tracker.get_session_duration()
+            
+            # Build HTML display
+            html_content = self._build_token_display_html(
+                total_usage, model_breakdown, provider_breakdown, session_duration
+            )
+            
+            self.token_content.value = html_content
+            
+        except Exception as e:
+            self.logger.error(f"Error updating token display: {e}")
+            self.token_content.value = f"""
+            <div style="color: #ff6b6b; padding: 15px; border: 1px solid #ff6b6b; border-radius: 5px; background-color: #fff5f5;">
+                <p><strong>❌ Error updating token display:</strong></p>
+                <p style="font-size: 0.9em;">{html.escape(str(e))}</p>
+            </div>
+            """
+
+    def _build_token_display_html(self, total_usage, model_breakdown, provider_breakdown, session_duration) -> str:
+        """Build the HTML content for token display."""
+        
+        # Main stats
+        total_tokens = f"{total_usage.total_tokens:,}" if total_usage.total_tokens else "0"
+        total_cost = f"${total_usage.cost:.6f}" if total_usage.cost else "$0.000000"
+        api_calls = f"{total_usage.call_count}" if total_usage.call_count else "0"
+        duration_mins = f"{session_duration/60:.1f}" if session_duration else "0.0"
+        
+        html_parts = [
+            """
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 15px;">
+            """,
+            # Main summary
+            f"""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <h3 style="margin: 0 0 10px 0; font-size: 1.1em;">📊 Overall Usage</h3>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 0.9em;">
+                    <div><strong>Total Tokens:</strong> {total_tokens}</div>
+                    <div><strong>Total Cost:</strong> {total_cost}</div>
+                    <div><strong>API Calls:</strong> {api_calls}</div>
+                    <div><strong>Session Time:</strong> {duration_mins} min</div>
+                </div>
+            </div>
+            """
+        ]
+        
+        # Token breakdown
+        if total_usage.prompt_tokens or total_usage.completion_tokens:
+            html_parts.append(f"""
+            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 1em;">🔢 Token Breakdown</h4>
+                <div style="font-size: 0.85em; color: #6c757d;">
+                    <div>📝 <strong>Prompt tokens:</strong> {total_usage.prompt_tokens:,}</div>
+                    <div>💬 <strong>Completion tokens:</strong> {total_usage.completion_tokens:,}</div>
+            """)
+            
+            # Add special token types if present
+            if total_usage.thinking_tokens > 0:
+                html_parts.append(f"<div>🤔 <strong>Thinking tokens:</strong> {total_usage.thinking_tokens:,}</div>")
+            if total_usage.reasoning_tokens > 0:
+                html_parts.append(f"<div>🧠 <strong>Reasoning tokens:</strong> {total_usage.reasoning_tokens:,}</div>")
+            if total_usage.cache_creation_input_tokens > 0:
+                html_parts.append(f"<div>💾 <strong>Cache creation:</strong> {total_usage.cache_creation_input_tokens:,}</div>")
+            if total_usage.cache_read_input_tokens > 0:
+                html_parts.append(f"<div>📖 <strong>Cache read:</strong> {total_usage.cache_read_input_tokens:,}</div>")
+                
+            html_parts.append("</div></div>")
+        
+        # Model breakdown
+        if len(model_breakdown) > 0:
+            html_parts.append("""
+            <div style="background-color: #e3f2fd; border: 1px solid #bbdefb; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #1565c0; font-size: 1em;">🤖 By Model</h4>
+                <div style="font-size: 0.85em;">
+            """)
+            
+            for model, stats in sorted(model_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+                cost_str = f"${stats.cost:.6f}" if stats.cost else "$0.000000"
+                html_parts.append(f"""
+                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e3f2fd;">
+                    <span><strong>{html.escape(model)}</strong></span>
+                    <span>{stats.total_tokens:,} tokens • {cost_str}</span>
+                </div>
+                """)
+            
+            html_parts.append("</div></div>")
+        
+        # Provider breakdown (if multiple providers)
+        if len(provider_breakdown) > 1:
+            html_parts.append("""
+            <div style="background-color: #e8f5e8; border: 1px solid #c8e6c9; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #2e7d32; font-size: 1em;">🏢 By Provider</h4>
+                <div style="font-size: 0.85em;">
+            """)
+            
+            for provider, stats in sorted(provider_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+                cost_str = f"${stats.cost:.6f}" if stats.cost else "$0.000000"
+                html_parts.append(f"""
+                <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e8f5e8;">
+                    <span><strong>{html.escape(provider.title())}</strong></span>
+                    <span>{stats.total_tokens:,} tokens • {cost_str}</span>
+                </div>
+                """)
+            
+            html_parts.append("</div></div>")
+        
+        # Cost efficiency (if we have data)
+        if total_usage.call_count > 0 and total_usage.total_tokens > 0:
+            avg_cost_per_call = total_usage.cost / total_usage.call_count
+            cost_per_1k_tokens = (total_usage.cost / total_usage.total_tokens) * 1000
+            
+            html_parts.append(f"""
+            <div style="background-color: #fff3e0; border: 1px solid #ffcc02; border-radius: 6px; padding: 12px;">
+                <h4 style="margin: 0 0 8px 0; color: #ef6c00; font-size: 1em;">💡 Efficiency</h4>
+                <div style="font-size: 0.85em; color: #ef6c00;">
+                    <div>📊 <strong>Avg cost/call:</strong> ${avg_cost_per_call:.6f}</div>
+                    <div>📈 <strong>Cost per 1K tokens:</strong> ${cost_per_1k_tokens:.6f}</div>
+                </div>
+            </div>
+            """)
+        
+        html_parts.append("</div>")
+        
+        return "".join(html_parts)
+
+    def _setup_token_tracking(self):
+        """Set up token tracking by finding or creating a token tracker."""
+        if not self.enable_token_tracking or self.token_tracker:
+            return
+            
+        # Try to find existing token tracker in agent callbacks
+        if self.agent and hasattr(self.agent, 'callbacks'):
+            for callback in self.agent.callbacks:
+                if hasattr(callback, 'get_total_usage'):  # Duck typing check for TokenTracker
+                    self.token_tracker = callback
+                    self.logger.debug("Found existing TokenTracker in agent callbacks")
+                    return
+        
+        # If no tracker found, suggest adding one in the display
+        self.logger.debug("No TokenTracker found in agent callbacks")
 
     # --- Context Stack Management ---
     def _get_current_container(self) -> VBox:
@@ -748,10 +1238,15 @@ class JupyterNotebookCallback:
         if self.agent is None:
             self.agent = agent
             self._setup_footer_handlers()
+            self._setup_token_tracking()
             
         handler = getattr(self, f"_handle_{event_name}", None)
         if handler:
             await handler(agent, **kwargs)
+        
+        # Update token display after LLM events (with throttling to prevent UI freeze)
+        if event_name in ["llm_end", "agent_end"] and self.enable_token_tracking:
+            self._update_token_display_throttled()
 
     # --- Event Handlers ---
     async def _handle_agent_start(self, agent: Any, **kwargs: Any):
