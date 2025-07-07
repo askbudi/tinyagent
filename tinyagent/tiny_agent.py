@@ -13,10 +13,29 @@ from .storage import Storage    # ← your abstract base
 import traceback
 import time  # Add time import for Unix timestamps
 from pathlib import Path
+import random  # Add random for jitter in retry backoff
 
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
+
+# Define default retry configuration
+DEFAULT_RETRY_CONFIG = {
+    "max_retries": 5,
+    "min_backoff": 1,  # Start with 1 second
+    "max_backoff": 60,  # Max 60 seconds between retries
+    "jitter": True,    # Add randomness to backoff
+    "backoff_multiplier": 2,  # Exponential backoff factor
+    "retry_status_codes": [429, 500, 502, 503, 504],  # Common server errors
+    "retry_exceptions": [
+        "litellm.InternalServerError",
+        "litellm.APIError",
+        "litellm.APIConnectionError",
+        "litellm.RateLimitError",
+        "litellm.ServiceUnavailableError",
+        "litellm.APITimeoutError"
+    ]
+}
 
 def load_template(path: str,key:str="system_prompt") -> str:
     """
@@ -330,7 +349,13 @@ DEFAULT_SUMMARY_SYSTEM_PROMPT = (
 class TinyAgent:
     """
     A minimal implementation of an agent powered by MCP and LiteLLM,
-    now with session/state persistence.
+    now with session/state persistence and robust error handling.
+    
+    Features:
+    - Automatic retry mechanism for LLM API calls with exponential backoff
+    - Configurable retry parameters (max retries, backoff times, etc.)
+    - Session persistence
+    - Tool integration via MCP protocol
     """
     session_state: Dict[str, Any] = {}
     user_id: Optional[str] = None
@@ -350,7 +375,8 @@ class TinyAgent:
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
         persist_tool_configs: bool = False,
-        summary_config: Optional[Dict[str, Any]] = None
+        summary_config: Optional[Dict[str, Any]] = None,
+        retry_config: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the Tiny Agent.
@@ -364,8 +390,8 @@ class TinyAgent:
             metadata: Optional metadata for the session
             storage: Optional storage backend for persistence
             persist_tool_configs: Whether to persist tool configurations
-            summary_model: Optional model to use for generating conversation summaries
-            summary_system_prompt: Optional system prompt for the summary model
+            summary_config: Optional model to use for generating conversation summaries
+            retry_config: Optional configuration for LLM API call retries
         """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
@@ -388,6 +414,11 @@ class TinyAgent:
         
         self.model_kwargs = model_kwargs
         self.encoder = tiktoken.get_encoding("o200k_base")
+        
+        # Set up retry configuration
+        self.retry_config = DEFAULT_RETRY_CONFIG.copy()
+        if retry_config:
+            self.retry_config.update(retry_config)
             
         # Conversation state
         self.messages = [{
@@ -400,8 +431,11 @@ class TinyAgent:
         # This list now accumulates tools from *all* connected MCP servers:
         self.available_tools: List[Dict[str, Any]] = []
         
-        # Control flow tools
-        self.exit_loop_tools = [
+        # Default built-in tools:
+        # - final_answer: Exit tool that completes the task and returns the final answer
+        # - ask_question: Exit tool that asks the user a question and waits for a response
+        # - notify_user: Non-exit tool that shares progress with the user without stopping the agent loop
+        self.default_tools = [
             {
                 "type": "function",
                 "function": {
@@ -429,6 +463,23 @@ class TinyAgent:
                             }
                         },
                         "required": ["question"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "notify_user",
+                    "description": "Share progress or status updates with the user without stopping the agent loop. Use this to keep the user informed during long-running tasks. Unlike final_answer and ask_question, this tool allows the agent to continue processing after sending the notification.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": "The progress update or status message to share with the user"
+                            }
+                        },
+                        "required": ["message"]
                     }
                 }
             }
@@ -576,7 +627,8 @@ class TinyAgent:
             session_id=session_id,
             metadata=metadata,
             storage=storage,
-            persist_tool_configs=False   # default off
+            persist_tool_configs=False,   # default off
+            retry_config=None  # Use default retry configuration
         )
 
         # Apply the session data directly instead of loading from storage
@@ -829,7 +881,7 @@ class TinyAgent:
         # The main agent loop
         while True:
             # Get all available tools including exit loop tools
-            all_tools = self.available_tools + self.exit_loop_tools
+            all_tools = self.available_tools + self.default_tools
             
             # Call LLM with messages and tools
             try:
@@ -838,7 +890,8 @@ class TinyAgent:
                 # Notify LLM start
                 await self._run_callbacks("llm_start", messages=self.messages, tools=all_tools)
                 
-                response = await litellm.acompletion(
+                # Use our retry wrapper instead of direct litellm call
+                response = await self._litellm_with_retry(
                     model=self.model,
                     api_key=self.api_key,
                     messages=self.messages,
@@ -928,6 +981,19 @@ class TinyAgent:
                                 await self._run_callbacks("agent_end", result=f"I need more information: {question}")
                                 await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
                                 return f"I need more information: {question}"
+                            elif tool_name == "notify_user":
+                                message = tool_args.get("message", "No message provided.")
+                                self.logger.info(f"Received notify_user tool call with message: {message}")
+                                # Set the tool result content
+                                tool_result_content = "OK"
+                                tool_message["content"] = tool_result_content
+
+                                # Notify that the tool execution is complete
+                                await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
+                                # Don't return - continue the agent loop
+                                # Add the message to the conversation
+                                self.messages.append(tool_message)
+                                await self._run_callbacks("message_add", message=tool_message)
                             else:
                                 # Check if it's a custom tool first
                                 if tool_name in self.custom_tool_handlers:
@@ -1114,6 +1180,113 @@ class TinyAgent:
 
         return self
 
+    async def _litellm_with_retry(self, **kwargs) -> Any:
+        """
+        Execute litellm.acompletion with retry logic for handling transient errors.
+        
+        Args:
+            **kwargs: Arguments to pass to litellm.acompletion
+            
+        Returns:
+            The response from litellm.acompletion
+            
+        Raises:
+            Exception: If all retries fail
+            
+        Example:
+            ```python
+            # Custom retry configuration
+            retry_config = {
+                "max_retries": 5,                # Maximum number of retry attempts
+                "min_backoff": 1,                # Initial backoff time in seconds
+                "max_backoff": 60,               # Maximum backoff time in seconds
+                "jitter": True,                  # Add randomness to backoff times
+                "backoff_multiplier": 2,         # Exponential backoff factor
+                "retry_status_codes": [429, 500, 502, 503, 504],  # HTTP status codes to retry
+                "retry_exceptions": [            # Exception types to retry (by name)
+                    "litellm.InternalServerError",
+                    "litellm.APIError",
+                    "litellm.RateLimitError"
+                ]
+            }
+            
+            # Initialize agent with custom retry config
+            agent = TinyAgent(
+                model="gpt-4.1-mini",
+                api_key=api_key,
+                retry_config=retry_config
+            )
+            ```
+        """
+        max_retries = self.retry_config["max_retries"]
+        min_backoff = self.retry_config["min_backoff"]
+        max_backoff = self.retry_config["max_backoff"]
+        backoff_multiplier = self.retry_config["backoff_multiplier"]
+        jitter = self.retry_config["jitter"]
+        retry_status_codes = self.retry_config["retry_status_codes"]
+        retry_exceptions = self.retry_config["retry_exceptions"]
+        
+        attempt = 0
+        last_exception = None
+        
+        while attempt <= max_retries:
+            try:
+                # First attempt or retry
+                if attempt > 0:
+                    # Calculate backoff with exponential increase
+                    backoff = min(max_backoff, min_backoff * (backoff_multiplier ** (attempt - 1)))
+                    
+                    # Add jitter if enabled (±20% randomness)
+                    if jitter:
+                        backoff = backoff * (0.8 + 0.4 * random.random())
+                    
+                    self.logger.warning(
+                        f"Retry attempt {attempt}/{max_retries} for LLM call after {backoff:.2f}s delay. "
+                        f"Previous error: {str(last_exception)}"
+                    )
+                    
+                    # Wait before retry
+                    await asyncio.sleep(backoff)
+                
+                # Make the actual API call
+                return await litellm.acompletion(**kwargs)
+                
+            except Exception as e:
+                last_exception = e
+                error_name = e.__class__.__name__
+                full_error_path = f"{e.__class__.__module__}.{error_name}" if hasattr(e, "__module__") else error_name
+                
+                # Check if this exception should trigger a retry
+                should_retry = False
+                
+                # Check for status code in exception (if available)
+                status_code = getattr(e, "status_code", None)
+                if status_code and status_code in retry_status_codes:
+                    should_retry = True
+                
+                # Check exception type against retry list
+                for exception_path in retry_exceptions:
+                    if exception_path in full_error_path:
+                        should_retry = True
+                        break
+                
+                if not should_retry or attempt >= max_retries:
+                    # Either not a retryable error or we've exhausted retries
+                    self.logger.error(
+                        f"LLM call failed after {attempt} attempt(s). Error: {str(e)}"
+                    )
+                    raise
+                
+                # Log the error and continue to next retry attempt
+                self.logger.warning(
+                    f"LLM call failed (attempt {attempt+1}/{max_retries+1}): {str(e)}. Will retry."
+                )
+                
+            attempt += 1
+        
+        # This should not be reached due to the raise in the loop, but just in case:
+        raise last_exception
+
     @classmethod
     async def create(
         cls,
@@ -1128,7 +1301,8 @@ class TinyAgent:
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
-        persist_tool_configs: bool = False
+        persist_tool_configs: bool = False,
+        retry_config: Optional[Dict[str, Any]] = None
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
@@ -1145,7 +1319,8 @@ class TinyAgent:
             session_id=session_id,
             metadata=metadata,
             storage=storage,
-            persist_tool_configs=persist_tool_configs
+            persist_tool_configs=persist_tool_configs,
+            retry_config=retry_config
         )
         if agent._needs_session_load:
             await agent.init_async()
@@ -1225,13 +1400,13 @@ class TinyAgent:
             # Log that we're generating a summary
             self.logger.info(f"Generating conversation summary using model {self.summary_config.get('model',self.model)}")
             
-            # Call the LLM to generate the summary
-            response = await litellm.acompletion(
+            # Call the LLM to generate the summary using our retry wrapper
+            response = await self._litellm_with_retry(
                 model=self.summary_config.get("model",self.model),
                 api_key=self.summary_config.get("api_key",self.api_key),
                 messages=summary_messages,
-                temperature=self.summary_config.get("temperature",self.temperature),  # Use low temperature for consistent summaries
-                max_tokens=self.summary_config.get("max_tokens",8000)   # Reasonable limit for summary length
+                temperature=self.summary_config.get("temperature",self.temperature),
+                max_tokens=self.summary_config.get("max_tokens",8000)
             )
             
             # Extract the summary from the response
@@ -1373,13 +1548,31 @@ async def run_example():
         agent_logger.error("Please set the OPENAI_API_KEY environment variable")
         return
     
-    # Initialize the agent with our logger
+    # Custom retry configuration - more aggressive than default
+    custom_retry_config = {
+        "max_retries": 3,  # Fewer retries for the example
+        "min_backoff": 2,  # Start with 2 seconds
+        "max_backoff": 30,  # Max 30 seconds between retries
+        "retry_exceptions": [
+            "litellm.InternalServerError",
+            "litellm.APIError",
+            "litellm.APIConnectionError",
+            "litellm.RateLimitError",
+            "litellm.ServiceUnavailableError",
+            "litellm.APITimeoutError",
+            "TimeoutError",  # Add any additional exceptions
+            "ConnectionError"
+        ]
+    }
+    
+    # Initialize the agent with our logger and custom retry config
     agent = await TinyAgent.create(
         model="gpt-4.1-mini",
         api_key=api_key,
         logger=agent_logger,
         session_id="my-session-123",
-        storage=None
+        storage=None,
+        retry_config=custom_retry_config
     )
     
     # Add the Rich UI callback with our logger
@@ -1392,18 +1585,20 @@ async def run_example():
     )
     agent.add_callback(rich_ui)
     
-    # Run the agent with a user query
-    user_input = "What is the capital of France?"
+    # Connect to MCP servers for additional tools
+    try:
+        await agent.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        await agent.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+    except Exception as e:
+        agent_logger.error(f"Failed to connect to MCP servers: {e}")
+        agent_logger.info("Continuing with default tools only")
+    
+    # Run the agent with a more complex task that would benefit from progress notifications
+    user_input = "Plan a trip to Toronto for 7 days in the next month. Include accommodation options, top attractions, and a day-by-day itinerary."
     agent_logger.info(f"Running agent with input: {user_input}")
-    result = await agent.run(user_input)
+    result = await agent.run(user_input, max_turns=15)
     
-    agent_logger.info(f"Initial result: {result}")
-    
-    # Now demonstrate the resume functionality
-    agent_logger.info("Resuming the conversation without new user input")
-    resume_result = await agent.resume(max_turns=3)
-    
-    agent_logger.info(f"Resume result: {resume_result}")
+    agent_logger.info(f"Final result: {result}")
     
     # Clean up
     await agent.close()
