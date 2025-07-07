@@ -69,8 +69,31 @@ def _run_shell(
         
         # Check if this is a command that needs bash -c wrapping
         if len(command) > 0:
+            # Special handling for bash login shells to avoid profile loading errors
+            if command[0] == "bash" and len(command) >= 3 and command[1] == "-lc":
+                # Create a clean environment that doesn't load user profile files
+                env = os.environ.copy()
+                env.update({
+                    "BASH_ENV": "/dev/null",
+                    "ENV": "/dev/null",
+                    "BASH_PROFILE": "/dev/null",
+                    "PROFILE": "/dev/null"
+                })
+                # Replace -lc with -c to avoid loading login profiles
+                modified_command = ["bash", "-c", command[2]]
+                process = subprocess.run(
+                    modified_command,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=cwd,
+                    check=False,
+                    env=env
+                )
             # If the command already uses bash -c, use it directly
-            if command[0] == "bash" and len(command) >= 3 and command[1] in ["-c", "-lc"]:
+            # This handles heredoc syntax and other complex shell constructs
+            elif command[0] == "bash" and len(command) >= 3 and command[1] == "-c":
                 process = subprocess.run(
                     command,
                     shell=False,  # No need for shell=True as we're explicitly using bash -c
@@ -80,33 +103,60 @@ def _run_shell(
                     cwd=cwd,
                     check=False
                 )
-            else:
-                # For all other commands, wrap in bash -c to handle shell operators
-                # and properly quote arguments that need quoting
-                
-                # Shell operators that should not be quoted
-                shell_operators = ['|', '&&', '||', '>', '<', '>>', '<<', ';']
-                
-                # Quote each part that needs quoting
-                quoted_parts = []
-                for part in command:
-                    if part in shell_operators:
-                        # Don't quote shell operators
-                        quoted_parts.append(part)
-                    else:
-                        # Use shlex.quote to properly escape special characters
-                        quoted_parts.append(shlex.quote(part))
-                
-                shell_command = " ".join(quoted_parts)
+            # Special handling for interpreter commands with inline code execution flags
+            # This covers python -c, node -e, ruby -e, perl -e, etc.
+            elif len(command) >= 3 and command[0] in ["python", "node", "ruby", "perl", "php", "deno"] and command[1] in ["-c", "-e", "--eval", "--execute"]:
+                # Execute the interpreter command directly without shell wrapping
                 process = subprocess.run(
-                    ["bash", "-c", shell_command],
-                    shell=False,  # Using explicit bash -c instead of shell=True
+                    command,
+                    shell=False,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
                     cwd=cwd,
                     check=False
                 )
+            else:
+                # Check if the command contains heredoc syntax
+                command_str = " ".join(command)
+                if "<<" in command_str and any(f"<<'{token}'" in command_str or f'<<"{token}"' in command_str or f"<<{token}" in command_str for token in ["EOF", "EOL", "END", "HEREDOC", "PY", "JS", "RUBY", "PHP"]):
+                    # For commands with heredoc, pass directly to bash -c without additional quoting
+                    process = subprocess.run(
+                        ["bash", "-c", command_str],
+                        shell=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        cwd=cwd,
+                        check=False
+                    )
+                else:
+                    # For all other commands, wrap in bash -c to handle shell operators
+                    # and properly quote arguments that need quoting
+                    
+                    # Shell operators that should not be quoted
+                    shell_operators = ['|', '&&', '||', '>', '<', '>>', '<<', ';']
+                    
+                    # Quote each part that needs quoting
+                    quoted_parts = []
+                    for part in command:
+                        if part in shell_operators:
+                            # Don't quote shell operators
+                            quoted_parts.append(part)
+                        else:
+                            # Use shlex.quote to properly escape special characters
+                            quoted_parts.append(shlex.quote(part))
+                    
+                    shell_command = " ".join(quoted_parts)
+                    process = subprocess.run(
+                        ["bash", "-c", shell_command],
+                        shell=False,  # Using explicit bash -c instead of shell=True
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        cwd=cwd,
+                        check=False
+                    )
         else:
             # Empty command
             return {
