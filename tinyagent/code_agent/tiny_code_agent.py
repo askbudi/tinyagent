@@ -10,6 +10,7 @@ from tinyagent.hooks.rich_code_ui_callback import RichCodeUICallback
 from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback
 from .providers.base import CodeExecutionProvider
 from .providers.modal_provider import ModalProvider
+from .providers.seatbelt_provider import SeatbeltProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
 
 
@@ -73,6 +74,24 @@ class TinyCodeAgent:
             summary_config: Optional configuration for generating conversation summaries
             ui: The user interface callback to use ('rich', 'jupyter', or None).
             **agent_kwargs: Additional arguments passed to TinyAgent
+            
+        Provider Config Options:
+            For SeatbeltProvider:
+                - seatbelt_profile: String containing seatbelt profile rules
+                - seatbelt_profile_path: Path to a file containing seatbelt profile rules
+                - python_env_path: Path to the Python environment to use
+                - bypass_shell_safety: If True, bypass shell command safety checks (default: True for seatbelt)
+                - additional_safe_shell_commands: Additional shell commands to consider safe
+                - additional_safe_control_operators: Additional shell control operators to consider safe
+                - additional_read_dirs: List of additional directories to allow read access to
+                - additional_write_dirs: List of additional directories to allow write access to
+            
+            For ModalProvider:
+                - pip_packages: List of additional Python packages to install
+                - authorized_imports: List of authorized Python imports
+                - bypass_shell_safety: If True, bypass shell command safety checks (default: False for modal)
+                - additional_safe_shell_commands: Additional shell commands to consider safe
+                - additional_safe_control_operators: Additional shell control operators to consider safe
         """
         self.model = model
         self.api_key = api_key
@@ -139,11 +158,65 @@ class TinyCodeAgent:
             final_config["authorized_imports"] = final_authorized_imports
             final_config["check_string_obfuscation"] = self.check_string_obfuscation
             
+            # Shell safety configuration (default to False for Modal)
+            bypass_shell_safety = config.get("bypass_shell_safety", False)
+            additional_safe_shell_commands = config.get("additional_safe_shell_commands", None)
+            additional_safe_control_operators = config.get("additional_safe_control_operators", None)
+            
             return ModalProvider(
                 log_manager=self.log_manager,
                 code_tools=self.code_tools,
                 local_execution=self.local_execution,
+                bypass_shell_safety=bypass_shell_safety,
+                additional_safe_shell_commands=additional_safe_shell_commands,
+                additional_safe_control_operators=additional_safe_control_operators,
                 **final_config
+            )
+        elif provider_type.lower() == "seatbelt":
+            # Check if seatbelt is supported on this system
+            if not SeatbeltProvider.is_supported():
+                raise ValueError("Seatbelt provider is not supported on this system. It requires macOS with sandbox-exec.")
+            
+            # Seatbelt only works with local execution
+            if not self.local_execution:
+                raise ValueError("Seatbelt provider requires local execution mode. Please set local_execution=True.")
+            
+            # Create a copy of the config without the parameters we'll pass directly
+            filtered_config = config.copy()
+            for key in ['seatbelt_profile', 'seatbelt_profile_path', 'python_env_path', 
+                        'bypass_shell_safety', 'additional_safe_shell_commands', 
+                        'additional_safe_control_operators', 'additional_read_dirs',
+                        'additional_write_dirs']:
+                if key in filtered_config:
+                    filtered_config.pop(key)
+            
+            # Get seatbelt profile configuration
+            seatbelt_profile = config.get("seatbelt_profile", None)
+            seatbelt_profile_path = config.get("seatbelt_profile_path", None)
+            python_env_path = config.get("python_env_path", None)
+            
+            # Shell safety configuration (default to True for Seatbelt)
+            bypass_shell_safety = config.get("bypass_shell_safety", True)
+            additional_safe_shell_commands = config.get("additional_safe_shell_commands", None)
+            additional_safe_control_operators = config.get("additional_safe_control_operators", None)
+            
+            # Additional directory access configuration
+            additional_read_dirs = config.get("additional_read_dirs", None)
+            additional_write_dirs = config.get("additional_write_dirs", None)
+            
+            # Create the seatbelt provider
+            return SeatbeltProvider(
+                log_manager=self.log_manager,
+                code_tools=self.code_tools,
+                seatbelt_profile=seatbelt_profile,
+                seatbelt_profile_path=seatbelt_profile_path,
+                python_env_path=python_env_path,
+                bypass_shell_safety=bypass_shell_safety,
+                additional_safe_shell_commands=additional_safe_shell_commands,
+                additional_safe_control_operators=additional_safe_control_operators,
+                additional_read_dirs=additional_read_dirs,
+                additional_write_dirs=additional_write_dirs,
+                **filtered_config
             )
         else:
             raise ValueError(f"Unsupported provider type: {provider_type}")
@@ -676,6 +749,17 @@ class TinyCodeAgent:
         """
         return self.authorized_imports.copy()
     
+    @classmethod
+    def is_seatbelt_supported(cls) -> bool:
+        """
+        Check if the seatbelt provider is supported on this system.
+        
+        Returns:
+            True if seatbelt is supported (macOS with sandbox-exec), False otherwise
+        """
+        from .providers.seatbelt_provider import SeatbeltProvider
+        return SeatbeltProvider.is_supported()
+    
     def remove_authorized_import(self, import_name: str):
         """
         Remove an authorized import.
@@ -960,6 +1044,166 @@ async def run_example():
     response_shell_explicit = await agent_remote.run(shell_prompt_explicit_dir)
     print("Shell Execution with Explicit Working Directory:")
     print(response_shell_explicit)
+    
+    # Test seatbelt provider if supported
+    if TinyCodeAgent.is_seatbelt_supported():
+        print("\n" + "="*80)
+        print("🔒 Testing TinyCodeAgent with SEATBELT provider (sandboxed execution)")
+        
+        # Create a test directory for read/write access
+        test_read_dir = os.path.join(os.getcwd(), "test_read_dir")
+        test_write_dir = os.path.join(os.getcwd(), "test_write_dir")
+        
+        # Create directories if they don't exist
+        os.makedirs(test_read_dir, exist_ok=True)
+        os.makedirs(test_write_dir, exist_ok=True)
+        
+        # Create a test file in the read directory
+        with open(os.path.join(test_read_dir, "test.txt"), "w") as f:
+            f.write("This is a test file for reading")
+        
+        # Create a simple seatbelt profile
+        seatbelt_profile = """(version 1)
+        
+        ; Default to deny everything
+        (deny default)
+        
+        ; Allow network connections with proper DNS resolution
+        (allow network*)
+        (allow network-outbound)
+        (allow mach-lookup)
+        
+        ; Allow process execution
+        (allow process-exec)
+        (allow process-fork)
+        (allow signal (target self))
+        
+        ; Restrict file read to current path and system files
+        (deny file-read* (subpath "/Users"))
+        (allow file-read*
+          (subpath "{os.getcwd()}")
+          (subpath "/usr")
+          (subpath "/System")
+          (subpath "/Library")
+          (subpath "/bin")
+          (subpath "/sbin")
+          (subpath "/opt")
+          (subpath "/private/tmp")
+          (subpath "/private/var/tmp")
+          (subpath "/dev")
+          (subpath "/etc")
+          (literal "/")
+          (literal "/."))
+        
+        ; Allow write access to specified folder and temp directories
+        (deny file-write* (subpath "/"))
+        (allow file-write*
+          (subpath "{os.getcwd()}")
+          (subpath "/private/tmp")
+          (subpath "/private/var/tmp")
+          (subpath "/dev"))
+        
+        ; Allow standard device operations
+        (allow file-write-data
+          (literal "/dev/null")
+          (literal "/dev/dtracehelper")
+          (literal "/dev/tty")
+          (literal "/dev/stdout")
+          (literal "/dev/stderr"))
+        
+        ; Allow iokit operations needed for system functions
+        (allow iokit-open)
+        
+        ; Allow shared memory operations
+        (allow ipc-posix-shm)
+        
+        ; Allow basic system operations
+        (allow file-read-metadata)
+        (allow process-info-pidinfo)
+        (allow process-info-setcontrol)
+        """
+        
+        # Create TinyCodeAgent with seatbelt provider
+        agent_seatbelt = TinyCodeAgent(
+            model="gpt-4.1-mini",
+            tools=[search_web],  # LLM tools
+            code_tools=[data_processor],  # Code tools
+            user_variables={
+                "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
+            },
+            provider="seatbelt",  # Use seatbelt provider
+            provider_config={
+                "seatbelt_profile": seatbelt_profile,
+                # Alternatively, you can specify a path to a seatbelt profile file:
+                # "seatbelt_profile_path": "/path/to/seatbelt.sb",
+                # "python_env_path": "/path/to/python/env",  # Optional path to Python environment
+                
+                # Specify additional directories for read/write access
+                "additional_read_dirs": [test_read_dir],
+                "additional_write_dirs": [test_write_dir],
+                
+                # Allow git commands
+                "bypass_shell_safety": True,
+                "additional_safe_shell_commands": ["git"]
+            },
+            local_execution=True,  # Required for seatbelt
+            check_string_obfuscation=True
+        )
+        
+        # Connect to MCP servers
+        await agent_seatbelt.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        await agent_seatbelt.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+        
+        # Test the seatbelt agent
+        response_seatbelt = await agent_seatbelt.run("""
+        I have some sample data. Please use the data_processor tool in Python to analyze my sample_data
+        and show me the results.
+        """)
+        
+        print("Seatbelt Agent Response:")
+        print(response_seatbelt)
+        
+        # Test shell execution in sandbox
+        shell_prompt_sandbox = "Run 'ls -la' to list files in the current directory."
+        
+        response_shell_sandbox = await agent_seatbelt.run(shell_prompt_sandbox)
+        print("Shell Execution in Sandbox:")
+        print(response_shell_sandbox)
+        
+        # Test reading from the additional read directory
+        read_prompt = f"Read the contents of the file in the test_read_dir directory."
+        
+        response_read = await agent_seatbelt.run(read_prompt)
+        print("Reading from Additional Read Directory:")
+        print(response_read)
+        
+        # Test writing to the additional write directory
+        write_prompt = f"Write a file called 'output.txt' with the text 'Hello from sandbox!' in the test_write_dir directory."
+        
+        response_write = await agent_seatbelt.run(write_prompt)
+        print("Writing to Additional Write Directory:")
+        print(response_write)
+        
+        # Test git commands with the custom configuration
+        git_prompt = "Run 'git status' to show the current git status."
+        
+        response_git = await agent_seatbelt.run(git_prompt)
+        print("Git Command Execution:")
+        print(response_git)
+        
+        # Clean up test directories
+        import shutil
+        try:
+            shutil.rmtree(test_read_dir)
+            shutil.rmtree(test_write_dir)
+            print("Cleaned up test directories")
+        except Exception as e:
+            print(f"Error cleaning up test directories: {str(e)}")
+        
+        await agent_seatbelt.close()
+    else:
+        print("\n" + "="*80)
+        print("⚠️  Seatbelt provider is not supported on this system. Skipping seatbelt tests.")
     
     await agent_remote.close()
     await agent_local.close()

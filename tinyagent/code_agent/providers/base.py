@@ -21,6 +21,9 @@ class CodeExecutionProvider(ABC):
         pip_packages: List[str] = None,
         secrets: Dict[str, Any] = None,
         lazy_init: bool = True,
+        bypass_shell_safety: bool = False,
+        additional_safe_shell_commands: Optional[List[str]] = None,
+        additional_safe_control_operators: Optional[List[str]] = None,
         **kwargs
     ):
         self.log_manager = log_manager
@@ -35,15 +38,36 @@ class CodeExecutionProvider(ABC):
         self._locals_dict = kwargs.get("locals_dict", {})
         self._user_variables = {}
         self.code_tools_definitions = []
+        
+        # Shell safety configuration
+        self.bypass_shell_safety = bypass_shell_safety
+        
         # Safe shell commands that don't modify the system or access sensitive data
         self.safe_shell_commands: Set[str] = {
             "ls", "cat", "grep", "find", "echo", "pwd", "whoami", "date", 
             "head", "tail", "wc", "sort", "uniq", "tr", "cut", "sed", "awk",
-            "ps", "df", "du", "uname", "which", "type", "file", "stat","rg","if",
+            "ps", "df", "du", "uname", "which", "type", "file", "stat", "rg", "if",
             "tree"
         }
+        
+        # Add additional safe shell commands if provided
+        if additional_safe_shell_commands:
+            if "*" in additional_safe_shell_commands:
+                # If wildcard is provided, allow all commands (effectively bypassing the check)
+                self.bypass_shell_safety = True
+            else:
+                self.safe_shell_commands.update(additional_safe_shell_commands)
+        
         # Safe control operators for shell commands
         self.safe_control_operators: Set[str] = {"&&", "||", ";", "|"}
+        
+        # Add additional safe control operators if provided
+        if additional_safe_control_operators:
+            if "*" in additional_safe_control_operators:
+                # If wildcard is provided, allow all operators
+                self.safe_control_operators = set("*")
+            else:
+                self.safe_control_operators.update(additional_safe_control_operators)
     
     @abstractmethod
     async def execute_python(
@@ -102,6 +126,10 @@ class CodeExecutionProvider(ABC):
             - safe: Boolean indicating if command is safe
             - reason: Reason why command is not safe (if applicable)
         """
+        # If shell safety checks are bypassed, consider all commands safe
+        if self.bypass_shell_safety:
+            return {"safe": True}
+            
         if type(command) == str:
             command = command.split(" ")
         if not command or not isinstance(command, list) or len(command) == 0:

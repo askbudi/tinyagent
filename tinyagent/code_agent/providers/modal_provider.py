@@ -47,6 +47,9 @@ class ModalProvider(CodeExecutionProvider):
         sandbox_name: str = "tinycodeagent-sandbox",
         local_execution: bool = False,
         check_string_obfuscation: bool = True,
+        bypass_shell_safety: bool = False,  # Default to False for ModalProvider
+        additional_safe_shell_commands: Optional[List[str]] = None,
+        additional_safe_control_operators: Optional[List[str]] = None,
         **kwargs
     ):
         """
@@ -67,6 +70,9 @@ class ModalProvider(CodeExecutionProvider):
             sandbox_name: Name of the Modal sandbox
             local_execution: Whether to execute code locally
             check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow legitimate use of base64 encoding and other string manipulations.
+            bypass_shell_safety: If True, bypass shell command safety checks (default: False for modal)
+            additional_safe_shell_commands: Additional shell commands to consider safe
+            additional_safe_control_operators: Additional shell control operators to consider safe
             **kwargs: Additional keyword arguments
         
         Note:
@@ -114,6 +120,9 @@ class ModalProvider(CodeExecutionProvider):
             pip_packages=final_packages,
             secrets=modal_secrets or {},
             lazy_init=lazy_init,
+            bypass_shell_safety=bypass_shell_safety,
+            additional_safe_shell_commands=additional_safe_shell_commands,
+            additional_safe_control_operators=additional_safe_control_operators,
             **kwargs
         )
         
