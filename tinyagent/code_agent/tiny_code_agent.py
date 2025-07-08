@@ -12,6 +12,7 @@ from .providers.base import CodeExecutionProvider
 from .providers.modal_provider import ModalProvider
 from .providers.seatbelt_provider import SeatbeltProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
+from .utils import truncate_output, format_truncation_message
 
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
@@ -49,6 +50,7 @@ class TinyCodeAgent:
         default_workdir: Optional[str] = None,
         summary_config: Optional[Dict[str, Any]] = None,
         ui: Optional[str] = None,
+        truncation_config: Optional[Dict[str, Any]] = None,
         **agent_kwargs
     ):
         """
@@ -73,6 +75,7 @@ class TinyCodeAgent:
             default_workdir: Default working directory for shell commands. If None, the current working directory is used.
             summary_config: Optional configuration for generating conversation summaries
             ui: The user interface callback to use ('rich', 'jupyter', or None).
+            truncation_config: Configuration for output truncation (max_tokens, max_lines)
             **agent_kwargs: Additional arguments passed to TinyAgent
             
         Provider Config Options:
@@ -92,6 +95,11 @@ class TinyCodeAgent:
                 - bypass_shell_safety: If True, bypass shell command safety checks (default: False for modal)
                 - additional_safe_shell_commands: Additional shell commands to consider safe
                 - additional_safe_control_operators: Additional shell control operators to consider safe
+                
+        Truncation Config Options:
+            - max_tokens: Maximum number of tokens to keep in output (default: 3000)
+            - max_lines: Maximum number of lines to keep in output (default: 250)
+            - enabled: Whether truncation is enabled (default: True)
         """
         self.model = model
         self.api_key = api_key
@@ -106,6 +114,14 @@ class TinyCodeAgent:
         self.provider = provider  # Store provider type for reuse
         self.check_string_obfuscation = check_string_obfuscation
         self.default_workdir = default_workdir or os.getcwd()  # Default to current working directory if not specified
+        
+        # Set up truncation configuration with defaults
+        default_truncation = {
+            "max_tokens": 3000,
+            "max_lines": 250,
+            "enabled": True
+        }
+        self.truncation_config = {**default_truncation, **(truncation_config or {})}
         
         # Create the code execution provider
         self.code_provider = self._create_provider(provider, self.provider_config)
@@ -380,6 +396,24 @@ class TinyCodeAgent:
                 # This ensures they stay in sync
                 self.user_variables = self.code_provider.get_user_variables()
                 
+                # Apply truncation if enabled
+                if self.truncation_config["enabled"] and "printed_output" in result:
+                    truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
+                        result["printed_output"],
+                        max_tokens=self.truncation_config["max_tokens"],
+                        max_lines=self.truncation_config["max_lines"]
+                    )
+                    
+                    if is_truncated:
+                        result["printed_output"] = format_truncation_message(
+                            truncated_output,
+                            is_truncated,
+                            original_tokens,
+                            original_lines,
+                            self.truncation_config["max_lines"],
+                            "python_output"
+                        )
+                
                 return json.dumps(result)
             except Exception as e:
                 print("!"*100)
@@ -421,7 +455,7 @@ class TinyCodeAgent:
             - You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested, batch your tool calls together for optimal performance.
             - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
             - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
-            - If the output exceeds 30000 characters, output will be truncated before being returned to you.
+            - If the output is too large, it will be truncated before being returned to you.
             
            - If you _still_ need to run `grep`, STOP. ALWAYS USE ripgrep at `rg` first, which all ${PRODUCT_NAME} users have pre-installed.
           "  - When issuing multiple commands, use the ; or && operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).\n" +
@@ -438,13 +472,13 @@ class TinyCodeAgent:
                 
             absolute_workdir: str: could be presented workdir in the system prompt or one of the subdirectories of the workdir. This is the only allowed path, and accessing else will result in an error.
             description: str: A clear, concise description of what this command does in 5-10 words.
-            timeout: int: Maximum execution time in seconds (default: 30).
+            timeout: int: Maximum execution time in seconds (default: 60).
         Returns:
             Dictionary with stdout, stderr, and exit_code from the command execution.
             If the command is rejected for security reasons, stderr will contain the reason.
             The stdout will include information about which working directory was used.
         """))
-        async def run_shell(command: List[str], absolute_workdir: str,  description: str, timeout: int = 30) -> str:
+        async def run_shell(command: List[str], absolute_workdir: str,  description: str, timeout: int = 60) -> str:
             """Execute shell commands securely using the configured provider."""
             try:
                 # Use the default working directory if none is specified
@@ -466,6 +500,25 @@ class TinyCodeAgent:
                     })
                 
                 result = await self.code_provider.execute_shell(command, timeout, effective_workdir)
+                
+                # Apply truncation if enabled
+                if self.truncation_config["enabled"] and "stdout" in result and result["stdout"]:
+                    truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
+                        result["stdout"],
+                        max_tokens=self.truncation_config["max_tokens"],
+                        max_lines=self.truncation_config["max_lines"]
+                    )
+                    
+                    if is_truncated:
+                        result["stdout"] = format_truncation_message(
+                            truncated_output,
+                            is_truncated,
+                            original_tokens,
+                            original_lines,
+                            self.truncation_config["max_lines"],
+                            "bash_output"
+                        )
+                
                 return json.dumps(result)
             except Exception as e:
                 COLOR = {
@@ -878,6 +931,36 @@ class TinyCodeAgent:
         else:
             self.log_manager.get_logger(__name__).warning(f"Unknown UI type: {ui_type}. No UI callback will be added.")
 
+    def set_truncation_config(self, config: Dict[str, Any]):
+        """
+        Set the truncation configuration.
+        
+        Args:
+            config: Dictionary containing truncation configuration options:
+                - max_tokens: Maximum number of tokens to keep in output
+                - max_lines: Maximum number of lines to keep in output
+                - enabled: Whether truncation is enabled
+        """
+        self.truncation_config.update(config)
+    
+    def get_truncation_config(self) -> Dict[str, Any]:
+        """
+        Get the current truncation configuration.
+        
+        Returns:
+            Dictionary containing truncation configuration
+        """
+        return self.truncation_config.copy()
+    
+    def enable_truncation(self, enabled: bool = True):
+        """
+        Enable or disable output truncation.
+        
+        Args:
+            enabled: Whether to enable truncation
+        """
+        self.truncation_config["enabled"] = enabled
+
 
 # Example usage demonstrating both LLM tools and code tools
 async def run_example():
@@ -920,7 +1003,12 @@ async def run_example():
         authorized_imports=["tinyagent", "gradio", "requests", "numpy", "pandas"],  # Explicitly specify authorized imports
         local_execution=False,  # Remote execution via Modal (default)
         check_string_obfuscation=True,
-        default_workdir=os.path.join(os.getcwd(), "examples")  # Set a default working directory for shell commands
+        default_workdir=os.path.join(os.getcwd(), "examples"),  # Set a default working directory for shell commands
+        truncation_config={
+            "max_tokens": 3000,
+            "max_lines": 250,
+            "enabled": True
+        }
     )
     
     # Connect to MCP servers
@@ -1045,6 +1133,37 @@ async def run_example():
     print("Shell Execution with Explicit Working Directory:")
     print(response_shell_explicit)
     
+    # Test truncation functionality
+    print("\n" + "="*80)
+    print("✂️ Testing output truncation")
+    
+    # Configure truncation with smaller limits for testing
+    agent_remote.set_truncation_config({
+        "max_tokens": 100,  # Very small limit for testing
+        "max_lines": 5      # Very small limit for testing
+    })
+    
+    # Generate a large output to test truncation
+    large_output_prompt = """
+    Generate a large output by printing a lot of text. Create a Python script that:
+    1. Prints numbers from 1 to 1000
+    2. For each number, also print its square and cube
+    3. Add random text for each line to make it longer
+    """
+    
+    response_truncated = await agent_remote.run(large_output_prompt)
+    print("Truncated Output Response:")
+    print(response_truncated)
+    
+    # Test disabling truncation
+    print("\n" + "="*80)
+    print("🔄 Testing with truncation disabled")
+    
+    agent_remote.enable_truncation(False)
+    response_untruncated = await agent_remote.run("Run the same script again but limit to 20 numbers")
+    print("Untruncated Output Response:")
+    print(response_untruncated)
+    
     # Test seatbelt provider if supported
     if TinyCodeAgent.is_seatbelt_supported():
         print("\n" + "="*80)
@@ -1147,7 +1266,12 @@ async def run_example():
                 "additional_safe_shell_commands": ["git"]
             },
             local_execution=True,  # Required for seatbelt
-            check_string_obfuscation=True
+            check_string_obfuscation=True,
+            truncation_config={
+                "max_tokens": 500,
+                "max_lines": 20,
+                "enabled": True
+            }
         )
         
         # Connect to MCP servers

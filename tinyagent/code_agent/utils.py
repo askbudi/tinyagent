@@ -2,9 +2,12 @@ import sys
 import cloudpickle
 import subprocess
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from .safety import validate_code_safety, function_safety_context
 import shlex
+import yaml
+from pathlib import Path
+import re
 
 
 def clean_response(resp: Dict[str, Any]) -> Dict[str, Any]:
@@ -18,6 +21,118 @@ def clean_response(resp: Dict[str, Any]) -> Dict[str, Any]:
         Cleaned response with only essential fields
     """
     return {k: v for k, v in resp.items() if k in ['printed_output', 'return_value', 'stderr', 'error_traceback']}
+
+
+def truncate_output(output: str, max_tokens: int = 3000, max_lines: int = 250) -> Tuple[str, bool, int, int]:
+    """
+    Truncate output based on token count and line count.
+    
+    Args:
+        output: The output string to truncate
+        max_tokens: Maximum number of tokens to keep
+        max_lines: Maximum number of lines to keep
+        
+    Returns:
+        Tuple containing:
+        - Truncated output
+        - Boolean indicating if truncation occurred
+        - Original token count
+        - Original line count
+    """
+    # Count original lines
+    lines = output.splitlines()
+    original_line_count = len(lines)
+    
+    # Approximate token count (rough estimate: 4 chars ≈ 1 token)
+    original_token_count = len(output) // 4
+    
+    # Check if truncation is needed
+    if original_line_count <= max_lines and original_token_count <= max_tokens:
+        return output, False, original_token_count, original_line_count
+    
+    # Truncate by lines first
+    if original_line_count > max_lines:
+        lines = lines[:max_lines]  # Keep only the first max_lines
+    
+    # Join lines back together
+    truncated = '\n'.join(lines)
+    
+    # If still too many tokens, truncate further
+    if len(truncated) // 4 > max_tokens:
+        # Keep the first max_tokens*4 characters (approximate)
+        truncated = truncated[:max_tokens*4]
+        
+        # Try to start at a newline to avoid partial lines
+        newline_pos = truncated.find('\n')
+        if newline_pos > 0:
+            truncated = truncated[newline_pos+1:]
+    
+    return truncated, True, original_token_count, original_line_count
+
+
+def load_truncation_template(template_type: str = "python_output") -> str:
+    """
+    Load the truncation message template.
+    
+    Args:
+        template_type: Type of template to load ("python_output" or "bash_output")
+        
+    Returns:
+        Template string for the truncation message
+    """
+    template_path = Path(__file__).parent.parent / "prompts" / "truncation.yaml"
+    
+    try:
+        with open(template_path, 'r') as f:
+            templates = yaml.safe_load(f)
+        
+        return templates.get("truncation_messages", {}).get(template_type, {}).get("message", 
+            "--- Output truncated due to size limitations ---")
+    except Exception:
+        # Fallback template if file can't be loaded
+        return "--- Output truncated due to size limitations ---"
+
+
+def format_truncation_message(output: str, is_truncated: bool, original_tokens: int, 
+                             original_lines: int, max_lines: int, template_type: str = "python_output") -> str:
+    """
+    Format the truncated output with a truncation message if needed.
+    
+    Args:
+        output: The truncated output
+        is_truncated: Whether truncation occurred
+        original_tokens: Original token count
+        original_lines: Original line count
+        max_lines: Maximum line count used for truncation
+        template_type: Type of template to use
+        
+    Returns:
+        Formatted output with truncation message if needed
+    """
+    if not is_truncated:
+        return output
+    
+    # Load the appropriate template
+    template = load_truncation_template(template_type)
+    
+    # Determine size unit (tokens or KB)
+    if original_tokens > 1000:
+        size_value = original_tokens / 1000
+        size_unit = "K tokens"
+    else:
+        size_value = original_tokens
+        size_unit = "tokens"
+    
+    # Format the message
+    message = template.format(
+        original_size=round(size_value, 1),
+        size_unit=size_unit,
+        original_lines=original_lines,
+        max_lines=max_lines
+    )
+    
+    # Append the message to the output
+    return f"{output}\n\n{message}"
 
 
 def make_session_blob(ns: dict) -> bytes:

@@ -1,0 +1,13 @@
+truncation_messages:
+  python_output:
+    message: |-
+      ---
+      **Output Truncated**: The original output was {original_size} {size_unit} ({original_lines} lines). Showing only the first {max_lines} lines.
+      To get more detailed output, please make your request more specific or adjust the output size.
+      ---
+  bash_output:
+    message: |-
+      ---
+      **Output Truncated**: The original output was {original_size} {size_unit} ({original_lines} lines). Showing only the first {max_lines} lines.
+      To get more detailed output, please use more specific commands or add filtering.
+      --- 

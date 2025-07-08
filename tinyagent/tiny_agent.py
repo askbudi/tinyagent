@@ -19,6 +19,9 @@ import random  # Add random for jitter in retry backoff
 logger = logging.getLogger(__name__)
 #litellm.callbacks = ["arize_phoenix"]
 
+# Set global LiteLLM configuration
+litellm.drop_params = True  # Enable dropping unsupported parameters globally
+
 # Define default retry configuration
 DEFAULT_RETRY_CONFIG = {
     "max_retries": 5,
@@ -376,7 +379,8 @@ class TinyAgent:
         storage: Optional[Storage] = None,
         persist_tool_configs: bool = False,
         summary_config: Optional[Dict[str, Any]] = None,
-        retry_config: Optional[Dict[str, Any]] = None
+        retry_config: Optional[Dict[str, Any]] = None,
+        parallel_tool_calls: Optional[bool] = True,
     ):
         """
         Initialize the Tiny Agent.
@@ -385,14 +389,20 @@ class TinyAgent:
             model: The model to use with LiteLLM
             api_key: The API key for the model provider
             system_prompt: Custom system prompt for the agent
+            temperature: Temperature parameter for the model (controls randomness)
             logger: Optional logger to use
+            model_kwargs: Additional keyword arguments to pass to the model
+            user_id: Optional user ID for the session
             session_id: Optional session ID (if provided with storage, will attempt to load existing session)
             metadata: Optional metadata for the session
             storage: Optional storage backend for persistence
             persist_tool_configs: Whether to persist tool configurations
             summary_config: Optional model to use for generating conversation summaries
             retry_config: Optional configuration for LLM API call retries
-        """
+            parallel_tool_calls: Whether to enable parallel tool calls. If True, the agent will ask the model
+                                to execute multiple tool calls in parallel when possible. Some models like GPT-4
+                                and Claude 3 support this feature. Default is True.
+                    """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
         
@@ -403,6 +413,12 @@ class TinyAgent:
         
         # Simplified hook system - single list of callbacks
         self.callbacks: List[callable] = []
+        
+        # Configure LiteLLM to drop unsupported parameters
+        # This is also set globally at the module level, but we set it again here to be sure
+        import litellm
+        litellm.drop_params = True
+        self.logger.info("LiteLLM drop_params feature is enabled")
         
         # LiteLLM configuration
         self.model = model
@@ -419,6 +435,9 @@ class TinyAgent:
         self.retry_config = DEFAULT_RETRY_CONFIG.copy()
         if retry_config:
             self.retry_config.update(retry_config)
+        
+        # Set parallel tool calls preference
+        self.parallel_tool_calls = parallel_tool_calls
             
         # Conversation state
         self.messages = [{
@@ -887,8 +906,26 @@ class TinyAgent:
             try:
                 self.logger.info(f"Calling LLM with {len(self.messages)} messages and {len(all_tools)} tools")
                 
+                # Verify LiteLLM drop_params setting
+                import litellm
+                self.logger.info(f"LiteLLM drop_params is currently set to: {litellm.drop_params}")
+                
                 # Notify LLM start
                 await self._run_callbacks("llm_start", messages=self.messages, tools=all_tools)
+                
+                # Use parallel_tool_calls based on user preference, default to False if not specified
+                use_parallel_tool_calls = self.parallel_tool_calls if self.parallel_tool_calls is not None else False
+                
+                # Disable parallel_tool_calls for models known not to support it
+                unsupported_models = ["o1-mini", "o1-preview", "o3", "o4-mini"]
+                for unsupported_model in unsupported_models:
+                    if unsupported_model in self.model:
+                        old_value = use_parallel_tool_calls
+                        use_parallel_tool_calls = False
+                        if old_value:
+                            self.logger.warning(f"Disabling parallel_tool_calls for model {self.model} as it's known not to support it")
+                
+                self.logger.info(f"Using parallel tool calls: {use_parallel_tool_calls}")
                 
                 # Use our retry wrapper instead of direct litellm call
                 response = await self._litellm_with_retry(
@@ -897,6 +934,7 @@ class TinyAgent:
                     messages=self.messages,
                     tools=all_tools,
                     tool_choice="auto",
+                    parallel_tool_calls=use_parallel_tool_calls,
                     temperature=self.temperature,
                     **self.model_kwargs
                 )
@@ -934,8 +972,11 @@ class TinyAgent:
                 if has_tool_calls:
                     self.logger.info(f"Tool calls detected: {len(tool_calls)}")
                     
-                    # Process each tool call one by one
-                    for tool_call in tool_calls:
+                    # Create a list to hold all the tool execution tasks
+                    tool_tasks = []
+                    
+                    # Create a function to process a single tool call
+                    async def process_tool_call(tool_call):
                         tool_call_id = tool_call.id
                         function_info = tool_call.function
                         tool_name = function_info.name
@@ -965,35 +1006,15 @@ class TinyAgent:
                             if tool_name == "final_answer":
                                 # Add a response for this tool call before returning
                                 tool_result_content = tool_args.get("content", "Task completed without final answer.!!!")
-                                tool_message["content"] = tool_result_content
-                                self.messages.append(tool_message)
-                                await self._run_callbacks("message_add", message=tool_message)
-                                await self._run_callbacks("agent_end", result="Task completed.")
-                                await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
-                                return tool_message["content"] 
                             elif tool_name == "ask_question":
                                 question = tool_args.get("question", "Could you provide more details?")
                                 # Add a response for this tool call before returning
                                 tool_result_content = f"Question asked: {question}"
-                                tool_message["content"] = tool_result_content
-                                self.messages.append(tool_message)
-                                await self._run_callbacks("message_add", message=tool_message)
-                                await self._run_callbacks("agent_end", result=f"I need more information: {question}")
-                                await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
-                                return f"I need more information: {question}"
                             elif tool_name == "notify_user":
                                 message = tool_args.get("message", "No message provided.")
                                 self.logger.info(f"Received notify_user tool call with message: {message}")
                                 # Set the tool result content
                                 tool_result_content = "OK"
-                                tool_message["content"] = tool_result_content
-
-                                # Notify that the tool execution is complete
-                                await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
-                                # Don't return - continue the agent loop
-                                # Add the message to the conversation
-                                self.messages.append(tool_message)
-                                await self._run_callbacks("message_add", message=tool_message)
                             else:
                                 # Check if it's a custom tool first
                                 if tool_name in self.custom_tool_handlers:
@@ -1031,9 +1052,32 @@ class TinyAgent:
                             # Always add the tool message to ensure each tool call has a response
                             tool_message["content"] = tool_result_content
                             await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
-
+                            return tool_message
+                    
+                    # Create tasks for all tool calls
+                    for tool_call in tool_calls:
+                        tool_tasks.append(process_tool_call(tool_call))
+                    
+                    # Execute all tool calls concurrently
+                    tool_messages = await asyncio.gather(*tool_tasks)
+                    
+                    # Process results of tool calls
+                    for tool_message in tool_messages:
                         self.messages.append(tool_message)
                         await self._run_callbacks("message_add", message=tool_message)
+                        
+                        # Handle special exit tools
+                        if tool_message["name"] == "final_answer":
+                            await self._run_callbacks("agent_end", result="Task completed.")
+                            return tool_message["content"]
+                        elif tool_message["name"] == "ask_question":
+                            # Extract the question from the original tool call
+                            for tc in tool_calls:
+                                if tc.id == tool_message["tool_call_id"]:
+                                    args = json.loads(tc.function.arguments)
+                                    question = args.get("question", "")
+                                    await self._run_callbacks("agent_end", result=f"I need more information: {question}")
+                                    return f"I need more information: {question}"
                     
                     next_turn_should_call_tools = False
                 else:
@@ -1192,31 +1236,6 @@ class TinyAgent:
             
         Raises:
             Exception: If all retries fail
-            
-        Example:
-            ```python
-            # Custom retry configuration
-            retry_config = {
-                "max_retries": 5,                # Maximum number of retry attempts
-                "min_backoff": 1,                # Initial backoff time in seconds
-                "max_backoff": 60,               # Maximum backoff time in seconds
-                "jitter": True,                  # Add randomness to backoff times
-                "backoff_multiplier": 2,         # Exponential backoff factor
-                "retry_status_codes": [429, 500, 502, 503, 504],  # HTTP status codes to retry
-                "retry_exceptions": [            # Exception types to retry (by name)
-                    "litellm.InternalServerError",
-                    "litellm.APIError",
-                    "litellm.RateLimitError"
-                ]
-            }
-            
-            # Initialize agent with custom retry config
-            agent = TinyAgent(
-                model="gpt-4.1-mini",
-                api_key=api_key,
-                retry_config=retry_config
-            )
-            ```
         """
         max_retries = self.retry_config["max_retries"]
         min_backoff = self.retry_config["min_backoff"]
@@ -1228,6 +1247,12 @@ class TinyAgent:
         
         attempt = 0
         last_exception = None
+        
+        # Log the model and key parameters being used
+        model_name = kwargs.get('model', 'unknown')
+        self.logger.debug(f"Calling LiteLLM with model: {model_name}")
+        if 'parallel_tool_calls' in kwargs:
+            self.logger.debug(f"Using parallel_tool_calls={kwargs['parallel_tool_calls']}")
         
         while attempt <= max_retries:
             try:
@@ -1302,11 +1327,29 @@ class TinyAgent:
         metadata: Optional[Dict[str, Any]] = None,
         storage: Optional[Storage] = None,
         persist_tool_configs: bool = False,
-        retry_config: Optional[Dict[str, Any]] = None
+        retry_config: Optional[Dict[str, Any]] = None,
+        parallel_tool_calls: Optional[bool] = True,
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
         if (storage and session_id) were provided.
+        
+        Args:
+            model: The model to use with LiteLLM
+            api_key: The API key for the model provider
+            system_prompt: Custom system prompt for the agent
+            temperature: Temperature parameter for the model (controls randomness)
+            logger: Optional logger to use
+            model_kwargs: Additional keyword arguments to pass to the model
+            user_id: Optional user ID for the session
+            session_id: Optional session ID (if provided with storage, will attempt to load existing session)
+            metadata: Optional metadata for the session
+            storage: Optional storage backend for persistence
+            persist_tool_configs: Whether to persist tool configurations
+            retry_config: Optional configuration for LLM API call retries
+            parallel_tool_calls: Whether to enable parallel tool calls. If True, the agent will ask the model
+                                to execute multiple tool calls in parallel when possible. Some models like GPT-4
+                                and Claude 3 support this feature. Default is None (disabled).
         """
         agent = cls(
             model=model,
@@ -1320,7 +1363,8 @@ class TinyAgent:
             metadata=metadata,
             storage=storage,
             persist_tool_configs=persist_tool_configs,
-            retry_config=retry_config
+            retry_config=retry_config,
+            parallel_tool_calls=parallel_tool_calls
         )
         if agent._needs_session_load:
             await agent.init_async()
@@ -1565,17 +1609,19 @@ async def run_example():
         ]
     }
     
-    # Initialize the agent with our logger and custom retry config
-    agent = await TinyAgent.create(
-        model="gpt-4.1-mini",
+    # Example 1: Using a model that supports parallel function calling (GPT-4)
+    agent_logger.info("Example 1: Using a model that supports parallel function calling (GPT-4)")
+    agent1 = await TinyAgent.create(
+        model="gpt-4",  # A model that supports parallel function calling
         api_key=api_key,
         logger=agent_logger,
-        session_id="my-session-123",
-        storage=None,
-        retry_config=custom_retry_config
+        session_id="parallel-example",
+        retry_config=custom_retry_config,
+        parallel_tool_calls=True,  # Explicitly enable parallel function calling
+        drop_unsupported_params=True  # Enable dropping unsupported parameters
     )
     
-    # Add the Rich UI callback with our logger
+    # Add the Rich UI callback
     rich_ui = RichUICallback(
         markdown=True,
         show_message=True,
@@ -1583,23 +1629,51 @@ async def run_example():
         show_tool_calls=True,
         logger=ui_logger
     )
-    agent.add_callback(rich_ui)
+    agent1.add_callback(rich_ui)
     
     # Connect to MCP servers for additional tools
     try:
-        await agent.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
-        await agent.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+        await agent1.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
     except Exception as e:
         agent_logger.error(f"Failed to connect to MCP servers: {e}")
-        agent_logger.info("Continuing with default tools only")
     
-    # Run the agent with a more complex task that would benefit from progress notifications
-    user_input = "Plan a trip to Toronto for 7 days in the next month. Include accommodation options, top attractions, and a day-by-day itinerary."
-    agent_logger.info(f"Running agent with input: {user_input}")
-    result = await agent.run(user_input, max_turns=15)
-    
-    agent_logger.info(f"Final result: {result}")
+    # Run the agent with a task that would benefit from parallel function calling
+    user_input1 = "Compare the weather in Tokyo, New York, and Paris for planning a trip next week."
+    agent_logger.info(f"Running agent with input: {user_input1}")
+    result1 = await agent1.run(user_input1, max_turns=10)
+    agent_logger.info(f"Final result from example 1: {result1}")
     
     # Clean up
-    await agent.close()
-    agent_logger.debug("Example completed")
+    await agent1.close()
+    
+    # Example 2: Using a model that doesn't support parallel function calling (o4-mini)
+    agent_logger.info("\nExample 2: Using a model that doesn't support parallel function calling (o4-mini)")
+    agent2 = await TinyAgent.create(
+        model="o4-mini",  # A model that doesn't support parallel function calling
+        api_key=api_key,
+        logger=agent_logger,
+        session_id="o4-mini-example",
+        retry_config=custom_retry_config,
+        parallel_tool_calls=True,  # We still set this to True, but it will be automatically disabled
+        drop_unsupported_params=True  # Enable dropping unsupported parameters
+    )
+    
+    # Add the Rich UI callback
+    agent2.add_callback(rich_ui)
+    
+    # Connect to the same MCP server
+    try:
+        await agent2.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    except Exception as e:
+        agent_logger.error(f"Failed to connect to MCP servers: {e}")
+    
+    # Run the agent with the same task
+    user_input2 = "Compare the weather in Tokyo, New York, and Paris for planning a trip next week."
+    agent_logger.info(f"Running agent with input: {user_input2}")
+    result2 = await agent2.run(user_input2, max_turns=10)
+    agent_logger.info(f"Final result from example 2: {result2}")
+    
+    # Clean up
+    await agent2.close()
+    
+    agent_logger.debug("Examples completed")
