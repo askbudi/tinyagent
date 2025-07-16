@@ -62,6 +62,7 @@ class SeatbeltProvider(CodeExecutionProvider):
         additional_safe_control_operators: Optional[List[str]] = None,
         additional_read_dirs: Optional[List[str]] = None,  # New parameter for additional read directories
         additional_write_dirs: Optional[List[str]] = None,  # New parameter for additional write directories
+        environment_variables: Optional[Dict[str, str]] = None,  # New parameter for environment variables
         **kwargs
     ):
         """
@@ -81,6 +82,7 @@ class SeatbeltProvider(CodeExecutionProvider):
             additional_safe_control_operators: Additional shell control operators to consider safe
             additional_read_dirs: List of additional directories to allow read access to
             additional_write_dirs: List of additional directories to allow write access to
+            environment_variables: Dictionary of environment variables to make available in the sandbox
             **kwargs: Additional arguments passed to CodeExecutionProvider
         """
         # Initialize logger first to avoid AttributeError
@@ -108,6 +110,9 @@ class SeatbeltProvider(CodeExecutionProvider):
         # Expand and normalize paths to avoid issues with symlinks and relative paths
         self.additional_read_dirs = [os.path.abspath(os.path.expanduser(path)) for path in self.additional_read_dirs]
         self.additional_write_dirs = [os.path.abspath(os.path.expanduser(path)) for path in self.additional_write_dirs]
+        
+        # Store environment variables
+        self.environment_variables = environment_variables.copy() if environment_variables else {}
         
         # Set up seatbelt profile
         self.seatbelt_profile = seatbelt_profile
@@ -138,6 +143,84 @@ class SeatbeltProvider(CodeExecutionProvider):
                 self.logger.info("Additional read directories: %s", ", ".join(self.additional_read_dirs))
             if self.additional_write_dirs:
                 self.logger.info("Additional write directories: %s", ", ".join(self.additional_write_dirs))
+            if self.environment_variables:
+                env_keys = list(self.environment_variables.keys())
+                self.logger.info("Environment variables: %s", ", ".join(env_keys))
+    
+    def set_environment_variables(self, env_vars: Dict[str, str]):
+        """
+        Set environment variables for the sandbox.
+        
+        Args:
+            env_vars: Dictionary of environment variable name -> value pairs
+        """
+        self.environment_variables = env_vars.copy()
+        if self.logger:
+            env_keys = list(self.environment_variables.keys())
+            self.logger.info("Updated environment variables: %s", ", ".join(env_keys))
+    
+    def add_environment_variable(self, name: str, value: str):
+        """
+        Add a single environment variable.
+        
+        Args:
+            name: Environment variable name
+            value: Environment variable value
+        """
+        self.environment_variables[name] = value
+        if self.logger:
+            self.logger.info("Added environment variable: %s", name)
+    
+    def remove_environment_variable(self, name: str):
+        """
+        Remove an environment variable.
+        
+        Args:
+            name: Environment variable name to remove
+        """
+        if name in self.environment_variables:
+            del self.environment_variables[name]
+            if self.logger:
+                self.logger.info("Removed environment variable: %s", name)
+    
+    def get_environment_variables(self) -> Dict[str, str]:
+        """
+        Get a copy of current environment variables.
+        
+        Returns:
+            Dictionary of current environment variables
+        """
+        return self.environment_variables.copy()
+    
+    def _get_sandbox_environment(self) -> Dict[str, str]:
+        """
+        Get the complete environment for sandbox execution.
+        
+        Returns:
+            Dictionary containing all environment variables for the sandbox
+        """
+        # Start with essential system environment variables
+        base_env = {
+            'PATH': os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin'),
+            'HOME': os.environ.get('HOME', '/tmp'),
+            'USER': os.environ.get('USER', 'nobody'),
+            'TERM': os.environ.get('TERM', 'xterm'),
+            'LANG': os.environ.get('LANG', 'en_US.UTF-8'),
+            'LC_ALL': os.environ.get('LC_ALL', 'en_US.UTF-8'),
+        }
+        
+        # Add Python-specific environment variables if available
+        python_vars = ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'CONDA_DEFAULT_ENV', 'CONDA_PREFIX']
+        for var in python_vars:
+            if var in os.environ:
+                base_env[var] = os.environ[var]
+        
+        # Add user-defined environment variables (these can override base ones)
+        base_env.update(self.environment_variables)
+        
+        return base_env
+    
+
     
     def _get_default_seatbelt_profile(self) -> str:
         """
@@ -470,6 +553,9 @@ print(json.dumps(cleaned_result))
             if self.python_env_path:
                 python_cmd = os.path.join(self.python_env_path, 'bin', 'python')
             
+            # Get the complete environment for the sandbox
+            sandbox_env = self._get_sandbox_environment()
+            
             sandbox_cmd = [
                 "sandbox-exec", 
                 "-f", self.seatbelt_profile_path, 
@@ -484,7 +570,8 @@ print(json.dumps(cleaned_result))
             process = await asyncio.create_subprocess_exec(
                 *sandbox_cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=sandbox_env
             )
             
             try:
@@ -578,6 +665,228 @@ print(json.dumps(cleaned_result))
                 print(error_text)
             print("#########################</traceback>#########################")
     
+    def _needs_shell_wrapper(self, command: List[str]) -> bool:
+        """
+        Determine if a command needs bash -c wrapper based on shell features.
+        
+        Args:
+            command: List of command parts
+            
+        Returns:
+            True if command needs bash -c wrapper, False if it can run directly
+        """
+        if not command:
+            return False
+        
+        command_str = " ".join(command)
+        
+        # Shell metacharacters that require bash -c
+        shell_metacharacters = [
+            "|", "&", ";", "(", ")", "{", "}", "[", "]", 
+            "&&", "||", ">>", "<<", "<", ">", "<<<",
+            "$", "`", "~", "*", "?", "!", "^"
+        ]
+        
+        # Check for shell metacharacters
+        for char in shell_metacharacters:
+            if char in command_str:
+                return True
+        
+        # Shell built-ins that require bash -c
+        shell_builtins = [
+            "cd", "export", "source", ".", "alias", "unalias", "set", "unset",
+            "echo", "printf", "test", "[", "[[", "declare", "local", "readonly",
+            "typeset", "eval", "exec", "exit", "return", "break", "continue",
+            "shift", "getopts", "read", "wait", "jobs", "fg", "bg", "disown",
+            "kill", "trap", "ulimit", "umask", "type", "command", "builtin",
+            "enable", "help", "history", "fc", "dirs", "pushd", "popd",
+            "suspend", "times", "caller", "complete", "compgen", "shopt"
+        ]
+        
+        # Check if first command is a shell built-in
+        if command[0] in shell_builtins:
+            return True
+        
+        # Special cases that need shell interpretation
+        if (
+            # Variable assignment (VAR=value)
+            any("=" in arg and not arg.startswith("-") for arg in command) or
+            # Command substitution patterns
+            "$((" in command_str or "))" in command_str or
+            # Brace expansion
+            "{" in command_str and "}" in command_str
+        ):
+            return True
+        
+        return False
+    
+    async def _prepare_git_sandbox_command(self, command: List[str]) -> List[str]:
+        """
+        Prepare a specialized sandbox command for git operations.
+        
+        Args:
+            command: Git command to execute
+            
+        Returns:
+            List of sandbox command parts
+        """
+        # Create a temporary directory for git operations
+        temp_dir = tempfile.mkdtemp(prefix='tinyagent_git_')
+        self._temp_git_dir = temp_dir  # Store for cleanup
+        
+        # Get GitHub credentials from environment
+        github_username = self.environment_variables.get('GITHUB_USERNAME', 'tinyagent')
+        github_token = self.environment_variables.get('GITHUB_TOKEN', '')
+        git_author_name = self.environment_variables.get('GIT_AUTHOR_NAME', 'TinyAgent')
+        git_author_email = self.environment_variables.get('GIT_AUTHOR_EMAIL', 'tinyagent@example.com')
+        
+        # Create a git config file in the temp directory
+        git_config_path = os.path.join(temp_dir, '.gitconfig')
+        with open(git_config_path, 'w') as git_config:
+            git_config.write(f"""[user]
+    name = {git_author_name}
+    email = {git_author_email}
+[safe]
+    directory = *
+[http]
+    sslVerify = true
+[core]
+    autocrlf = input
+    askpass = /bin/echo
+[credential]
+    helper = ""
+    useHttpPath = false
+[credential "https://github.com"]
+    helper = ""
+[credential "https://api.github.com"]
+    helper = ""
+[credential "https://gist.github.com"]
+    helper = ""
+""")
+        
+        # Create a netrc file for additional authentication bypass
+        netrc_path = os.path.join(temp_dir, '.netrc')
+        if github_token and github_username:
+            with open(netrc_path, 'w') as netrc_file:
+                netrc_file.write(f"machine github.com login {github_username} password {github_token}\n")
+                netrc_file.write(f"machine api.github.com login {github_username} password {github_token}\n")
+            os.chmod(netrc_path, 0o600)  # Secure permissions for .netrc
+        
+        # Create a modified seatbelt profile that allows access to the temp directory
+        temp_profile_path = os.path.join(temp_dir, 'git_seatbelt.sb')
+        with open(temp_profile_path, 'w') as profile_file:
+            # Get the original profile content
+            profile_content = self.seatbelt_profile
+            
+            # Add temp directory to the profile for git operations
+            profile_content = profile_content.replace(
+                "; Allow Git operations", 
+                f"; Allow Git operations\n(allow file-read* (subpath \"{temp_dir}\"))\n(allow file-write* (subpath \"{temp_dir}\"))"
+            )
+            
+            # Ensure additional directories are included in the modified profile
+            if self.additional_read_dirs or self.additional_write_dirs:
+                # Build additional read directories section
+                additional_read_dirs_rules = ""
+                for dir_path in self.additional_read_dirs:
+                    if f'(subpath "{dir_path}")' not in profile_content:
+                        additional_read_dirs_rules += f'(allow file-read* (subpath "{dir_path}"))\n'
+                
+                # Build additional write directories section
+                additional_write_dirs_rules = ""
+                for dir_path in self.additional_write_dirs:
+                    if f'(subpath "{dir_path}")' not in profile_content:
+                        additional_write_dirs_rules += f'(allow file-write* (subpath "{dir_path}"))\n'
+                
+                # Add any missing directories to the profile
+                if additional_read_dirs_rules or additional_write_dirs_rules:
+                    profile_content = profile_content.replace(
+                        "; Allow Git operations",
+                        f"; Allow Git operations\n{additional_read_dirs_rules}{additional_write_dirs_rules}"
+                    )
+            
+            profile_file.write(profile_content)
+        
+        # Get the base sandbox environment and add git-specific variables
+        sandbox_env = self._get_sandbox_environment()
+        
+        # Add git-specific environment variables
+        git_env = {
+            "GIT_CONFIG_GLOBAL": git_config_path,
+            "HOME": temp_dir,
+            # Completely disable all credential helpers and prompts
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": "/bin/echo",
+            "SSH_ASKPASS": "/bin/echo",
+            "DISPLAY": "",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            # Disable credential storage completely
+            "GIT_CREDENTIAL_HELPER": "",
+            # Disable macOS keychain specifically
+            "GIT_CREDENTIAL_OSXKEYCHAIN": "0",
+            # Force use of netrc if available
+            "NETRC": netrc_path if github_token and github_username else "",
+            # Additional security environment variables
+            "GIT_CURL_VERBOSE": "0",
+            "GIT_QUIET": "1",
+        }
+        
+        # If this is a push command and we have a token, modify the command to use the token directly
+        if github_token and len(command) >= 3 and command[1] == "push":
+            # Get the remote name (e.g., "fork" or "origin")
+            remote_name = command[2]
+            
+            # Create a script that will set up the remote URL with the token and then execute the push
+            script_path = os.path.join(temp_dir, 'git_push_with_token.sh')
+            with open(script_path, 'w') as script_file:
+                script_file.write(f"""#!/bin/bash
+set -e
+
+# Disable all credential helpers explicitly
+export GIT_CREDENTIAL_HELPER=""
+export GIT_CREDENTIAL_OSXKEYCHAIN="0"
+export GIT_TERMINAL_PROMPT="0"
+export GIT_ASKPASS="/bin/echo"
+
+# Get the current remote URL
+REMOTE_URL=$(git remote get-url {remote_name} 2>/dev/null || echo "")
+
+# Check if it's a GitHub URL
+if [[ "$REMOTE_URL" == *"github.com"* ]]; then
+    # Extract the repo path from the URL
+    REPO_PATH=$(echo "$REMOTE_URL" | sed -E 's|https://[^/]*github\.com/||' | sed -E 's|git@github\.com:||' | sed 's|\.git$||')
+    
+    # Set the remote URL with the token
+    git remote set-url {remote_name} "https://{github_username}:{github_token}@github.com/$REPO_PATH.git"
+fi
+
+# Execute the original git command with credential helpers disabled
+exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command[1:])}
+""")
+            
+            # Make the script executable
+            os.chmod(script_path, 0o755)
+            
+            # Modify the command to use the script
+            command = ["bash", script_path]
+        
+        # Merge git environment with sandbox environment
+        final_env = sandbox_env.copy()
+        final_env.update(git_env)
+        
+        # Prepare the sandbox command with git environment
+        env_args = [f"{key}={value}" for key, value in final_env.items()]
+        
+        sandbox_cmd = ["env", "-i"]
+        sandbox_cmd.extend(env_args)
+        sandbox_cmd.extend([
+            "sandbox-exec", 
+            "-f", temp_profile_path
+        ])
+        sandbox_cmd.extend(command)
+        
+        return sandbox_cmd
+    
     async def execute_shell(self, command: List[str], timeout: int = 10, workdir: Optional[str] = None) -> Dict[str, Any]:
         """
         Execute a shell command securely within a sandbox and return the result.
@@ -610,187 +919,62 @@ print(json.dumps(cleaned_result))
         try:
             # Special handling for git commands
             if len(command) > 0 and command[0] == "git":
-                # Create a temporary directory for git operations
-                temp_dir = tempfile.mkdtemp(prefix='tinyagent_git_')
-                
-                # Create a git config file in the temp directory
-                git_config_path = os.path.join(temp_dir, '.gitconfig')
-                with open(git_config_path, 'w') as git_config:
-                    git_config.write("""[user]
-    name = TinyAgent
-    email = tinyagent@example.com
-[safe]
-    directory = *
-[http]
-    sslVerify = true
-[core]
-    autocrlf = input
-""")
-                
-                # Create a modified seatbelt profile that allows access to the temp directory
-                temp_profile_path = os.path.join(temp_dir, 'git_seatbelt.sb')
-                with open(temp_profile_path, 'w') as profile_file:
-                    # Get the original profile content
-                    profile_content = self.seatbelt_profile
-                    
-                    # Add temp directory to the profile for git operations
-                    profile_content = profile_content.replace(
-                        "; Allow Git operations", 
-                        f"; Allow Git operations\n(allow file-read* (subpath \"{temp_dir}\"))\n(allow file-write* (subpath \"{temp_dir}\"))"
-                    )
-                    
-                    # Ensure additional directories are included in the modified profile
-                    if self.additional_read_dirs or self.additional_write_dirs:
-                        # Build additional read directories section
-                        additional_read_dirs_rules = ""
-                        for dir_path in self.additional_read_dirs:
-                            if f'(subpath "{dir_path}")' not in profile_content:
-                                additional_read_dirs_rules += f'(allow file-read* (subpath "{dir_path}"))\n'
-                        
-                        # Build additional write directories section
-                        additional_write_dirs_rules = ""
-                        for dir_path in self.additional_write_dirs:
-                            if f'(subpath "{dir_path}")' not in profile_content:
-                                additional_write_dirs_rules += f'(allow file-write* (subpath "{dir_path}"))\n'
-                        
-                        # Add any missing directories to the profile
-                        if additional_read_dirs_rules or additional_write_dirs_rules:
-                            profile_content = profile_content.replace(
-                                "; Allow Git operations",
-                                f"; Allow Git operations\n{additional_read_dirs_rules}{additional_write_dirs_rules}"
-                            )
-                    
-                    profile_file.write(profile_content)
-                
-                # Prepare environment variables for git
-                env_vars = [
-                    f"GIT_CONFIG_GLOBAL={git_config_path}",
-                    f"HOME={temp_dir}",
-                    f"USER={os.environ.get('USER', 'nobody')}",
-                    f"PATH={os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')}"
-                ]
-                
-                # Prepare the sandbox command with git environment
-                sandbox_cmd = [
-                    "env", "-i"
-                ]
-                sandbox_cmd.extend(env_vars)
-                sandbox_cmd.extend([
-                    "sandbox-exec", 
-                    "-f", temp_profile_path
-                ])
-                sandbox_cmd.extend(command)
-                
-                try:
-                    # Set working directory
-                    cwd = workdir if workdir else os.getcwd()
-                    
-                    # Execute the command
-                    process = await asyncio.create_subprocess_exec(
-                        *sandbox_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=cwd
-                    )
-                    
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-                    
-                    # Decode and strip ANSI color codes from stdout and stderr
-                    stdout_text = stdout.decode('utf-8', errors='replace')
-                    stderr_text = stderr.decode('utf-8', errors='replace')
-                    
-                    # Strip ANSI color codes to make output more readable
-                    clean_stdout = strip_ansi_codes(stdout_text)
-                    clean_stderr = strip_ansi_codes(stderr_text)
-                    
-                    result = {
-                        "stdout": clean_stdout,
-                        "stderr": clean_stderr,
-                        "exit_code": process.returncode
-                    }
-                    
-                    # For display purposes, show the original output with colors
-                    print(f"{COLOR['GREEN']}{{\"stdout\": \"{stdout_text}\", \"stderr\": \"{stderr_text}\", \"exit_code\": {process.returncode}}}{COLOR['ENDC']}")
-                    return result
-                    
-                finally:
-                    # Clean up the temporary directory
-                    try:
-                        import shutil
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                    except Exception:
-                        pass
+                sandbox_cmd = await self._prepare_git_sandbox_command(command)
+                temp_dir = getattr(self, '_temp_git_dir', None)
             
             # Special handling for bash login shell to avoid profile loading errors
             elif len(command) >= 3 and command[0] == "bash" and command[1] == "-lc":
-                # Replace -lc with -c and add env settings to ignore profile files
-                shell_cmd = ["bash", "-c", command[2]]
-                # Set environment variables to prevent loading profiles
-                env_vars = {
+                # Get sandbox environment and add bash-specific variables
+                bash_env = self._get_sandbox_environment()
+                bash_env.update({
                     "BASH_ENV": "/dev/null",
                     "ENV": "/dev/null",
                     "BASH_PROFILE": "/dev/null",
-                    "PROFILE": "/dev/null"
-                }
-                sandbox_cmd = [
-                    "env", "-i", 
-                    f"PATH={os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')}",
-                    f"HOME={os.environ.get('HOME', '/tmp')}",
-                    f"USER={os.environ.get('USER', 'nobody')}",
-                    f"TERM={os.environ.get('TERM', 'xterm')}",
-                    "BASH_ENV=/dev/null",
-                    "ENV=/dev/null",
-                    "BASH_PROFILE=/dev/null",
-                    "PROFILE=/dev/null",
+                    "PROFILE": "/dev/null",
+                })
+                
+                env_args = [f"{key}={value}" for key, value in bash_env.items()]
+                
+                sandbox_cmd = ["env", "-i"]
+                sandbox_cmd.extend(env_args)
+                sandbox_cmd.extend([
                     "sandbox-exec", 
-                    "-f", self.seatbelt_profile_path
+                    "-f", self.seatbelt_profile_path,
+                    "bash", "-c", command[2]
+                ])
+                temp_dir = None
+            
+            # Determine if command needs shell wrapper
+            elif self._needs_shell_wrapper(command):
+                # Commands that need shell interpretation
+                sandbox_cmd = [
+                    "sandbox-exec", 
+                    "-f", self.seatbelt_profile_path,
+                    "bash", "-c", " ".join(command)
                 ]
-                sandbox_cmd.extend(shell_cmd)
-            # Special handling for interpreter commands with inline code execution flags
-            elif len(command) >= 3 and command[0] in ["python", "node", "ruby", "perl", "php", "deno"] and command[1] in ["-c", "-e", "--eval", "--execute"]:
-                # Use the command as is without joining with spaces
+                temp_dir = None
+            else:
+                # Commands that can run directly
                 sandbox_cmd = [
                     "sandbox-exec", 
                     "-f", self.seatbelt_profile_path
                 ]
                 sandbox_cmd.extend(command)
-            # Special handling for heredoc syntax
-            elif len(command) >= 1:
-                command_str = " ".join(command)
-                if "<<" in command_str and any(f"<<'{token}'" in command_str or f'<<"{token}"' in command_str or f"<<{token}" in command_str for token in ["EOF", "EOL", "END", "HEREDOC", "PY", "JS", "RUBY", "PHP"]):
-                    # For commands with heredoc, pass to bash -c without additional processing
-                    shell_cmd = ["bash", "-c", command_str]
-                    sandbox_cmd = [
-                        "sandbox-exec", 
-                        "-f", self.seatbelt_profile_path
-                    ]
-                    sandbox_cmd.extend(shell_cmd)
-                else:
-                    # Prepare the sandbox command for other types of commands
-                    shell_cmd = ["bash", "-c", " ".join(command)]
-                    sandbox_cmd = [
-                        "sandbox-exec", 
-                        "-f", self.seatbelt_profile_path
-                    ]
-                    sandbox_cmd.extend(shell_cmd)
-            else:
-                # Prepare the sandbox command for other types of commands
-                shell_cmd = ["bash", "-c", " ".join(command)]
-                sandbox_cmd = [
-                    "sandbox-exec", 
-                    "-f", self.seatbelt_profile_path
-                ]
-                sandbox_cmd.extend(shell_cmd)
+                temp_dir = None
             
             # Set working directory
             cwd = workdir if workdir else os.getcwd()
+            
+            # Get the complete environment for the sandbox
+            sandbox_env = self._get_sandbox_environment()
             
             # Execute the command
             process = await asyncio.create_subprocess_exec(
                 *sandbox_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=cwd
+                cwd=cwd,
+                env=sandbox_env
             )
             
             try:
@@ -823,6 +1007,16 @@ print(json.dumps(cleaned_result))
                 }
                 print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
                 return response
+            
+            finally:
+                # Clean up git temporary directory if it was created
+                if temp_dir and hasattr(self, '_temp_git_dir'):
+                    try:
+                        import shutil
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        delattr(self, '_temp_git_dir')
+                    except Exception:
+                        pass
         
         except Exception as e:
             if self.logger:

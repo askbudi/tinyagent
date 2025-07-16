@@ -13,6 +13,7 @@ from .providers.modal_provider import ModalProvider
 from .providers.seatbelt_provider import SeatbeltProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
 from .utils import truncate_output, format_truncation_message
+import datetime
 
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
@@ -28,7 +29,16 @@ class TinyCodeAgent:
     A TinyAgent specialized for code execution tasks.
     
     This class provides a high-level interface for creating agents that can execute
-    Python code using various providers (Modal, Docker, local execution, etc.).
+    Python code using various providers (Modal, SeatbeltProvider for macOS sandboxing, etc.).
+    
+    Features include:
+    - Code execution in sandboxed environments
+    - Shell command execution with safety checks
+    - Environment variable management (SeatbeltProvider)
+    - File system access controls
+    - Memory management and conversation summarization
+    - Git checkpoint automation
+    - Output truncation controls
     """
     
     def __init__(
@@ -51,6 +61,7 @@ class TinyCodeAgent:
         summary_config: Optional[Dict[str, Any]] = None,
         ui: Optional[str] = None,
         truncation_config: Optional[Dict[str, Any]] = None,
+        auto_git_checkpoint: bool = False,
         **agent_kwargs
     ):
         """
@@ -76,6 +87,7 @@ class TinyCodeAgent:
             summary_config: Optional configuration for generating conversation summaries
             ui: The user interface callback to use ('rich', 'jupyter', or None).
             truncation_config: Configuration for output truncation (max_tokens, max_lines)
+            auto_git_checkpoint: If True, automatically create git checkpoints after each successful shell command
             **agent_kwargs: Additional arguments passed to TinyAgent
             
         Provider Config Options:
@@ -88,6 +100,7 @@ class TinyCodeAgent:
                 - additional_safe_control_operators: Additional shell control operators to consider safe
                 - additional_read_dirs: List of additional directories to allow read access to
                 - additional_write_dirs: List of additional directories to allow write access to
+                - environment_variables: Dictionary of environment variables to make available in the sandbox
             
             For ModalProvider:
                 - pip_packages: List of additional Python packages to install
@@ -114,6 +127,7 @@ class TinyCodeAgent:
         self.provider = provider  # Store provider type for reuse
         self.check_string_obfuscation = check_string_obfuscation
         self.default_workdir = default_workdir or os.getcwd()  # Default to current working directory if not specified
+        self.auto_git_checkpoint = auto_git_checkpoint  # Enable/disable automatic git checkpoints
         
         # Set up truncation configuration with defaults
         default_truncation = {
@@ -202,7 +216,7 @@ class TinyCodeAgent:
             for key in ['seatbelt_profile', 'seatbelt_profile_path', 'python_env_path', 
                         'bypass_shell_safety', 'additional_safe_shell_commands', 
                         'additional_safe_control_operators', 'additional_read_dirs',
-                        'additional_write_dirs']:
+                        'additional_write_dirs', 'environment_variables']:
                 if key in filtered_config:
                     filtered_config.pop(key)
             
@@ -220,6 +234,9 @@ class TinyCodeAgent:
             additional_read_dirs = config.get("additional_read_dirs", None)
             additional_write_dirs = config.get("additional_write_dirs", None)
             
+            # Environment variables to make available in the sandbox
+            environment_variables = config.get("environment_variables", {})
+            
             # Create the seatbelt provider
             return SeatbeltProvider(
                 log_manager=self.log_manager,
@@ -232,6 +249,7 @@ class TinyCodeAgent:
                 additional_safe_control_operators=additional_safe_control_operators,
                 additional_read_dirs=additional_read_dirs,
                 additional_write_dirs=additional_write_dirs,
+                environment_variables=environment_variables,
                 **filtered_config
             )
         else:
@@ -466,6 +484,53 @@ class TinyCodeAgent:
               <bad-example>
               cd /foo/bar && pytest tests
               </bad-example>
+        
+        ## IMPORTANT: Bash Tool Usage
+        
+        When using the bash tool, you MUST provide all required parameters:
+        
+        **Correct Usage:**
+        ```
+        bash(
+            command=["ls", "-la"],
+            absolute_workdir="/path/to/directory", 
+            description="List files in directory"
+        )
+        ```
+        
+        **For creating files with content, use these safe patterns:**
+        
+        1. **Simple file creation:**
+        ```
+        bash(
+            command=["touch", "filename.txt"],
+            absolute_workdir="/working/directory",
+            description="Create empty file"
+        )
+        ```
+        
+        2. **Write content using cat and heredoc:**
+        ```
+        bash(
+            command=["sh", "-c", "cat > filename.txt << 'EOF'\nYour content here\nEOF"],
+            absolute_workdir="/working/directory", 
+            description="Create file with content"
+        )
+        ```
+        
+        3. **Write content using echo:**
+        ```
+        bash(
+            command=["sh", "-c", "echo 'Your content' > filename.txt"],
+            absolute_workdir="/working/directory",
+            description="Write content to file"
+        )
+        ```
+        
+        **Never:**
+        - Call bash() without all required parameters
+        - Use complex nested quotes without testing
+        - Try to create large files in a single command (break into parts)
 
         Args:
             command: list[str]: The shell command to execute as a list of strings.  Example: ["ls", "-la"] or ["cat", "file.txt"]
@@ -519,6 +584,11 @@ class TinyCodeAgent:
                             "bash_output"
                         )
                 
+                # Create a git checkpoint if auto_git_checkpoint is enabled
+                if self.auto_git_checkpoint and result.get("exit_code", 1) == 0:
+                    checkpoint_result = await self._create_git_checkpoint(command, description, effective_workdir)
+                    self.log_manager.get_logger(__name__).info(f"Git checkpoint {effective_workdir} result: {checkpoint_result}")
+                
                 return json.dumps(result)
             except Exception as e:
                 COLOR = {
@@ -532,6 +602,64 @@ class TinyCodeAgent:
         
         self.agent.add_tool(run_python)
         self.agent.add_tool(run_shell)
+    
+    async def _create_git_checkpoint(self, command: List[str], description: str, workdir: str) -> Dict[str, Any]:
+        """
+        Create a git checkpoint after command execution.
+        
+        Args:
+            command: The command that was executed
+            description: Description of the command
+            workdir: Working directory where the command was executed
+            
+        Returns:
+            Dictionary with stdout and stderr from the git operations
+        """
+        try:
+            # Format the command for the commit message
+            cmd_str = " ".join(command)
+            
+            # Check if there are changes to commit
+            git_check_cmd = ["bash", "-c", "if ! git diff-index --quiet HEAD --; then echo 'changes_exist'; else echo 'no_changes'; fi"]
+            check_result = await self.code_provider.execute_shell(git_check_cmd, 10, workdir)
+            
+            # If no changes or check failed, return early
+            if check_result.get("exit_code", 1) != 0 or "no_changes" in check_result.get("stdout", ""):
+                return {"stdout": "No changes detected, skipping git checkpoint", "stderr": ""}
+            
+            # Stage all changes
+            git_add_cmd = ["git", "add", "-A"]
+            add_result = await self.code_provider.execute_shell(git_add_cmd, 30, workdir)
+            
+            if add_result.get("exit_code", 1) != 0:
+                return {
+                    "stdout": "",
+                    "stderr": f"Failed to stage changes: {add_result.get('stderr', '')}"
+                }
+            
+            # Create commit with command description and timestamp
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            commit_msg = f"Checkpoint: {description} @ {timestamp}\n\nCommand: {cmd_str}"
+            git_commit_cmd = ["git", "commit", "-m", commit_msg, "--no-gpg-sign"]
+            commit_result = await self.code_provider.execute_shell(git_commit_cmd, 30, workdir)
+            
+            if commit_result.get("exit_code", 1) != 0:
+                return {
+                    "stdout": "",
+                    "stderr": f"Failed to create commit: {commit_result.get('stderr', '')}"
+                }
+            
+            # Get the first line of the commit message without using split with \n in f-string
+            first_line = commit_msg.split("\n")[0]
+            return {
+                "stdout": f"✓ Git checkpoint created: {first_line}",
+                "stderr": ""
+            }
+        except Exception as e:
+            return {
+                "stdout": "",
+                "stderr": f"Error creating git checkpoint: {str(e)}"
+            }
     
     def set_default_workdir(self, workdir: str, create_if_not_exists: bool = False):
         """
@@ -961,6 +1089,89 @@ class TinyCodeAgent:
         """
         self.truncation_config["enabled"] = enabled
 
+    def enable_auto_git_checkpoint(self, enabled: bool = True):
+        """
+        Enable or disable automatic git checkpoint creation after successful shell commands.
+        
+        Args:
+            enabled: If True, automatically create git checkpoints. If False, do not create them.
+        """
+        self.auto_git_checkpoint = enabled
+
+    def get_auto_git_checkpoint_status(self) -> bool:
+        """
+        Get the current status of auto_git_checkpoint.
+        
+        Returns:
+            True if auto_git_checkpoint is enabled, False otherwise.
+        """
+        return self.auto_git_checkpoint
+    
+    def set_environment_variables(self, env_vars: Dict[str, str]):
+        """
+        Set environment variables for the code execution provider.
+        Currently only supported for SeatbeltProvider.
+        
+        Args:
+            env_vars: Dictionary of environment variable name -> value pairs
+            
+        Raises:
+            AttributeError: If the provider doesn't support environment variables
+        """
+        if hasattr(self.code_provider, 'set_environment_variables'):
+            self.code_provider.set_environment_variables(env_vars)
+        else:
+            raise AttributeError(f"Provider {self.provider} does not support environment variables")
+    
+    def add_environment_variable(self, name: str, value: str):
+        """
+        Add a single environment variable for the code execution provider.
+        Currently only supported for SeatbeltProvider.
+        
+        Args:
+            name: Environment variable name
+            value: Environment variable value
+            
+        Raises:
+            AttributeError: If the provider doesn't support environment variables
+        """
+        if hasattr(self.code_provider, 'add_environment_variable'):
+            self.code_provider.add_environment_variable(name, value)
+        else:
+            raise AttributeError(f"Provider {self.provider} does not support environment variables")
+    
+    def remove_environment_variable(self, name: str):
+        """
+        Remove an environment variable from the code execution provider.
+        Currently only supported for SeatbeltProvider.
+        
+        Args:
+            name: Environment variable name to remove
+            
+        Raises:
+            AttributeError: If the provider doesn't support environment variables
+        """
+        if hasattr(self.code_provider, 'remove_environment_variable'):
+            self.code_provider.remove_environment_variable(name)
+        else:
+            raise AttributeError(f"Provider {self.provider} does not support environment variables")
+    
+    def get_environment_variables(self) -> Dict[str, str]:
+        """
+        Get a copy of current environment variables from the code execution provider.
+        Currently only supported for SeatbeltProvider.
+        
+        Returns:
+            Dictionary of current environment variables
+            
+        Raises:
+            AttributeError: If the provider doesn't support environment variables
+        """
+        if hasattr(self.code_provider, 'get_environment_variables'):
+            return self.code_provider.get_environment_variables()
+        else:
+            raise AttributeError(f"Provider {self.provider} does not support environment variables")
+
 
 # Example usage demonstrating both LLM tools and code tools
 async def run_example():
@@ -1164,6 +1375,28 @@ async def run_example():
     print("Untruncated Output Response:")
     print(response_untruncated)
     
+    # Test git checkpoint functionality
+    print("\n" + "="*80)
+    print("🔄 Testing git checkpoint functionality")
+    
+    # Enable git checkpoints
+    agent_remote.enable_auto_git_checkpoint(True)
+    print(f"Auto Git Checkpoint enabled: {agent_remote.get_auto_git_checkpoint_status()}")
+    
+    # Create a test file to demonstrate git checkpoint
+    git_test_prompt = """
+    Create a new file called test_file.txt with some content, then modify it, and observe
+    that git checkpoints are created automatically after each change.
+    """
+    
+    git_response = await agent_remote.run(git_test_prompt)
+    print("Git Checkpoint Response:")
+    print(git_response)
+    
+    # Disable git checkpoints
+    agent_remote.enable_auto_git_checkpoint(False)
+    print(f"Auto Git Checkpoint disabled: {agent_remote.get_auto_git_checkpoint_status()}")
+    
     # Test seatbelt provider if supported
     if TinyCodeAgent.is_seatbelt_supported():
         print("\n" + "="*80)
@@ -1263,7 +1496,15 @@ async def run_example():
                 
                 # Allow git commands
                 "bypass_shell_safety": True,
-                "additional_safe_shell_commands": ["git"]
+                "additional_safe_shell_commands": ["git"],
+                
+                # Environment variables to make available in the sandbox
+                "environment_variables": {
+                    "TEST_READ_DIR": test_read_dir,
+                    "TEST_WRITE_DIR": test_write_dir,
+                    "PROJECT_NAME": "TinyAgent Seatbelt Demo",
+                    "BUILD_VERSION": "1.0.0"
+                }
             },
             local_execution=True,  # Required for seatbelt
             check_string_obfuscation=True,
@@ -1307,6 +1548,66 @@ async def run_example():
         response_write = await agent_seatbelt.run(write_prompt)
         print("Writing to Additional Write Directory:")
         print(response_write)
+        
+        # Test environment variables
+        print("\n" + "="*80)
+        print("🔧 Testing environment variables functionality")
+        
+        # Add additional environment variables dynamically
+        agent_seatbelt.add_environment_variable("CUSTOM_VAR", "custom_value")
+        agent_seatbelt.add_environment_variable("DEBUG_MODE", "true")
+        
+        # Get and display current environment variables
+        current_env_vars = agent_seatbelt.get_environment_variables()
+        print(f"Current environment variables: {list(current_env_vars.keys())}")
+        
+        # Test accessing environment variables in Python and shell
+        env_test_prompt = """
+        Test the environment variables we set:
+        1. In Python, use os.environ to check for CUSTOM_VAR and DEBUG_MODE
+        2. In a shell command, use 'echo $CUSTOM_VAR' and 'echo $DEBUG_MODE'
+        3. Also check the TEST_READ_DIR and TEST_WRITE_DIR variables that were set during initialization
+        4. Show all environment variables that start with 'TEST_' or 'CUSTOM_' or 'DEBUG_'
+        """
+        
+        response_env_test = await agent_seatbelt.run(env_test_prompt)
+        print("Environment Variables Test:")
+        print(response_env_test)
+        
+        # Update environment variables
+        agent_seatbelt.set_environment_variables({
+            "CUSTOM_VAR": "updated_value",
+            "NEW_VAR": "new_value",
+            "API_KEY": "test_api_key_123"
+        })
+        
+        # Test updated environment variables
+        updated_env_test_prompt = """
+        Test the updated environment variables:
+        1. Check that CUSTOM_VAR now has the value 'updated_value'
+        2. Check that NEW_VAR is available with value 'new_value'
+        3. Check that API_KEY is available with value 'test_api_key_123'
+        4. Verify that DEBUG_MODE is no longer available (should have been removed by set operation)
+        """
+        
+        response_updated_env = await agent_seatbelt.run(updated_env_test_prompt)
+        print("Updated Environment Variables Test:")
+        print(response_updated_env)
+        
+        # Remove a specific environment variable
+        agent_seatbelt.remove_environment_variable("API_KEY")
+        
+        # Test that the removed variable is no longer available
+        removed_env_test_prompt = """
+        Test that API_KEY environment variable has been removed:
+        1. Try to access API_KEY in Python - it should not be available
+        2. Use shell command 'echo $API_KEY' - it should be empty
+        3. List all current environment variables that start with 'CUSTOM_' or 'NEW_'
+        """
+        
+        response_removed_env = await agent_seatbelt.run(removed_env_test_prompt)
+        print("Removed Environment Variable Test:")
+        print(response_removed_env)
         
         # Test git commands with the custom configuration
         git_prompt = "Run 'git status' to show the current git status."

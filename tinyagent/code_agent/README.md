@@ -208,6 +208,36 @@ agent.set_check_string_obfuscation(True)   # Re-enable check
 
 See `examples/base64_example.py` for a complete example.
 
+### Automatic Git Checkpoints
+
+TinyCodeAgent can automatically create Git checkpoints after each successful shell command execution. This helps track changes made by the agent and provides a safety net for reverting changes if needed.
+
+```python
+# Enable during initialization
+agent = TinyCodeAgent(
+    model="gpt-4.1-mini",
+    auto_git_checkpoint=True  # Enable automatic Git checkpoints
+)
+
+# Or enable/disable later
+agent.enable_auto_git_checkpoint(True)   # Enable
+agent.enable_auto_git_checkpoint(False)  # Disable
+
+# Check current status
+is_enabled = agent.get_auto_git_checkpoint_status()
+```
+
+Each checkpoint includes:
+- Descriptive commit message with the command description
+- Timestamp of when the command was executed
+- The actual command that was run
+
+This feature is particularly useful for:
+- Tracking changes during development sessions
+- Creating a history of agent actions
+- Providing a safety net to revert changes if needed
+- Documenting the agent's workflow for audit purposes
+
 ## Best Practices
 
 1. **Always use async/await**: TinyCodeAgent is designed for async operation

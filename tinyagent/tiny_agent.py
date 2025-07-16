@@ -37,7 +37,10 @@ DEFAULT_RETRY_CONFIG = {
         "litellm.RateLimitError",
         "litellm.ServiceUnavailableError",
         "litellm.APITimeoutError"
-    ]
+    ],
+    # Rate limit specific configuration
+    "rate_limit_backoff_min": 60,  # Minimum wait time for rate limit errors (60 seconds)
+    "rate_limit_backoff_max": 90,  # Maximum wait time for rate limit errors (90 seconds)
 }
 
 def load_template(path: str,key:str="system_prompt") -> str:
@@ -398,7 +401,16 @@ class TinyAgent:
             storage: Optional storage backend for persistence
             persist_tool_configs: Whether to persist tool configurations
             summary_config: Optional model to use for generating conversation summaries
-            retry_config: Optional configuration for LLM API call retries
+            retry_config: Optional configuration for LLM API call retries. Supports:
+                - max_retries: Maximum number of retry attempts (default: 5)
+                - min_backoff: Minimum backoff time in seconds (default: 1)
+                - max_backoff: Maximum backoff time in seconds (default: 60)
+                - backoff_multiplier: Exponential backoff multiplier (default: 2)
+                - jitter: Whether to add randomness to backoff (default: True)
+                - retry_status_codes: HTTP status codes to retry on (default: [429, 500, 502, 503, 504])
+                - retry_exceptions: Exception types to retry on (default: includes RateLimitError, etc.)
+                - rate_limit_backoff_min: Minimum wait time for rate limit errors (default: 60 seconds)
+                - rate_limit_backoff_max: Maximum wait time for rate limit errors (default: 90 seconds)
             parallel_tool_calls: Whether to enable parallel tool calls. If True, the agent will ask the model
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is True.
@@ -1223,6 +1235,50 @@ class TinyAgent:
             self._needs_session_load = False
 
         return self
+    
+    def _is_rate_limit_error(self, exception: Exception) -> bool:
+        """
+        Check if an exception is a rate limit error that should be handled with longer backoff.
+        
+        Args:
+            exception: The exception to check
+            
+        Returns:
+            True if this is a rate limit error, False otherwise
+        """
+        if not exception:
+            return False
+        
+        # Check for LiteLLM RateLimitError
+        error_name = exception.__class__.__name__
+        if "RateLimitError" in error_name:
+            return True
+        
+        # Check for rate limit in the error message
+        error_message = str(exception).lower()
+        rate_limit_indicators = [
+            "rate limit",
+            "rate_limit_error",
+            "rate-limit",
+            "too many requests",
+            "quota exceeded",
+            "requests per minute",
+            "requests per hour",
+            "requests per day",
+            "rate limiting",
+            "throttled"
+        ]
+        
+        for indicator in rate_limit_indicators:
+            if indicator in error_message:
+                return True
+        
+        # Check for specific HTTP status codes (429 = Too Many Requests)
+        status_code = getattr(exception, "status_code", None)
+        if status_code == 429:
+            return True
+            
+        return False
 
     async def _litellm_with_retry(self, **kwargs) -> Any:
         """
@@ -1245,6 +1301,10 @@ class TinyAgent:
         retry_status_codes = self.retry_config["retry_status_codes"]
         retry_exceptions = self.retry_config["retry_exceptions"]
         
+        # Rate limit specific configuration
+        rate_limit_backoff_min = self.retry_config.get("rate_limit_backoff_min", 60)  # 60 seconds
+        rate_limit_backoff_max = self.retry_config.get("rate_limit_backoff_max", 90)  # 90 seconds
+        
         attempt = 0
         last_exception = None
         
@@ -1258,17 +1318,28 @@ class TinyAgent:
             try:
                 # First attempt or retry
                 if attempt > 0:
-                    # Calculate backoff with exponential increase
-                    backoff = min(max_backoff, min_backoff * (backoff_multiplier ** (attempt - 1)))
+                    # Check if this is a rate limit error and handle it specially
+                    is_rate_limit_error = self._is_rate_limit_error(last_exception)
                     
-                    # Add jitter if enabled (±20% randomness)
-                    if jitter:
-                        backoff = backoff * (0.8 + 0.4 * random.random())
-                    
-                    self.logger.warning(
-                        f"Retry attempt {attempt}/{max_retries} for LLM call after {backoff:.2f}s delay. "
-                        f"Previous error: {str(last_exception)}"
-                    )
+                    if is_rate_limit_error:
+                        # Use longer backoff for rate limit errors (60-90 seconds)
+                        backoff = rate_limit_backoff_min + (rate_limit_backoff_max - rate_limit_backoff_min) * random.random()
+                        self.logger.warning(
+                            f"Rate limit error detected. Retry attempt {attempt}/{max_retries} for LLM call after {backoff:.2f}s delay. "
+                            f"Previous error: {str(last_exception)}"
+                        )
+                    else:
+                        # Use normal exponential backoff for other errors
+                        backoff = min(max_backoff, min_backoff * (backoff_multiplier ** (attempt - 1)))
+                        
+                        # Add jitter if enabled (±20% randomness)
+                        if jitter:
+                            backoff = backoff * (0.8 + 0.4 * random.random())
+                        
+                        self.logger.warning(
+                            f"Retry attempt {attempt}/{max_retries} for LLM call after {backoff:.2f}s delay. "
+                            f"Previous error: {str(last_exception)}"
+                        )
                     
                     # Wait before retry
                     await asyncio.sleep(backoff)
@@ -1303,8 +1374,9 @@ class TinyAgent:
                     raise
                 
                 # Log the error and continue to next retry attempt
+                error_type = "rate limit" if self._is_rate_limit_error(e) else "general"
                 self.logger.warning(
-                    f"LLM call failed (attempt {attempt+1}/{max_retries+1}): {str(e)}. Will retry."
+                    f"LLM call failed (attempt {attempt+1}/{max_retries+1}) - {error_type} error: {str(e)}. Will retry."
                 )
                 
             attempt += 1
@@ -1346,7 +1418,16 @@ class TinyAgent:
             metadata: Optional metadata for the session
             storage: Optional storage backend for persistence
             persist_tool_configs: Whether to persist tool configurations
-            retry_config: Optional configuration for LLM API call retries
+            retry_config: Optional configuration for LLM API call retries. Supports:
+                - max_retries: Maximum number of retry attempts (default: 5)
+                - min_backoff: Minimum backoff time in seconds (default: 1)
+                - max_backoff: Maximum backoff time in seconds (default: 60)
+                - backoff_multiplier: Exponential backoff multiplier (default: 2)
+                - jitter: Whether to add randomness to backoff (default: True)
+                - retry_status_codes: HTTP status codes to retry on (default: [429, 500, 502, 503, 504])
+                - retry_exceptions: Exception types to retry on (default: includes RateLimitError, etc.)
+                - rate_limit_backoff_min: Minimum wait time for rate limit errors (default: 60 seconds)
+                - rate_limit_backoff_max: Maximum wait time for rate limit errors (default: 90 seconds)
             parallel_tool_calls: Whether to enable parallel tool calls. If True, the agent will ask the model
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is None (disabled).
@@ -1606,7 +1687,10 @@ async def run_example():
             "litellm.APITimeoutError",
             "TimeoutError",  # Add any additional exceptions
             "ConnectionError"
-        ]
+        ],
+        # Rate limit specific configuration
+        "rate_limit_backoff_min": 60,  # Wait 60-90 seconds for rate limit errors
+        "rate_limit_backoff_max": 90,  # This is the recommended range for most APIs
     }
     
     # Example 1: Using a model that supports parallel function calling (GPT-4)
