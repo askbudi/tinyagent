@@ -7,7 +7,14 @@ from pathlib import Path
 from tinyagent import TinyAgent, tool
 from tinyagent.hooks.logging_manager import LoggingManager
 from tinyagent.hooks.rich_code_ui_callback import RichCodeUICallback
-from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback
+# Conditional import for Jupyter callback - only import when needed
+try:
+    from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback, OptimizedJupyterNotebookCallback
+    JUPYTER_CALLBACKS_AVAILABLE = True
+except ImportError:
+    JUPYTER_CALLBACKS_AVAILABLE = False
+    JupyterNotebookCallback = None
+    OptimizedJupyterNotebookCallback = None
 from .providers.base import CodeExecutionProvider
 from .providers.modal_provider import ModalProvider
 from .providers.seatbelt_provider import SeatbeltProvider
@@ -1042,8 +1049,13 @@ class TinyCodeAgent:
             )
             self.add_callback(ui_callback)
         elif ui_type == 'jupyter':
+            if not JUPYTER_CALLBACKS_AVAILABLE:
+                raise ImportError(
+                    "Jupyter notebook callbacks are not available. "
+                    "Install the required dependencies with: pip install ipython ipywidgets"
+                )
+            
             if optimized:
-                from tinyagent.hooks.jupyter_notebook_callback import OptimizedJupyterNotebookCallback
                 ui_callback = OptimizedJupyterNotebookCallback(
                     logger=self.log_manager.get_logger('tinyagent.hooks.jupyter_notebook_callback') if self.log_manager else None,
                     max_visible_turns=20,    # Limit visible turns for performance
@@ -1057,7 +1069,10 @@ class TinyCodeAgent:
                 )
             self.add_callback(ui_callback)
         else:
-            self.log_manager.get_logger(__name__).warning(f"Unknown UI type: {ui_type}. No UI callback will be added.")
+            if self.log_manager:
+                self.log_manager.get_logger(__name__).warning(f"Unknown UI type: {ui_type}. No UI callback will be added.")
+            else:
+                print(f"Warning: Unknown UI type: {ui_type}. No UI callback will be added.")
 
     def set_truncation_config(self, config: Dict[str, Any]):
         """
