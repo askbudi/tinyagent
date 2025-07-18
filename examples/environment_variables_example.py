@@ -1,202 +1,224 @@
 #!/usr/bin/env python3
 """
-Environment Variables Example for TinyCodeAgent with SeatbeltProvider
+Environment Variables Example for TinyAgent and TinyCodeAgent
 
-This example demonstrates how to use environment variables with the SeatbeltProvider
-to pass configuration and data to the sandboxed execution environment.
+This example demonstrates how to pass environment variables when connecting to MCP servers.
+Environment variables are useful for:
+- Configuring MCP servers with API keys
+- Setting debug modes
+- Customizing server behavior
+- Managing connection settings
 """
 
 import asyncio
+import logging
 import os
-import tempfile
-import shutil
+import sys
+
+# Add the parent directory to the path to import tinyagent
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from tinyagent import TinyAgent
 from tinyagent.code_agent import TinyCodeAgent
+from tinyagent.hooks.logging_manager import LoggingManager
+from tinyagent.hooks.rich_ui_callback import RichUICallback
 
-
-async def run_environment_variables_example():
-    """
-    Example demonstrating environment variable functionality with SeatbeltProvider.
-    """
-    print("🔧 Environment Variables Example for TinyCodeAgent with SeatbeltProvider")
-    print("="*80)
+async def main():
+    """Main example function demonstrating environment variable usage."""
     
-    # Check if seatbelt is supported
-    if not TinyCodeAgent.is_seatbelt_supported():
-        print("⚠️  SeatbeltProvider is not supported on this system. This example requires macOS.")
+    # Set up logging
+    log_manager = LoggingManager(default_level=logging.INFO)
+    log_manager.set_levels({
+        'tinyagent.tiny_agent': logging.DEBUG,
+        'tinyagent.mcp_client': logging.INFO,
+        'tinyagent.code_agent': logging.INFO,
+    })
+    
+    # Configure console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    log_manager.configure_handler(
+        console_handler,
+        format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG
+    )
+    
+    logger = log_manager.get_logger('environment_variables_example')
+    
+    # Get API key from environment
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.error("Please set the OPENAI_API_KEY environment variable")
         return
     
-    # Create temporary directories for testing
-    test_dir = tempfile.mkdtemp(prefix='tinyagent_env_test_')
-    test_read_dir = os.path.join(test_dir, "read_dir")
-    test_write_dir = os.path.join(test_dir, "write_dir")
+    logger.info("Starting Environment Variables Example")
     
-    os.makedirs(test_read_dir, exist_ok=True)
-    os.makedirs(test_write_dir, exist_ok=True)
+    # Example 1: TinyAgent with environment variables
+    logger.info("=== TinyAgent with Environment Variables ===")
     
-    # Create a test file in the read directory
-    with open(os.path.join(test_read_dir, "config.txt"), "w") as f:
-        f.write("database_host=localhost\ndatabase_port=5432\napi_timeout=30")
+    agent = TinyAgent(
+        model="gpt-4.1-mini",
+        api_key=api_key,
+        logger=logger
+    )
+    
+    # Add Rich UI callback
+    rich_ui = RichUICallback(
+        markdown=True,
+        show_message=True,
+        show_tool_calls=True,
+        logger=logger
+    )
+    agent.add_callback(rich_ui)
     
     try:
-        # Create TinyCodeAgent with SeatbeltProvider and initial environment variables
-        print("🚀 Creating TinyCodeAgent with SeatbeltProvider and environment variables...")
+        # Connect to MCP servers with different environment variable configurations
         
-        agent = TinyCodeAgent(
-            model="gpt-4.1-mini",
-            provider="seatbelt",
-            provider_config={
-                "additional_read_dirs": [test_read_dir],
-                "additional_write_dirs": [test_write_dir],
-                "environment_variables": {
-                    "APP_NAME": "TinyAgent Demo",
-                    "VERSION": "1.0.0",
-                    "CONFIG_DIR": test_read_dir,
-                    "OUTPUT_DIR": test_write_dir,
-                    "DEBUG_LEVEL": "INFO"
-                }
-            },
-            local_execution=True,
-            check_string_obfuscation=True
+        # Example 1a: Basic environment variables
+        basic_env = {
+            "DEBUG": "true",
+            "LOG_LEVEL": "info",
+            "TIMEOUT": "30"
+        }
+        
+        await agent.connect_to_server(
+            "npx", 
+            ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"],
+            env=basic_env
         )
+        logger.info("Connected to Airbnb MCP server with basic environment variables")
         
-        print("✅ Agent created successfully!")
+        # Example 1b: Environment variables with API configuration
+        api_env = {
+            "NODE_ENV": "production",
+            "API_RATE_LIMIT": "100",
+            "CACHE_ENABLED": "false",
+            "REQUEST_TIMEOUT": "5000"
+        }
         
-        # Test 1: Basic environment variable access
-        print("\n" + "="*80)
-        print("📋 Test 1: Basic Environment Variable Access")
+        await agent.connect_to_server(
+            "npx", 
+            ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            env=api_env
+        )
+        logger.info("Connected to Sequential Thinking MCP server with API environment variables")
         
-        response1 = await agent.run("""
-        Test the initial environment variables:
-        1. Print all environment variables that start with 'APP', 'VERSION', 'CONFIG', 'OUTPUT', or 'DEBUG'
-        2. Use Python to access these variables using os.environ
-        3. Use shell commands to echo these variables
-        4. Verify that the paths in CONFIG_DIR and OUTPUT_DIR exist and are accessible
-        """)
-        print("Response:")
-        print(response1)
-        
-        # Test 2: Adding environment variables dynamically
-        print("\n" + "="*80)
-        print("🔧 Test 2: Adding Environment Variables Dynamically")
-        
-        agent.add_environment_variable("DATABASE_URL", "postgresql://user:pass@localhost:5432/testdb")
-        agent.add_environment_variable("API_KEY", "secret_key_123")
-        agent.add_environment_variable("FEATURE_FLAG_NEW_UI", "enabled")
-        
-        current_vars = agent.get_environment_variables()
-        print(f"Current environment variables: {list(current_vars.keys())}")
-        
-        response2 = await agent.run("""
-        Test the newly added environment variables:
-        1. Access DATABASE_URL, API_KEY, and FEATURE_FLAG_NEW_UI
-        2. Create a simple configuration parser that reads these values
-        3. Write a small JSON config file to the OUTPUT_DIR using these values
-        """)
-        print("Response:")
-        print(response2)
-        
-        # Test 3: Using environment variables for application configuration
-        print("\n" + "="*80)
-        print("⚙️ Test 3: Application Configuration via Environment Variables")
-        
-        response3 = await agent.run("""
-        Create a configuration management system using environment variables:
-        1. Read the config.txt file from CONFIG_DIR
-        2. Parse the configuration values and combine them with environment variables
-        3. Create a Python class that manages both file-based and environment-based configuration
-        4. Demonstrate accessing configuration values with fallbacks
-        5. Write the final configuration to OUTPUT_DIR as both JSON and YAML formats
-        """)
-        print("Response:")
-        print(response3)
-        
-        # Test 4: Updating environment variables in bulk
-        print("\n" + "="*80)
-        print("🔄 Test 4: Bulk Environment Variable Updates")
-        
-        # Update multiple environment variables at once
-        agent.set_environment_variables({
-            "APP_NAME": "TinyAgent Advanced Demo",
-            "VERSION": "2.0.0",
-            "DEBUG_LEVEL": "DEBUG",
-            "NEW_FEATURE": "experimental",
-            "CACHE_TTL": "3600",
-            "MAX_CONNECTIONS": "100"
-        })
-        
-        response4 = await agent.run("""
-        Test the updated environment variables:
-        1. Verify that APP_NAME and VERSION have been updated
-        2. Check that DEBUG_LEVEL is now 'DEBUG'
-        3. Access the new variables: NEW_FEATURE, CACHE_TTL, MAX_CONNECTIONS
-        4. Note: DATABASE_URL and API_KEY should no longer be available (removed by set operation)
-        5. Create a system status report using these environment variables
-        """)
-        print("Response:")
-        print(response4)
-        
-        # Test 5: Environment variable security and isolation
-        print("\n" + "="*80)
-        print("🔒 Test 5: Environment Variable Security and Isolation")
-        
-        response5 = await agent.run("""
-        Test environment variable security and isolation:
-        1. Try to access system environment variables like HOME, USER, PATH
-        2. Verify that our custom environment variables are properly isolated
-        3. Test that sensitive system variables are not accessible or are properly sandboxed
-        4. Create a security report showing which environment variables are available
-        """)
-        print("Response:")
-        print(response5)
-        
-        # Test 6: Removing specific environment variables
-        print("\n" + "="*80)
-        print("🗑️ Test 6: Removing Environment Variables")
-        
-        agent.remove_environment_variable("NEW_FEATURE")
-        agent.remove_environment_variable("CACHE_TTL")
-        
-        final_vars = agent.get_environment_variables()
-        print(f"Final environment variables: {list(final_vars.keys())}")
-        
-        response6 = await agent.run("""
-        Test that specific environment variables have been removed:
-        1. Verify that NEW_FEATURE and CACHE_TTL are no longer available
-        2. Confirm that other variables like APP_NAME, VERSION are still accessible
-        3. Create a final configuration summary with remaining variables
-        4. Write the final state to OUTPUT_DIR for verification
-        """)
-        print("Response:")
-        print(response6)
-        
-        # Final verification
-        print("\n" + "="*80)
-        print("🎯 Final Verification")
-        
-        # List files created in the output directory
-        output_files = os.listdir(test_write_dir)
-        print(f"Files created in output directory: {output_files}")
-        
-        # Show final environment variables
-        final_env_vars = agent.get_environment_variables()
-        print(f"Final environment variables: {final_env_vars}")
-        
-        await agent.close()
-        print("\n✅ Environment Variables Example completed successfully!")
+        # Test the agent
+        logger.info("Testing TinyAgent with environment variables...")
+        response = await agent.run("Plan a 3-day trip to Paris with a budget of $1000", max_turns=5)
+        logger.info(f"Agent response: {response}")
         
     except Exception as e:
-        print(f"\n❌ Error during example execution: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
+        logger.error(f"Error in TinyAgent example: {e}")
     finally:
-        # Clean up temporary directories
-        try:
-            shutil.rmtree(test_dir)
-            print(f"🧹 Cleaned up temporary directory: {test_dir}")
-        except Exception as e:
-            print(f"⚠️ Warning: Failed to clean up temporary directory: {str(e)}")
-
+        await agent.close()
+    
+    # Example 2: TinyCodeAgent with environment variables
+    logger.info("\n=== TinyCodeAgent with Environment Variables ===")
+    
+    code_agent = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        api_key=api_key,
+        provider="modal",
+        local_execution=False,
+        pip_packages=["requests", "pandas"],
+        authorized_imports=["requests", "pandas", "json", "os"]
+    )
+    
+    try:
+        # Connect with environment variables specific to code execution
+        code_env = {
+            "PYTHON_ENV": "production",
+            "MAX_EXECUTION_TIME": "300",
+            "MEMORY_LIMIT": "1GB",
+            "SANDBOX_MODE": "strict"
+        }
+        
+        await code_agent.connect_to_server(
+            "npx", 
+            ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"],
+            env=code_env
+        )
+        logger.info("Connected TinyCodeAgent with code execution environment variables")
+        
+        # Test the code agent
+        logger.info("Testing TinyCodeAgent with environment variables...")
+        code_response = await code_agent.run(
+            "Write a Python script that fetches data from a public API and analyzes it",
+            max_turns=5
+        )
+        logger.info(f"Code agent response: {code_response}")
+        
+    except Exception as e:
+        logger.error(f"Error in TinyCodeAgent example: {e}")
+    finally:
+        await code_agent.close()
+    
+    # Example 3: Advanced environment variable patterns
+    logger.info("\n=== Advanced Environment Variable Patterns ===")
+    
+    # Pattern 1: Environment variables from system environment
+    system_env = {
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "PATH": os.environ.get("PATH", ""),
+        "USER": os.environ.get("USER", "unknown")
+    }
+    
+    # Pattern 2: Conditional environment variables
+    debug_mode = os.environ.get("DEBUG", "false").lower() == "true"
+    conditional_env = {
+        "DEBUG": str(debug_mode),
+        "LOG_LEVEL": "debug" if debug_mode else "info",
+        "VERBOSE": "true" if debug_mode else "false"
+    }
+    
+    # Pattern 3: Environment variables with secrets (be careful with logging!)
+    secret_env = {
+        "API_KEY": os.environ.get("MCP_API_KEY", ""),
+        "SECRET_TOKEN": os.environ.get("MCP_SECRET_TOKEN", "")
+    }
+    
+    # Combine all patterns
+    combined_env = {**system_env, **conditional_env}
+    # Only add secrets if they exist
+    if secret_env["API_KEY"]:
+        combined_env["API_KEY"] = secret_env["API_KEY"]
+    if secret_env["SECRET_TOKEN"]:
+        combined_env["SECRET_TOKEN"] = secret_env["SECRET_TOKEN"]
+    
+    logger.info(f"Combined environment variables: {list(combined_env.keys())}")
+    
+    # Example 4: Environment variables with filtering
+    logger.info("\n=== Environment Variables with Tool Filtering ===")
+    
+    filter_agent = TinyAgent(
+        model="gpt-4.1-mini",
+        api_key=api_key,
+        logger=logger
+    )
+    
+    try:
+        # Connect with environment variables and tool filtering
+        filter_env = {
+            "ENABLE_SEARCH": "true",
+            "ENABLE_BOOKING": "false",
+            "RATE_LIMIT": "50"
+        }
+        
+        await filter_agent.connect_to_server(
+            "npx", 
+            ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"],
+            env=filter_env,
+            include_tools=["search", "list"],  # Only include search and list tools
+            exclude_tools=["book", "payment"]  # Exclude booking and payment tools
+        )
+        logger.info("Connected with environment variables and tool filtering")
+        
+    except Exception as e:
+        logger.error(f"Error in filtering example: {e}")
+    finally:
+        await filter_agent.close()
+    
+    logger.info("Environment Variables Example completed successfully!")
 
 if __name__ == "__main__":
-    asyncio.run(run_environment_variables_example()) 
+    asyncio.run(main()) 

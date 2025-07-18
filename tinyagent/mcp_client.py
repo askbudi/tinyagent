@@ -59,14 +59,15 @@ class MCPClient:
             except Exception as e:
                 logger.error(f"Error in callback for {event_name}: {str(e)}")
 
-    async def connect(self, command: str, args: list[str]):
+    async def connect(self, command: str, args: list[str], env: dict[str, str] = None):
         """
         Launches the MCP server subprocess and initializes the client session.
         :param command: e.g. "python" or "node"
         :param args: list of args to pass, e.g. ["my_server.py"] or ["build/index.js"]
+        :param env: dictionary of environment variables to pass to the subprocess
         """
         # Prepare stdio transport parameters
-        params = StdioServerParameters(command=command, args=args)
+        params = StdioServerParameters(command=command, args=args, env=env)
         # Open the stdio client transport
         self.stdio, self.sock_write = await self.exit_stack.enter_async_context(
             stdio_client(params)
@@ -155,6 +156,28 @@ async def run_example():
         # Call the echo tool
         result = await client.call_tool("echo", {"message": "Hello, MCP!"})
         mcp_logger.info(f"Echo result: {result}")
+        
+        # Example with environment variables
+        mcp_logger.info("Testing with environment variables...")
+        client_with_env = MCPClient(logger=mcp_logger)
+        
+        # Example: connecting with environment variables
+        env_vars = {
+            "DEBUG": "true",
+            "LOG_LEVEL": "info",
+            "CUSTOM_VAR": "example_value"
+        }
+        
+        try:
+            await client_with_env.connect(
+                "python", 
+                ["-m", "mcp.examples.echo_server"], 
+                env=env_vars
+            )
+            mcp_logger.info("Successfully connected with environment variables")
+            await client_with_env.close()
+        except Exception as e:
+            mcp_logger.warning(f"Environment variable example failed (expected): {e}")
         
     finally:
         # Clean up

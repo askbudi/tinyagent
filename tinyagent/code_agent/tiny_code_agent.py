@@ -736,7 +736,17 @@ class TinyCodeAgent:
         return await self.agent.resume(max_turns)
     
     async def connect_to_server(self, command: str, args: List[str], **kwargs):
-        """Connect to an MCP server."""
+        """
+        Connect to an MCP server and fetch available tools.
+        
+        Args:
+            command: The command to run the server
+            args: List of arguments for the server
+            **kwargs: Additional keyword arguments including:
+                - include_tools: Optional list of tool name patterns to include
+                - exclude_tools: Optional list of tool name patterns to exclude  
+                - env: Optional dictionary of environment variables to pass to the subprocess
+        """
         return await self.agent.connect_to_server(command, args, **kwargs)
     
     def add_callback(self, callback):
@@ -1533,6 +1543,35 @@ async def run_example():
         # Connect to MCP servers
         await agent_seatbelt.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
         await agent_seatbelt.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+        
+        # Example: connecting with environment variables
+        env_vars = {
+            "MCP_DEBUG": "true",
+            "RATE_LIMIT": "100",
+            "CUSTOM_CONFIG": "seatbelt_mode"
+        }
+        
+        # Create a simple Modal agent to demonstrate environment variable usage
+        agent_modal = TinyCodeAgent(
+            model="gpt-4.1-mini",
+            tools=[search_web],
+            code_tools=[data_processor],
+            provider="modal",
+            local_execution=False,
+            api_key=api_key
+        )
+        
+        try:
+            await agent_modal.connect_to_server(
+                "npx", 
+                ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"],
+                env=env_vars
+            )
+            logger.info("Successfully connected Modal agent with environment variables")
+        except Exception as e:
+            logger.warning(f"Environment variable example failed: {e}")
+        finally:
+            await agent_modal.close()
         
         # Test the seatbelt agent
         response_seatbelt = await agent_seatbelt.run("""

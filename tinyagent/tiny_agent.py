@@ -709,7 +709,8 @@ class TinyAgent:
     
     async def connect_to_server(self, command: str, args: List[str], 
                                include_tools: Optional[List[str]] = None, 
-                               exclude_tools: Optional[List[str]] = None) -> None:
+                               exclude_tools: Optional[List[str]] = None,
+                               env: Optional[Dict[str, str]] = None) -> None:
         """
         Connect to an MCP server and fetch available tools.
         
@@ -718,6 +719,7 @@ class TinyAgent:
             args: List of arguments for the server
             include_tools: Optional list of tool name patterns to include (if provided, only matching tools will be added)
             exclude_tools: Optional list of tool name patterns to exclude (matching tools will be skipped)
+            env: Optional dictionary of environment variables to pass to the subprocess
         """
         # 1) Create and connect a brand-new client
         client = MCPClient()
@@ -726,7 +728,7 @@ class TinyAgent:
         for callback in self.callbacks:
             client.add_callback(callback)
         
-        await client.connect(command, args)
+        await client.connect(command, args, env)
         self.mcp_clients.append(client)
         
         # 2) List tools on *this* server
@@ -1717,7 +1719,21 @@ async def run_example():
     
     # Connect to MCP servers for additional tools
     try:
+        # Example: connecting without environment variables (existing behavior)
         await agent1.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        
+        # Example: connecting with environment variables
+        env_vars = {
+            "DEBUG": "true",
+            "LOG_LEVEL": "info",
+            "API_TIMEOUT": "30"
+        }
+        await agent1.connect_to_server(
+            "npx", 
+            ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+            env=env_vars
+        )
+        agent_logger.info("Successfully connected to MCP servers with environment variables")
     except Exception as e:
         agent_logger.error(f"Failed to connect to MCP servers: {e}")
     
@@ -1747,7 +1763,17 @@ async def run_example():
     
     # Connect to the same MCP server
     try:
-        await agent2.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        # Example with environment variables for o4-mini model
+        env_vars = {
+            "NODE_ENV": "production",
+            "CACHE_ENABLED": "false"
+        }
+        await agent2.connect_to_server(
+            "npx", 
+            ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"],
+            env=env_vars
+        )
+        agent_logger.info("Successfully connected o4-mini agent with environment variables")
     except Exception as e:
         agent_logger.error(f"Failed to connect to MCP servers: {e}")
     
