@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import traceback
 from typing import Dict, List, Optional, Any, Tuple, Callable
 
 # Keep your MCPClient implementation unchanged
@@ -57,7 +58,7 @@ class MCPClient:
                         logger.debug(f"Callback is a regular function")
                         callback(event_name, self, **kwargs)
             except Exception as e:
-                logger.error(f"Error in callback for {event_name}: {str(e)}")
+                logger.error(f"Error in callback for {event_name}: {str(e)} {traceback.format_exc()}")
 
     async def connect(self, command: str, args: list[str], env: dict[str, str] = None):
         """

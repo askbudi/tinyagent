@@ -69,6 +69,8 @@ class TinyCodeAgent:
         ui: Optional[str] = None,
         truncation_config: Optional[Dict[str, Any]] = None,
         auto_git_checkpoint: bool = False,
+        enable_python_tool: bool = True,
+        enable_shell_tool: bool = True,
         **agent_kwargs
     ):
         """
@@ -95,6 +97,8 @@ class TinyCodeAgent:
             ui: The user interface callback to use ('rich', 'jupyter', or None).
             truncation_config: Configuration for output truncation (max_tokens, max_lines)
             auto_git_checkpoint: If True, automatically create git checkpoints after each successful shell command
+            enable_python_tool: If True (default), enable the run_python tool for Python code execution
+            enable_shell_tool: If True (default), enable the bash tool for shell command execution
             **agent_kwargs: Additional arguments passed to TinyAgent
             
         Provider Config Options:
@@ -135,6 +139,10 @@ class TinyCodeAgent:
         self.check_string_obfuscation = check_string_obfuscation
         self.default_workdir = default_workdir or os.getcwd()  # Default to current working directory if not specified
         self.auto_git_checkpoint = auto_git_checkpoint  # Enable/disable automatic git checkpoints
+        
+        # Store tool enablement flags
+        self.enable_python_tool = enable_python_tool
+        self.enable_shell_tool = enable_shell_tool
         
         # Set up truncation configuration with defaults
         default_truncation = {
@@ -394,221 +402,242 @@ class TinyCodeAgent:
     
     def _setup_code_execution_tools(self):
         """Set up the code execution tools using the code provider."""
-        @tool(name="run_python", description=dedent("""
-        This tool receives Python code and executes it in a sandboxed environment.
-        During each intermediate step, you can use 'print()' to save important information.
-        These print outputs will appear in the 'Observation:' field for the next step.
+        # Clear existing default tools to avoid duplicates
+        # We need to remove tools by name since we can't directly access the tool objects
+        existing_tools = self.agent.tools if hasattr(self.agent, 'tools') else []
+        
+        # Remove existing default tools if they exist
+        tools_to_remove = []
+        for existing_tool in existing_tools:
+            if hasattr(existing_tool, 'name') and existing_tool.name in ['run_python', 'bash']:
+                tools_to_remove.append(existing_tool)
+        
+        for existing_tool in tools_to_remove:
+            if hasattr(self.agent, 'remove_tool'):
+                self.agent.remove_tool(existing_tool)
+            else:
+                # Fallback: recreate the agent without the tools
+                # This is a bit heavy-handed but ensures clean state
+                pass
+        
+        if self.enable_python_tool:
+            @tool(name="run_python", description=dedent("""
+            This tool receives Python code and executes it in a sandboxed environment.
+            During each intermediate step, you can use 'print()' to save important information.
+            These print outputs will appear in the 'Observation:' field for the next step.
 
-        Args:
-            code_lines: list[str]: The Python code to execute as a list of strings.
-                Your code should include all necessary steps for successful execution,
-                cover edge cases, and include error handling.
-                Each line should be an independent line of code.
+            Args:
+                code_lines: list[str]: The Python code to execute as a list of strings.
+                    Your code should include all necessary steps for successful execution,
+                    cover edge cases, and include error handling.
+                    Each line should be an independent line of code.
 
-        Returns:
-            Status of code execution or error message.
-        """))
-        async def run_python(code_lines: List[str], timeout: int = 120) -> str:
-            """Execute Python code using the configured provider."""
-            try:
-                # Before execution, ensure provider has the latest user variables
-                if self.user_variables:
-                    self.code_provider.set_user_variables(self.user_variables)
+            Returns:
+                Status of code execution or error message.
+            """))
+            async def run_python(code_lines: List[str], timeout: int = 120) -> str:
+                """Execute Python code using the configured provider."""
+                try:
+                    # Before execution, ensure provider has the latest user variables
+                    if self.user_variables:
+                        self.code_provider.set_user_variables(self.user_variables)
+                        
+                    result = await self.code_provider.execute_python(code_lines, timeout)
                     
-                result = await self.code_provider.execute_python(code_lines, timeout)
-                
-                # After execution, update TinyCodeAgent's user_variables from the provider
-                # This ensures they stay in sync
-                self.user_variables = self.code_provider.get_user_variables()
-                
-                # Apply truncation if enabled
-                if self.truncation_config["enabled"] and "printed_output" in result:
-                    truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
-                        result["printed_output"],
-                        max_tokens=self.truncation_config["max_tokens"],
-                        max_lines=self.truncation_config["max_lines"]
-                    )
+                    # After execution, update TinyCodeAgent's user_variables from the provider
+                    # This ensures they stay in sync
+                    self.user_variables = self.code_provider.get_user_variables()
                     
-                    if is_truncated:
-                        result["printed_output"] = format_truncation_message(
-                            truncated_output,
-                            is_truncated,
-                            original_tokens,
-                            original_lines,
-                            self.truncation_config["max_lines"],
-                            "python_output"
+                    # Apply truncation if enabled
+                    if self.truncation_config["enabled"] and "printed_output" in result:
+                        truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
+                            result["printed_output"],
+                            max_tokens=self.truncation_config["max_tokens"],
+                            max_lines=self.truncation_config["max_lines"]
                         )
+                        
+                        if is_truncated:
+                            result["printed_output"] = format_truncation_message(
+                                truncated_output,
+                                is_truncated,
+                                original_tokens,
+                                original_lines,
+                                self.truncation_config["max_lines"],
+                                "python_output"
+                            )
+                    
+                    return json.dumps(result)
+                except Exception as e:
+                    print("!"*100)
+                    COLOR = {
+                            "RED": "\033[91m",
+                            "ENDC": "\033[0m",
+                        }
+                    print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
+                    print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
+                    print("!"*100)
+                    
+                    # Even after an exception, update user_variables from the provider
+                    # This ensures any variables that were successfully created/modified are preserved
+                    self.user_variables = self.code_provider.get_user_variables()
+                    
+                    return json.dumps({"error": f"Error executing code: {str(e)}"})
+            
+            self.agent.add_tool(run_python)
+        
+        if self.enable_shell_tool:
+            @tool(name="bash", description=dedent("""
+            This tool executes shell commands securely in a sandboxed environment.
+            Only a limited set of safe commands are allowed for security reasons.
+            Before executing the command, please follow these steps:
+              
+              1. Directory Verification:
+                 - If the command will create new directories or files, first use ls to verify the parent directory exists and is the correct location
+                 - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
+              
+              2. Command Execution:
+                 - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
+                 - Examples of proper quoting:
+                   - cd "/Users/name/My Documents" (correct)
+                   - cd /Users/name/My Documents (incorrect - will fail)
+                   - python "/path/with spaces/script.py" (correct)
+                   - python /path/with spaces/script.py (incorrect - will fail)
+                 - After ensuring proper quoting, execute the command.
+                 - Capture the output of the command.
+              
+              Usage notes:
+                - The command argument is required.
+                - You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested, batch your tool calls together for optimal performance.
+                - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
+                - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
+                - If the output is too large, it will be truncated before being returned to you.
                 
-                return json.dumps(result)
-            except Exception as e:
-                print("!"*100)
-                COLOR = {
+               - If you _still_ need to run `grep`, STOP. ALWAYS USE ripgrep at `rg` first, which all ${PRODUCT_NAME} users have pre-installed.
+              "  - When issuing multiple commands, use the ; or && operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).\n" +
+                - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.
+                  <good-example>
+                  pytest /foo/bar/tests
+                  </good-example>
+                  <bad-example>
+                  cd /foo/bar && pytest tests
+                  </bad-example>
+            
+            ## IMPORTANT: Bash Tool Usage
+            
+            When using the bash tool, you MUST provide all required parameters:
+            
+            **Correct Usage:**
+            ```
+            bash(
+                command=["ls", "-la"],
+                absolute_workdir="/path/to/directory", 
+                description="List files in directory"
+            )
+            ```
+            
+            **For creating files with content, use these safe patterns:**
+            
+            1. **Simple file creation:**
+            ```
+            bash(
+                command=["touch", "filename.txt"],
+                absolute_workdir="/working/directory",
+                description="Create empty file"
+            )
+            ```
+            
+            2. **Write content using cat and heredoc:**
+            ```
+            bash(
+                command=["sh", "-c", "cat > filename.txt << 'EOF'\nYour content here\nEOF"],
+                absolute_workdir="/working/directory", 
+                description="Create file with content"
+            )
+            ```
+            
+            3. **Write content using echo:**
+            ```
+            bash(
+                command=["sh", "-c", "echo 'Your content' > filename.txt"],
+                absolute_workdir="/working/directory",
+                description="Write content to file"
+            )
+            ```
+            
+            **Never:**
+            - Call bash() without all required parameters
+            - Use complex nested quotes without testing
+            - Try to create large files in a single command (break into parts)
+
+            Args:
+                command: list[str]: The shell command to execute as a list of strings.  Example: ["ls", "-la"] or ["cat", "file.txt"]
+                    
+                absolute_workdir: str: could be presented workdir in the system prompt or one of the subdirectories of the workdir. This is the only allowed path, and accessing else will result in an error.
+                description: str: A clear, concise description of what this command does in 5-10 words.
+                timeout: int: Maximum execution time in seconds (default: 60).
+            Returns:
+                Dictionary with stdout, stderr, and exit_code from the command execution.
+                If the command is rejected for security reasons, stderr will contain the reason.
+                The stdout will include information about which working directory was used.
+            """))
+            async def run_shell(command: List[str], absolute_workdir: str,  description: str, timeout: int = 60) -> str:
+                """Execute shell commands securely using the configured provider."""
+                try:
+                    # Use the default working directory if none is specified
+                    effective_workdir = absolute_workdir or self.default_workdir
+                    print(f" {command} to {description}")
+                    # Verify that the working directory exists
+                    if effective_workdir and not os.path.exists(effective_workdir):
+                        return json.dumps({
+                            "stdout": "",
+                            "stderr": f"Working directory does not exist: {effective_workdir}",
+                            "exit_code": 1
+                        })
+                    
+                    if effective_workdir and not os.path.isdir(effective_workdir):
+                        return json.dumps({
+                            "stdout": "",
+                            "stderr": f"Path is not a directory: {effective_workdir}",
+                            "exit_code": 1
+                        })
+                    
+                    result = await self.code_provider.execute_shell(command, timeout, effective_workdir)
+                    
+                    # Apply truncation if enabled
+                    if self.truncation_config["enabled"] and "stdout" in result and result["stdout"]:
+                        truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
+                            result["stdout"],
+                            max_tokens=self.truncation_config["max_tokens"],
+                            max_lines=self.truncation_config["max_lines"]
+                        )
+                        
+                        if is_truncated:
+                            result["stdout"] = format_truncation_message(
+                                truncated_output,
+                                is_truncated,
+                                original_tokens,
+                                original_lines,
+                                self.truncation_config["max_lines"],
+                                "bash_output"
+                            )
+                    
+                    # Create a git checkpoint if auto_git_checkpoint is enabled
+                    if self.auto_git_checkpoint and result.get("exit_code", 1) == 0:
+                        checkpoint_result = await self._create_git_checkpoint(command, description, effective_workdir)
+                        self.log_manager.get_logger(__name__).info(f"Git checkpoint {effective_workdir} result: {checkpoint_result}")
+                    
+                    return json.dumps(result)
+                except Exception as e:
+                    COLOR = {
                         "RED": "\033[91m",
                         "ENDC": "\033[0m",
                     }
-                print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
-                print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
-                print("!"*100)
-                
-                # Even after an exception, update user_variables from the provider
-                # This ensures any variables that were successfully created/modified are preserved
-                self.user_variables = self.code_provider.get_user_variables()
-                
-                return json.dumps({"error": f"Error executing code: {str(e)}"})
-        
-        @tool(name="bash", description=dedent("""
-        This tool executes shell commands securely in a sandboxed environment.
-        Only a limited set of safe commands are allowed for security reasons.
-        Before executing the command, please follow these steps:
-          
-          1. Directory Verification:
-             - If the command will create new directories or files, first use ls to verify the parent directory exists and is the correct location
-             - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
-          
-          2. Command Execution:
-             - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
-             - Examples of proper quoting:
-               - cd "/Users/name/My Documents" (correct)
-               - cd /Users/name/My Documents (incorrect - will fail)
-               - python "/path/with spaces/script.py" (correct)
-               - python /path/with spaces/script.py (incorrect - will fail)
-             - After ensuring proper quoting, execute the command.
-             - Capture the output of the command.
-          
-          Usage notes:
-            - The command argument is required.
-            - You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested, batch your tool calls together for optimal performance.
-            - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
-            - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
-            - If the output is too large, it will be truncated before being returned to you.
-            
-           - If you _still_ need to run `grep`, STOP. ALWAYS USE ripgrep at `rg` first, which all ${PRODUCT_NAME} users have pre-installed.
-          "  - When issuing multiple commands, use the ; or && operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).\n" +
-            - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.
-              <good-example>
-              pytest /foo/bar/tests
-              </good-example>
-              <bad-example>
-              cd /foo/bar && pytest tests
-              </bad-example>
-        
-        ## IMPORTANT: Bash Tool Usage
-        
-        When using the bash tool, you MUST provide all required parameters:
-        
-        **Correct Usage:**
-        ```
-        bash(
-            command=["ls", "-la"],
-            absolute_workdir="/path/to/directory", 
-            description="List files in directory"
-        )
-        ```
-        
-        **For creating files with content, use these safe patterns:**
-        
-        1. **Simple file creation:**
-        ```
-        bash(
-            command=["touch", "filename.txt"],
-            absolute_workdir="/working/directory",
-            description="Create empty file"
-        )
-        ```
-        
-        2. **Write content using cat and heredoc:**
-        ```
-        bash(
-            command=["sh", "-c", "cat > filename.txt << 'EOF'\nYour content here\nEOF"],
-            absolute_workdir="/working/directory", 
-            description="Create file with content"
-        )
-        ```
-        
-        3. **Write content using echo:**
-        ```
-        bash(
-            command=["sh", "-c", "echo 'Your content' > filename.txt"],
-            absolute_workdir="/working/directory",
-            description="Write content to file"
-        )
-        ```
-        
-        **Never:**
-        - Call bash() without all required parameters
-        - Use complex nested quotes without testing
-        - Try to create large files in a single command (break into parts)
-
-        Args:
-            command: list[str]: The shell command to execute as a list of strings.  Example: ["ls", "-la"] or ["cat", "file.txt"]
-                
-            absolute_workdir: str: could be presented workdir in the system prompt or one of the subdirectories of the workdir. This is the only allowed path, and accessing else will result in an error.
-            description: str: A clear, concise description of what this command does in 5-10 words.
-            timeout: int: Maximum execution time in seconds (default: 60).
-        Returns:
-            Dictionary with stdout, stderr, and exit_code from the command execution.
-            If the command is rejected for security reasons, stderr will contain the reason.
-            The stdout will include information about which working directory was used.
-        """))
-        async def run_shell(command: List[str], absolute_workdir: str,  description: str, timeout: int = 60) -> str:
-            """Execute shell commands securely using the configured provider."""
-            try:
-                # Use the default working directory if none is specified
-                effective_workdir = absolute_workdir or self.default_workdir
-                print(f" {command} to {description}")
-                # Verify that the working directory exists
-                if effective_workdir and not os.path.exists(effective_workdir):
-                    return json.dumps({
-                        "stdout": "",
-                        "stderr": f"Working directory does not exist: {effective_workdir}",
-                        "exit_code": 1
-                    })
-                
-                if effective_workdir and not os.path.isdir(effective_workdir):
-                    return json.dumps({
-                        "stdout": "",
-                        "stderr": f"Path is not a directory: {effective_workdir}",
-                        "exit_code": 1
-                    })
-                
-                result = await self.code_provider.execute_shell(command, timeout, effective_workdir)
-                
-                # Apply truncation if enabled
-                if self.truncation_config["enabled"] and "stdout" in result and result["stdout"]:
-                    truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
-                        result["stdout"],
-                        max_tokens=self.truncation_config["max_tokens"],
-                        max_lines=self.truncation_config["max_lines"]
-                    )
+                    print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
+                    print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
                     
-                    if is_truncated:
-                        result["stdout"] = format_truncation_message(
-                            truncated_output,
-                            is_truncated,
-                            original_tokens,
-                            original_lines,
-                            self.truncation_config["max_lines"],
-                            "bash_output"
-                        )
-                
-                # Create a git checkpoint if auto_git_checkpoint is enabled
-                if self.auto_git_checkpoint and result.get("exit_code", 1) == 0:
-                    checkpoint_result = await self._create_git_checkpoint(command, description, effective_workdir)
-                    self.log_manager.get_logger(__name__).info(f"Git checkpoint {effective_workdir} result: {checkpoint_result}")
-                
-                return json.dumps(result)
-            except Exception as e:
-                COLOR = {
-                    "RED": "\033[91m",
-                    "ENDC": "\033[0m",
-                }
-                print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
-                print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
-                
-                return json.dumps({"error": f"Error executing shell command: {str(e)}"})
-        
-        self.agent.add_tool(run_python)
-        self.agent.add_tool(run_shell)
+                    return json.dumps({"error": f"Error executing shell command: {str(e)}"})
+            
+            self.agent.add_tool(run_shell)
     
     async def _create_git_checkpoint(self, command: List[str], description: str, workdir: str) -> Dict[str, Any]:
         """
@@ -1131,6 +1160,48 @@ class TinyCodeAgent:
             True if auto_git_checkpoint is enabled, False otherwise.
         """
         return self.auto_git_checkpoint
+    
+    def enable_python_tool(self, enabled: bool = True):
+        """
+        Enable or disable the Python code execution tool.
+        
+        Args:
+            enabled: If True, enable the run_python tool. If False, disable it.
+        """
+        if enabled != self.enable_python_tool:
+            self.enable_python_tool = enabled
+            # Re-setup tools to reflect the change
+            self._setup_code_execution_tools()
+    
+    def enable_shell_tool(self, enabled: bool = True):
+        """
+        Enable or disable the shell command execution tool.
+        
+        Args:
+            enabled: If True, enable the bash tool. If False, disable it.
+        """
+        if enabled != self.enable_shell_tool:
+            self.enable_shell_tool = enabled
+            # Re-setup tools to reflect the change
+            self._setup_code_execution_tools()
+    
+    def get_python_tool_status(self) -> bool:
+        """
+        Get the current status of the Python tool.
+        
+        Returns:
+            True if the run_python tool is enabled, False otherwise.
+        """
+        return self.enable_python_tool
+    
+    def get_shell_tool_status(self) -> bool:
+        """
+        Get the current status of the shell tool.
+        
+        Returns:
+            True if the bash tool is enabled, False otherwise.
+        """
+        return self.enable_shell_tool
     
     def set_environment_variables(self, env_vars: Dict[str, str]):
         """
@@ -1683,6 +1754,148 @@ async def run_example():
     else:
         print("\n" + "="*80)
         print("⚠️  Seatbelt provider is not supported on this system. Skipping seatbelt tests.")
+    
+    # Test optional tool functionality
+    print("\n" + "="*80)
+    print("🔧 Testing optional tool functionality")
+    
+    # Create an agent with only Python tool enabled (no shell tool)
+    print("Creating agent with only Python tool enabled...")
+    agent_python_only = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        tools=[search_web],
+        code_tools=[data_processor],
+        user_variables={"test_data": [1, 2, 3, 4, 5]},
+        enable_python_tool=True,
+        enable_shell_tool=False,  # Disable shell tool
+        local_execution=True
+    )
+    
+    # Connect to MCP servers
+    await agent_python_only.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    await agent_python_only.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+    
+    # Check tool status
+    print(f"Python tool enabled: {agent_python_only.get_python_tool_status()}")
+    print(f"Shell tool enabled: {agent_python_only.get_shell_tool_status()}")
+    
+    # Test Python execution (should work)
+    python_response = await agent_python_only.run("""
+    Use the data_processor tool to analyze the test_data and show me the results.
+    """)
+    print("Python Tool Test (should work):")
+    print(python_response)
+    
+    # Test shell execution (should not work - tool disabled)
+    shell_response = await agent_python_only.run("""
+    Run 'ls -la' to list files in the current directory.
+    """)
+    print("Shell Tool Test (should not work - tool disabled):")
+    print(shell_response)
+    
+    # Now enable the shell tool dynamically
+    print("\nEnabling shell tool dynamically...")
+    agent_python_only.enable_shell_tool(True)
+    print(f"Shell tool enabled: {agent_python_only.get_shell_tool_status()}")
+    
+    # Test shell execution again (should work now)
+    shell_response2 = await agent_python_only.run("""
+    Run 'ls -la' to list files in the current directory.
+    """)
+    print("Shell Tool Test (should work now - tool enabled):")
+    print(shell_response2)
+    
+    # Create an agent with only shell tool enabled (no Python tool)
+    print("\nCreating agent with only shell tool enabled...")
+    agent_shell_only = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        tools=[search_web],
+        code_tools=[data_processor],
+        user_variables={"test_data": [1, 2, 3, 4, 5]},
+        enable_python_tool=False,  # Disable Python tool
+        enable_shell_tool=True,
+        local_execution=True
+    )
+    
+    # Connect to MCP servers
+    await agent_shell_only.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    await agent_shell_only.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+    
+    # Check tool status
+    print(f"Python tool enabled: {agent_shell_only.get_python_tool_status()}")
+    print(f"Shell tool enabled: {agent_shell_only.get_shell_tool_status()}")
+    
+    # Test shell execution (should work)
+    shell_response3 = await agent_shell_only.run("""
+    Run 'pwd' to show the current working directory.
+    """)
+    print("Shell Tool Test (should work):")
+    print(shell_response3)
+    
+    # Test Python execution (should not work - tool disabled)
+    python_response2 = await agent_shell_only.run("""
+    Use the data_processor tool to analyze the test_data and show me the results.
+    """)
+    print("Python Tool Test (should not work - tool disabled):")
+    print(python_response2)
+    
+    # Now enable the Python tool dynamically
+    print("\nEnabling Python tool dynamically...")
+    agent_shell_only.enable_python_tool(True)
+    print(f"Python tool enabled: {agent_shell_only.get_python_tool_status()}")
+    
+    # Test Python execution again (should work now)
+    python_response3 = await agent_shell_only.run("""
+    Use the data_processor tool to analyze the test_data and show me the results.
+    """)
+    print("Python Tool Test (should work now - tool enabled):")
+    print(python_response3)
+    
+    # Create an agent with both tools disabled
+    print("\nCreating agent with both tools disabled...")
+    agent_no_tools = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        tools=[search_web],
+        code_tools=[data_processor],
+        user_variables={"test_data": [1, 2, 3, 4, 5]},
+        enable_python_tool=False,  # Disable Python tool
+        enable_shell_tool=False,   # Disable shell tool
+        local_execution=True
+    )
+    
+    # Connect to MCP servers
+    await agent_no_tools.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    await agent_no_tools.connect_to_server("npx", ["-y", "@modelcontextprotocol/server-sequential-thinking"])
+    
+    # Check tool status
+    print(f"Python tool enabled: {agent_no_tools.get_python_tool_status()}")
+    print(f"Shell tool enabled: {agent_no_tools.get_shell_tool_status()}")
+    
+    # Test both tools (should not work - both disabled)
+    no_tools_response = await agent_no_tools.run("""
+    Try to use both Python and shell tools to analyze the test_data and list files.
+    """)
+    print("Both Tools Test (should not work - both disabled):")
+    print(no_tools_response)
+    
+    # Enable both tools dynamically
+    print("\nEnabling both tools dynamically...")
+    agent_no_tools.enable_python_tool(True)
+    agent_no_tools.enable_shell_tool(True)
+    print(f"Python tool enabled: {agent_no_tools.get_python_tool_status()}")
+    print(f"Shell tool enabled: {agent_no_tools.get_shell_tool_status()}")
+    
+    # Test both tools again (should work now)
+    both_tools_response = await agent_no_tools.run("""
+    Use both Python and shell tools: first analyze the test_data with data_processor, then list files with ls.
+    """)
+    print("Both Tools Test (should work now - both enabled):")
+    print(both_tools_response)
+    
+    # Clean up
+    await agent_python_only.close()
+    await agent_shell_only.close()
+    await agent_no_tools.close()
     
     await agent_remote.close()
     await agent_local.close()

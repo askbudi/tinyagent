@@ -705,7 +705,7 @@ class TinyAgent:
                         self.logger.debug(f"Callback is a regular function")
                         callback(event_name, self, **kwargs)
             except Exception as e:
-                self.logger.error(f"Error in callback for {event_name}: {str(e)}")
+                self.logger.error(f"Error in callback for {event_name}: {str(e)} {traceback.format_exc()}")
     
     async def connect_to_server(self, command: str, args: List[str], 
                                include_tools: Optional[List[str]] = None, 
