@@ -31,7 +31,7 @@ DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     
 )
 
-class TinyCodeAgent:
+class TinyCodeAgent(TinyAgent):
     """
     A TinyAgent specialized for code execution tasks.
     
@@ -141,8 +141,8 @@ class TinyCodeAgent:
         self.auto_git_checkpoint = auto_git_checkpoint  # Enable/disable automatic git checkpoints
         
         # Store tool enablement flags
-        self.enable_python_tool = enable_python_tool
-        self.enable_shell_tool = enable_shell_tool
+        self._python_tool_enabled = enable_python_tool
+        self._shell_tool_enabled = enable_shell_tool
         
         # Set up truncation configuration with defaults
         default_truncation = {
@@ -166,8 +166,8 @@ class TinyCodeAgent:
         
         self.summary_config = summary_config or {}
 
-        # Create the underlying TinyAgent with summary configuration
-        self.agent = TinyAgent(
+        # Initialize the parent TinyAgent with the built system prompt
+        super().__init__(
             model=model,
             api_key=api_key,
             system_prompt=self.system_prompt,
@@ -181,7 +181,7 @@ class TinyCodeAgent:
         
         # Add LLM tools (not code tools - those go to the provider)
         if self.tools:
-            self.agent.add_tools(self.tools)
+            self.add_tools(self.tools)
 
         # Add the selected UI callback
         if ui:
@@ -403,24 +403,19 @@ class TinyCodeAgent:
     def _setup_code_execution_tools(self):
         """Set up the code execution tools using the code provider."""
         # Clear existing default tools to avoid duplicates
-        # We need to remove tools by name since we can't directly access the tool objects
-        existing_tools = self.agent.tools if hasattr(self.agent, 'tools') else []
+        # Remove existing default tools by name if they exist
+        if hasattr(self, 'available_tools'):
+            tools_to_remove = []
+            for tool_dict in self.available_tools:
+                if 'function' in tool_dict and 'name' in tool_dict['function']:
+                    if tool_dict['function']['name'] in ['run_python', 'bash']:
+                        tools_to_remove.append(tool_dict)
+            
+            # Remove the tools from available_tools
+            for tool_dict in tools_to_remove:
+                self.available_tools.remove(tool_dict)
         
-        # Remove existing default tools if they exist
-        tools_to_remove = []
-        for existing_tool in existing_tools:
-            if hasattr(existing_tool, 'name') and existing_tool.name in ['run_python', 'bash']:
-                tools_to_remove.append(existing_tool)
-        
-        for existing_tool in tools_to_remove:
-            if hasattr(self.agent, 'remove_tool'):
-                self.agent.remove_tool(existing_tool)
-            else:
-                # Fallback: recreate the agent without the tools
-                # This is a bit heavy-handed but ensures clean state
-                pass
-        
-        if self.enable_python_tool:
+        if self._python_tool_enabled:
             @tool(name="run_python", description=dedent("""
             This tool receives Python code and executes it in a sandboxed environment.
             During each intermediate step, you can use 'print()' to save important information.
@@ -483,9 +478,9 @@ class TinyCodeAgent:
                     
                     return json.dumps({"error": f"Error executing code: {str(e)}"})
             
-            self.agent.add_tool(run_python)
+            self.add_tool(run_python)
         
-        if self.enable_shell_tool:
+        if self._shell_tool_enabled:
             @tool(name="bash", description=dedent("""
             This tool executes shell commands securely in a sandboxed environment.
             Only a limited set of safe commands are allowed for security reasons.
@@ -637,7 +632,7 @@ class TinyCodeAgent:
                     
                     return json.dumps({"error": f"Error executing shell command: {str(e)}"})
             
-            self.agent.add_tool(run_shell)
+            self.add_tool(run_shell)
     
     async def _create_git_checkpoint(self, command: List[str], description: str, workdir: str) -> Dict[str, Any]:
         """
@@ -735,60 +730,17 @@ class TinyCodeAgent:
         """
         return self.default_workdir
     
-    async def run(self, user_input: str, max_turns: int = 10) -> str:
-        """
-        Run the code agent with the given input.
-        
-        Args:
-            user_input: The user's request or question
-            max_turns: Maximum number of conversation turns
-            
-        Returns:
-            The agent's response
-        """
-        return await self.agent.run(user_input, max_turns)
+
     
-    async def resume(self, max_turns: int = 10) -> str:
-        """
-        Resume the conversation without adding a new user message.
-        
-        This method continues the conversation from the current state,
-        allowing the agent to process the existing conversation history
-        and potentially take additional actions.
-        
-        Args:
-            max_turns: Maximum number of conversation turns
-            
-        Returns:
-            The agent's response
-        """
-        return await self.agent.resume(max_turns)
+
     
-    async def connect_to_server(self, command: str, args: List[str], **kwargs):
-        """
-        Connect to an MCP server and fetch available tools.
-        
-        Args:
-            command: The command to run the server
-            args: List of arguments for the server
-            **kwargs: Additional keyword arguments including:
-                - include_tools: Optional list of tool name patterns to include
-                - exclude_tools: Optional list of tool name patterns to exclude  
-                - env: Optional dictionary of environment variables to pass to the subprocess
-        """
-        return await self.agent.connect_to_server(command, args, **kwargs)
+
     
-    def add_callback(self, callback):
-        """Add a callback to the agent."""
-        self.agent.add_callback(callback)
+
     
-    def add_tool(self, tool):
-        """Add a tool to the agent (LLM tool)."""
-        self.agent.add_tool(tool)
+
     
-    def add_tools(self, tools: List[Any]):
-        """Add multiple tools to the agent (LLM tools)."""
-        self.agent.add_tools(tools)
+
     
     def add_code_tool(self, tool):
         """
@@ -802,8 +754,8 @@ class TinyCodeAgent:
         self.code_provider.set_code_tools(self.code_tools)
         # Rebuild system prompt to include new code tools info
         self.system_prompt = self._build_system_prompt()
-        # Update the agent's system prompt
-        self.agent.system_prompt = self.system_prompt
+        # Update the system prompt in messages
+        self._update_system_prompt()
     
     def add_code_tools(self, tools: List[Any]):
         """
@@ -817,8 +769,8 @@ class TinyCodeAgent:
         self.code_provider.set_code_tools(self.code_tools)
         # Rebuild system prompt to include new code tools info
         self.system_prompt = self._build_system_prompt()
-        # Update the agent's system prompt
-        self.agent.system_prompt = self.system_prompt
+        # Update the system prompt in messages
+        self._update_system_prompt()
     
     def remove_code_tool(self, tool_name: str):
         """
@@ -834,8 +786,8 @@ class TinyCodeAgent:
         self.code_provider.set_code_tools(self.code_tools)
         # Rebuild system prompt
         self.system_prompt = self._build_system_prompt()
-        # Update the agent's system prompt
-        self.agent.system_prompt = self.system_prompt
+        # Update the system prompt in messages
+        self._update_system_prompt()
     
     def get_code_tools(self) -> List[Any]:
         """
@@ -866,8 +818,8 @@ class TinyCodeAgent:
         self.code_provider.set_user_variables(self.user_variables)
         # Rebuild system prompt to include new variables info
         self.system_prompt = self._build_system_prompt()
-        # Update the agent's system prompt
-        self.agent.system_prompt = self.system_prompt
+        # Update the system prompt in messages
+        self._update_system_prompt()
     
     def add_user_variable(self, name: str, value: Any):
         """
@@ -882,7 +834,7 @@ class TinyCodeAgent:
         # Rebuild system prompt to include new variables info
         self.system_prompt = self._build_system_prompt()
         # Update the agent's system prompt
-        self.agent.system_prompt = self.system_prompt
+        self._update_system_prompt()
     
     def remove_user_variable(self, name: str):
         """
@@ -897,7 +849,7 @@ class TinyCodeAgent:
             # Rebuild system prompt
             self.system_prompt = self._build_system_prompt()
             # Update the agent's system prompt
-            self.agent.system_prompt = self.system_prompt
+            self._update_system_prompt()
     
     def get_user_variables(self) -> Dict[str, Any]:
         """
@@ -965,7 +917,7 @@ class TinyCodeAgent:
         # Rebuild system prompt to include new authorized imports
         self.system_prompt = self._build_system_prompt()
         # Update the agent's system prompt
-        self.agent.system_prompt = self.system_prompt
+        self._update_system_prompt()
     
     def get_authorized_imports(self) -> List[str]:
         """
@@ -1012,27 +964,22 @@ class TinyCodeAgent:
             # Rebuild system prompt to reflect updated authorized imports
             self.system_prompt = self._build_system_prompt()
             # Update the agent's system prompt
-            self.agent.system_prompt = self.system_prompt
+            self._update_system_prompt()
     
     async def close(self):
         """Clean up resources."""
         await self.code_provider.cleanup()
-        await self.agent.close()
+        await super().close()
     
-    def clear_conversation(self):
-        """Clear the conversation history."""
-        self.agent.clear_conversation()
-    
-    @property
-    def messages(self):
-        """Get the conversation messages."""
-        return self.agent.messages
-    
-    @property
-    def session_id(self):
-        """Get the session ID."""
-        return self.agent.session_id 
 
+    
+ 
+
+    def _update_system_prompt(self):
+        """Update the system prompt in the messages array."""
+        if self.messages and len(self.messages) > 0:
+            self.messages[0]["content"] = self.system_prompt
+    
     def set_check_string_obfuscation(self, enabled: bool):
         """
         Enable or disable string obfuscation detection.
@@ -1047,32 +994,9 @@ class TinyCodeAgent:
         if hasattr(self.code_provider, 'check_string_obfuscation'):
             self.code_provider.check_string_obfuscation = enabled
 
-    async def summarize(self) -> str:
-        """
-        Generate a summary of the current conversation history.
+
         
-        Args:
-        Returns:
-            A string containing the conversation summary
-        """
-        # Use the underlying TinyAgent's summarize_conversation method
-        return await self.agent.summarize()
-        
-    async def compact(self) -> bool:
-        """
-        Compact the conversation history by replacing it with a summary.
-        
-        This method delegates to the underlying TinyAgent's compact method,
-        which:
-        1. Generates a summary of the current conversation
-        2. If successful, replaces the conversation with just [system, user] messages
-           where the user message contains the summary
-        3. Returns True if compaction was successful, False otherwise
-        
-        Returns:
-            Boolean indicating whether the compaction was successful
-        """
-        return await self.agent.compact()
+
 
     def add_ui_callback(self, ui_type: str, optimized: bool = True):
         """
@@ -1168,8 +1092,8 @@ class TinyCodeAgent:
         Args:
             enabled: If True, enable the run_python tool. If False, disable it.
         """
-        if enabled != self.enable_python_tool:
-            self.enable_python_tool = enabled
+        if enabled != self._python_tool_enabled:
+            self._python_tool_enabled = enabled
             # Re-setup tools to reflect the change
             self._setup_code_execution_tools()
     
@@ -1180,8 +1104,8 @@ class TinyCodeAgent:
         Args:
             enabled: If True, enable the bash tool. If False, disable it.
         """
-        if enabled != self.enable_shell_tool:
-            self.enable_shell_tool = enabled
+        if enabled != self._shell_tool_enabled:
+            self._shell_tool_enabled = enabled
             # Re-setup tools to reflect the change
             self._setup_code_execution_tools()
     
@@ -1192,7 +1116,7 @@ class TinyCodeAgent:
         Returns:
             True if the run_python tool is enabled, False otherwise.
         """
-        return self.enable_python_tool
+        return self._python_tool_enabled
     
     def get_shell_tool_status(self) -> bool:
         """
@@ -1201,7 +1125,7 @@ class TinyCodeAgent:
         Returns:
             True if the bash tool is enabled, False otherwise.
         """
-        return self.enable_shell_tool
+        return self._shell_tool_enabled
     
     def set_environment_variables(self, env_vars: Dict[str, str]):
         """
