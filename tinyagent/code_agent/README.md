@@ -238,6 +238,52 @@ This feature is particularly useful for:
 - Providing a safety net to revert changes if needed
 - Documenting the agent's workflow for audit purposes
 
+## Hook System Integration
+
+TinyCodeAgent inherits the full TinyAgent hook system. You can add any TinyAgent hooks to enhance functionality:
+
+### Adding Hooks to TinyCodeAgent
+
+```python
+from tinyagent import TinyCodeAgent
+from tinyagent.hooks.token_tracker import TokenTracker
+from tinyagent.hooks.rich_ui_callback import RichUICallback
+from tinyagent.hooks.message_cleanup import MessageCleanupHook
+
+# Create agent
+agent = TinyCodeAgent(model="gpt-4.1-mini")
+
+# Add token tracking
+tracker = TokenTracker(name="code_agent")
+agent.add_callback(tracker)
+
+# Add rich terminal UI
+ui = RichUICallback()
+agent.add_callback(ui)
+
+# Add message cleanup for certain providers
+cleanup = MessageCleanupHook()
+agent.add_callback(cleanup)
+
+# Use normally
+result = await agent.run("Create a data visualization script")
+
+# View token usage
+tracker.print_summary()
+```
+
+### Available Hooks
+
+All TinyAgent hooks work with TinyCodeAgent:
+- **TokenTracker**: Track token usage and costs
+- **RichUICallback**: Rich terminal display
+- **GradioCallback**: Web-based interface
+- **MessageCleanupHook**: Clean message fields for certain providers
+- **AnthropicPromptCacheCallback**: Prompt caching for Claude models
+- **JupyterNotebookCallback**: Jupyter integration
+
+See the [main README](../../README.md) for detailed hook documentation.
+
 ## Best Practices
 
 1. **Always use async/await**: TinyCodeAgent is designed for async operation
@@ -245,6 +291,7 @@ This feature is particularly useful for:
 3. **Handle errors**: Wrap agent calls in try/except blocks
 4. **Use logging**: Configure LoggingManager for debugging
 5. **Provider configuration**: Use appropriate secrets management for production
+6. **Hook usage**: Add appropriate hooks for monitoring, UI, and token tracking
 
 ## Development
 

@@ -31,9 +31,10 @@ Inspired by:
 ## Overview
 This is a tiny agent framework that uses MCP and LiteLLM to interact with language models. You have full control over the agent, you can add any tools you like from MCP and extend the agent using its event system.
 
-**Two Main Components:**
+**Three Main Components:**
 - **TinyAgent**: Core agent with MCP tool integration and extensible hooks
-- **TinyCodeAgent**: Specialized agent for secure Python code execution with pluggable providers
+- **TinyCodeAgent**: Specialized agent for secure Python code execution with pluggable providers  
+- **Subagent Tools**: Revolutionary parallel task execution system with context isolation and specialized workers
 
 ## Installation
 
@@ -258,6 +259,206 @@ Each checkpoint includes:
 
 For detailed documentation, see the [TinyCodeAgent README](tinyagent/code_agent/README.md).
 
+## 🚀 Subagent Tools - Parallel Task Execution (New!)
+
+The subagent system enables you to create specialized AI workers that can execute tasks in parallel with complete context isolation. Each subagent operates independently with its own conversation history, resource management, and cleanup.
+
+### Quick Start with Subagents
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+from tinyagent.tools.subagent import create_general_subagent, create_coding_subagent
+
+async def main():
+    # Create main agent
+    main_agent = TinyAgent(
+        model="gpt-4o-mini",
+        api_key="your-api-key"
+    )
+    
+    # Add a general-purpose subagent
+    helper = create_general_subagent(
+        name="helper",
+        model="gpt-4.1-mini",
+        max_turns=15,
+        enable_python=True,
+        enable_shell=True
+    )
+    main_agent.add_tool(helper)
+    
+    # Add a specialized coding subagent  
+    coder = create_coding_subagent(
+        name="coder",
+        model="claude-3-sonnet",
+        max_turns=25
+    )
+    main_agent.add_tool(coder)
+    
+    # Use subagents in parallel
+    result = await main_agent.run("""
+        I need help with a Python project:
+        1. Use coder to implement a binary search algorithm
+        2. Use helper to create unit tests for it
+        3. Use helper to benchmark the performance
+        
+        Make sure both tasks run efficiently and provide comprehensive results.
+    """)
+    
+    print(result)
+
+asyncio.run(main())
+```
+
+### Specialized Subagent Types
+
+The subagent system provides pre-configured factories for common use cases:
+
+```python
+from tinyagent.tools.subagent import (
+    create_research_subagent,
+    create_coding_subagent, 
+    create_analysis_subagent,
+    create_writing_subagent,
+    create_planning_subagent
+)
+
+# Research subagent - optimized for information gathering
+researcher = create_research_subagent(
+    name="researcher",
+    model="gpt-4o",
+    max_turns=20
+)
+
+# Coding subagent - with Python/shell execution
+coder = create_coding_subagent(
+    name="coder", 
+    model="claude-3-sonnet",
+    local_execution=True,
+    timeout=300  # 5 minute timeout
+)
+
+# Analysis subagent - for data analysis tasks
+analyst = create_analysis_subagent(
+    name="analyst",
+    model="gpt-4.1-mini",
+    enable_python_tool=True
+)
+
+# Writing subagent - for content creation
+writer = create_writing_subagent(
+    name="writer",
+    model="claude-3-haiku",
+    temperature=0.3
+)
+
+# Planning subagent - for strategy and planning
+planner = create_planning_subagent(
+    name="planner",
+    model="gpt-4o",
+    max_turns=15
+)
+
+# Add all subagents to your main agent
+for subagent in [researcher, coder, analyst, writer, planner]:
+    main_agent.add_tool(subagent)
+```
+
+### Advanced Configuration with Parent Inheritance
+
+Subagents can automatically inherit configuration from their parent agent:
+
+```python
+from tinyagent.tools.subagent import SubagentConfig, create_subagent_tool
+
+# Create main agent with callbacks and configuration
+main_agent = TinyAgent(
+    model="gpt-4o-mini",
+    api_key="your-key",
+    log_manager=my_log_manager,
+    session_id="main-session"
+)
+
+# Create configuration that inherits from parent
+config = SubagentConfig.from_parent_agent(
+    parent_agent=main_agent,  # Inherits API keys, logging, session info
+    model="claude-3-sonnet",  # Override specific parameters
+    max_turns=20,
+    enable_python_tool=True,
+    timeout=300,              # 5 minute timeout
+    working_directory="/tmp/subagent"
+)
+
+# Create custom subagent with inherited configuration
+specialized_tool = create_subagent_tool(
+    name="specialist", 
+    config=config,
+    description="A specialized agent for complex analysis tasks"
+)
+main_agent.add_tool(specialized_tool)
+```
+
+### Custom Agent Factories
+
+For maximum flexibility, use custom agent factories to create any type of agent:
+
+```python
+from tinyagent.tools.subagent import SubagentConfig, create_subagent_tool
+from tinyagent import TinyCodeAgent
+
+def my_custom_factory(**kwargs):
+    """Custom factory for creating specialized agents."""
+    return TinyCodeAgent(
+        provider="modal",  # Use Modal.com for execution
+        provider_config={
+            "image": "python:3.11-slim",
+            "timeout": 180,
+            "cpu_count": 2
+        },
+        tools=[custom_tool_1, custom_tool_2],  # Add custom tools
+        **kwargs
+    )
+
+# Create subagent with custom factory
+config = SubagentConfig(
+    model="gpt-4.1-mini",
+    max_turns=15,
+    timeout=600
+)
+
+custom_subagent = create_subagent_tool(
+    name="custom_executor",
+    config=config,
+    agent_factory=my_custom_factory,
+    description="Custom subagent with Modal.com execution"
+)
+
+main_agent.add_tool(custom_subagent)
+```
+
+### Key Benefits of Subagents
+
+- **🔄 Parallel Processing**: Execute multiple tasks concurrently with complete isolation
+- **🧠 Specialized Intelligence**: Domain-specific agents optimized for particular tasks
+- **🛡️ Resource Safety**: Automatic cleanup prevents memory leaks and resource exhaustion  
+- **🔗 Seamless Integration**: Inherits parent configuration (API keys, callbacks, logging)
+- **🎯 Context Isolation**: Independent conversation history per subagent
+- **⚙️ Extensible**: Custom agent factories for any agent implementation
+- **📊 Execution Tracking**: Complete metadata and execution logs
+- **🏗️ Production Ready**: Timeout management, error handling, automatic cleanup
+
+### Subagent vs Regular Tools
+
+| Feature | Regular Tools | Subagents |
+|---------|---------------|-----------|
+| **Context** | Share parent's context | Independent context |
+| **Conversation** | Single shared history | Per-subagent history |
+| **Resource Management** | Manual cleanup | Automatic cleanup |
+| **Parallel Execution** | Limited | Full support |
+| **Specialization** | Generic | Domain-optimized |
+| **Timeout Handling** | Basic | Advanced with cleanup |
+| **Configuration** | Static | Dynamic with inheritance |
+
 ## How the TinyAgent Hook System Works
 
 TinyAgent is designed to be **extensible** via a simple, event-driven hook (callback) system. This allows you to add custom logic, logging, UI, memory, or any other behavior at key points in the agent's lifecycle.
@@ -437,8 +638,9 @@ response = await agent.run("Long prompt here...")
 
 ---
 
-## List of Available Hooks
+## List of Available Hooks & Tools
 
+### Core Hooks
 You can import and use these hooks from `tinyagent.hooks`:
 
 | Hook Name                | Description                                      | Example Import                                  |
@@ -450,6 +652,20 @@ You can import and use these hooks from `tinyagent.hooks`:
 | `RichUICallback`         | Rich terminal UI (with [rich](https://github.com/Textualize/rich)) | `from tinyagent.hooks.rich_ui_callback import RichUICallback` |
 | `GradioCallback` | Interactive browser-based chat UI: file uploads, live thinking, tool calls, token stats | `from tinyagent.hooks.gradio_callback import GradioCallback`         |
 | `JupyterNotebookCallback` | Interactive Jupyter notebook integration        | `from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback` |
+
+### Subagent Tools 🚀
+Revolutionary parallel task execution system from `tinyagent.tools.subagent`:
+
+| Tool Function            | Description                                      | Example Import                                  |
+|--------------------------|--------------------------------------------------|-------------------------------------------------|
+| `create_general_subagent` | General-purpose subagent with Python/shell execution | `from tinyagent.tools.subagent import create_general_subagent` |
+| `create_research_subagent` | Research-optimized subagent for information gathering | `from tinyagent.tools.subagent import create_research_subagent` |
+| `create_coding_subagent`  | Coding-specialized subagent with execution capabilities | `from tinyagent.tools.subagent import create_coding_subagent` |
+| `create_analysis_subagent` | Data analysis subagent with Python tools        | `from tinyagent.tools.subagent import create_analysis_subagent` |
+| `create_writing_subagent` | Content creation and writing subagent           | `from tinyagent.tools.subagent import create_writing_subagent` |
+| `create_planning_subagent` | Strategic planning and project management subagent | `from tinyagent.tools.subagent import create_planning_subagent` |
+| `create_subagent_tool`    | Advanced subagent creation with custom configuration | `from tinyagent.tools.subagent import create_subagent_tool` |
+| `SubagentConfig`         | Configuration class with parent inheritance      | `from tinyagent.tools.subagent import SubagentConfig` |
 
 To see more details and usage, check the docstrings and `run_example()` in each hook file.
 

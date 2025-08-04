@@ -507,8 +507,21 @@ class OptimizedJupyterNotebookCallback:
         
         self.content_html.value = full_html
 
-    async def __call__(self, event_name: str, agent: Any, **kwargs: Any) -> None:
-        """Main callback entry point."""
+    async def __call__(self, event_name: str, agent: Any, *args, **kwargs: Any) -> None:
+        """
+        Main callback entry point.
+        
+        This method handles both the new interface (kwargs_dict as positional arg)
+        and the legacy interface (**kwargs) for backward compatibility.
+        """
+        # For legacy compatibility, extract kwargs from either interface
+        if args and isinstance(args[0], dict):
+            # New interface: kwargs_dict passed as positional argument
+            event_kwargs = args[0]
+        else:
+            # Legacy interface: use **kwargs
+            event_kwargs = kwargs
+            
         if self.agent is None:
             self.agent = agent
             self._setup_footer_handlers()
@@ -516,7 +529,7 @@ class OptimizedJupyterNotebookCallback:
             
         handler = getattr(self, f"_handle_{event_name}", None)
         if handler:
-            await handler(agent, **kwargs)
+            await handler(agent, **event_kwargs)
         
         # Update token display after LLM events (with throttling to prevent UI freeze)
         if event_name in ["llm_end", "agent_end"] and self.enable_token_tracking:
@@ -1233,8 +1246,21 @@ class JupyterNotebookCallback:
         container.children += (content_widget,)
 
     # --- Main Callback Entry Point ---
-    async def __call__(self, event_name: str, agent: Any, **kwargs: Any) -> None:
-        """Main callback entry point."""
+    async def __call__(self, event_name: str, agent: Any, *args, **kwargs: Any) -> None:
+        """
+        Main callback entry point.
+        
+        This method handles both the new interface (kwargs_dict as positional arg)
+        and the legacy interface (**kwargs) for backward compatibility.
+        """
+        # For legacy compatibility, extract kwargs from either interface
+        if args and isinstance(args[0], dict):
+            # New interface: kwargs_dict passed as positional argument
+            event_kwargs = args[0]
+        else:
+            # Legacy interface: use **kwargs
+            event_kwargs = kwargs
+            
         if self.agent is None:
             self.agent = agent
             self._setup_footer_handlers()
@@ -1242,7 +1268,7 @@ class JupyterNotebookCallback:
             
         handler = getattr(self, f"_handle_{event_name}", None)
         if handler:
-            await handler(agent, **kwargs)
+            await handler(agent, **event_kwargs)
         
         # Update token display after LLM events (with throttling to prevent UI freeze)
         if event_name in ["llm_end", "agent_end"] and self.enable_token_tracking:

@@ -136,27 +136,38 @@ class RichUICallback:
             self.logger.error(f"Error counting tokens: {e}")
             return 0
         
-    async def __call__(self, event_name: str, agent: Any, **kwargs: Any) -> None:
+    async def __call__(self, event_name: str, agent: Any, *args, **kwargs: Any) -> None:
         """
         Process events from the TinyAgent.
+        
+        This method handles both the new interface (kwargs_dict as positional arg)
+        and the legacy interface (**kwargs) for backward compatibility.
         
         Args:
             event_name: The name of the event
             agent: The TinyAgent instance
-            **kwargs: Additional event data
+            *args: Variable positional arguments (may contain kwargs_dict)
+            **kwargs: Variable keyword arguments (legacy interface)
         """
+        # For legacy compatibility, extract kwargs from either interface
+        if args and isinstance(args[0], dict):
+            # New interface: kwargs_dict passed as positional argument
+            event_kwargs = args[0]
+        else:
+            # Legacy interface: use **kwargs
+            event_kwargs = kwargs
         self.logger.debug(f"Event received: {event_name}")
         
         if event_name == "agent_start":
-            await self._handle_agent_start(agent, **kwargs)
+            await self._handle_agent_start(agent, **event_kwargs)
         elif event_name == "message_add":
-            await self._handle_message_add(agent, **kwargs)
+            await self._handle_message_add(agent, **event_kwargs)
         elif event_name == "llm_start":
-            await self._handle_llm_start(agent, **kwargs)
+            await self._handle_llm_start(agent, **event_kwargs)
         elif event_name == "llm_end":
-            await self._handle_llm_end(agent, **kwargs)
+            await self._handle_llm_end(agent, **event_kwargs)
         elif event_name == "agent_end":
-            await self._handle_agent_end(agent, **kwargs)
+            await self._handle_agent_end(agent, **event_kwargs)
         
         # Update the UI if we have an active live display
         if self.live:

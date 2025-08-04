@@ -440,23 +440,35 @@ class TokenTracker:
         self.logger.info(f"Saved tracker report to {filepath}")
     
     # Hook methods for TinyAgent integration
-    async def __call__(self, event_name: str, agent: Any, **kwargs) -> None:
+    async def __call__(self, event_name: str, agent: Any, *args, **kwargs) -> None:
         """
         Main hook method that integrates with TinyAgent's callback system.
+        
+        This method handles both the new interface (kwargs_dict as positional arg)
+        and the legacy interface (**kwargs) for backward compatibility.
         
         Args:
             event_name: The event name from TinyAgent
             agent: The TinyAgent instance
-            **kwargs: Event-specific data
+            *args: Variable positional arguments (may contain kwargs_dict)
+            **kwargs: Variable keyword arguments (legacy interface)
         """
+        # For legacy compatibility, extract kwargs from either interface
+        if args and isinstance(args[0], dict):
+            # New interface: kwargs_dict passed as positional argument
+            event_kwargs = args[0]
+        else:
+            # Legacy interface: use **kwargs
+            event_kwargs = kwargs
+        
         if event_name == "llm_end":
-            response = kwargs.get("response")
+            response = event_kwargs.get("response")
             if response:
                 # Extract model from agent or response
                 model = getattr(agent, 'model', 'unknown')
                 
                 # Remove 'response' from kwargs to avoid duplicate argument error
-                filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'response'}
+                filtered_kwargs = {k: v for k, v in event_kwargs.items() if k != 'response'}
                 self.track_llm_call(model, response, **filtered_kwargs)
         
         elif event_name == "agent_start":

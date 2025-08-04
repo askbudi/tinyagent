@@ -706,6 +706,56 @@ class TinyAgent:
                         callback(event_name, self, **kwargs)
             except Exception as e:
                 self.logger.error(f"Error in callback for {event_name}: {str(e)} {traceback.format_exc()}")
+
+    async def _run_callbacks_with_modifiable_kwargs(self, event_name: str, kwargs_dict: dict) -> None:
+        """
+        Run all registered callbacks for an event with modifiable kwargs.
+        
+        This method allows callbacks to modify the kwargs_dict directly, which is
+        essential for hooks that need to modify messages before LLM calls.
+        
+        Args:
+            event_name: The name of the event
+            kwargs_dict: Dictionary of kwargs that callbacks can modify
+        """
+        for callback in self.callbacks:
+            try:
+                self.logger.debug(f"Running callback: {callback}")
+                
+                # Detect if this is a built-in TinyAgent callback (bound method)
+                # vs a custom hook that expects the new interface
+                is_builtin_callback = (
+                    hasattr(callback, '__self__') and 
+                    isinstance(callback.__self__, TinyAgent) and
+                    callback.__name__.startswith('_on_')
+                )
+                
+                if is_builtin_callback:
+                    # Built-in callbacks use the legacy interface
+                    self.logger.debug(f"Built-in callback, using legacy interface")
+                    if asyncio.iscoroutinefunction(callback):
+                        self.logger.debug(f"Callback is a coroutine function")
+                        await callback(event_name, self, **kwargs_dict)
+                    else:
+                        self.logger.debug(f"Callback is a regular function")
+                        callback(event_name, self, **kwargs_dict)
+                else:
+                    # Custom hooks use the new interface (kwargs_dict as positional arg)
+                    self.logger.debug(f"Custom hook, using new interface")
+                    if asyncio.iscoroutinefunction(callback):
+                        self.logger.debug(f"Callback is a coroutine function")
+                        await callback(event_name, self, kwargs_dict)
+                    else:
+                        # Check if the callback is a class with an async __call__ method
+                        if hasattr(callback, '__call__') and asyncio.iscoroutinefunction(callback.__call__):
+                            self.logger.debug(f"Callback is a class with an async __call__ method")  
+                            await callback(event_name, self, kwargs_dict)
+                        else:
+                            self.logger.debug(f"Callback is a regular function")
+                            callback(event_name, self, kwargs_dict)
+                            
+            except Exception as e:
+                self.logger.error(f"Error in callback for {event_name}: {str(e)} {traceback.format_exc()}")
     
     async def connect_to_server(self, command: str, args: List[str], 
                                include_tools: Optional[List[str]] = None, 
@@ -924,8 +974,31 @@ class TinyAgent:
                 import litellm
                 self.logger.info(f"LiteLLM drop_params is currently set to: {litellm.drop_params}")
                 
-                # Notify LLM start
-                await self._run_callbacks("llm_start", messages=self.messages, tools=all_tools)
+                # Create a deep copy of messages for hooks to modify
+                # This ensures individual message dictionaries aren't shared
+                import copy
+                messages_for_llm = copy.deepcopy(self.messages)
+                
+                # Protect agent.messages from hook modifications
+                original_messages = self.messages
+                
+                # Create kwargs for hooks - hooks can modify these messages
+                hook_kwargs = {"messages": messages_for_llm, "tools": all_tools}
+                
+                try:
+                    # Notify LLM start - pass kwargs that hooks can modify
+                    # IMPORTANT: Hooks should ONLY modify kwargs["messages"], NOT agent.messages
+                    self.logger.debug(f"hook_kwargs['messages'] before hooks: {hook_kwargs['messages']}")
+                    await self._run_callbacks_with_modifiable_kwargs("llm_start", hook_kwargs)
+                    self.logger.debug(f"hook_kwargs['messages'] after hooks: {hook_kwargs['messages']}")
+                finally:
+                    # Ensure agent.messages wasn't corrupted by hooks
+                    # This protects conversation history from accidental modification
+                    self.messages = original_messages
+                
+                # Use the potentially modified messages from hooks
+                final_messages_for_llm = hook_kwargs["messages"]
+                self.logger.debug(f"final_messages_for_llm: {final_messages_for_llm}")
                 
                 # Use parallel_tool_calls based on user preference, default to False if not specified
                 use_parallel_tool_calls = self.parallel_tool_calls if self.parallel_tool_calls is not None else False
@@ -941,11 +1014,11 @@ class TinyAgent:
                 
                 self.logger.info(f"Using parallel tool calls: {use_parallel_tool_calls}")
                 
-                # Use our retry wrapper instead of direct litellm call
+                # Use our retry wrapper with the potentially modified messages from hooks
                 response = await self._litellm_with_retry(
                     model=self.model,
                     api_key=self.api_key,
-                    messages=self.messages,
+                    messages=final_messages_for_llm,  # Use the messages modified by hooks
                     tools=all_tools,
                     tool_choice="auto",
                     parallel_tool_calls=use_parallel_tool_calls,
