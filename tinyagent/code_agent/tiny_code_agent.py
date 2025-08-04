@@ -1,6 +1,7 @@
 import traceback
 import os
 import json
+import shlex
 from textwrap import dedent
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -400,6 +401,148 @@ class TinyCodeAgent(TinyAgent):
         
         return "\n".join(code_tools_lines)
     
+    def _requires_shell_interpretation(self, command: List[str]) -> bool:
+        """
+        Check if command contains shell operators requiring shell interpretation.
+        
+        Args:
+            command: List of command arguments
+            
+        Returns:
+            True if the command contains shell operators that need shell interpretation
+        """
+        # Check if command is already properly wrapped with sh -c
+        # This prevents double-wrapping which causes timeouts
+        if len(command) >= 3 and command[0] == 'sh' and command[1] == '-c':
+            return False  # Already properly formatted for shell interpretation
+        
+        # Check if command starts with other shell invocations
+        if len(command) > 0 and command[0] in ['bash', 'zsh', 'fish', 'dash']:
+            if len(command) >= 3 and command[1] == '-c':
+                return False  # Already shell-wrapped
+        
+        # Common shell operators that require shell interpretation
+        shell_operators = {
+            '>', '>>', '<', '<<',  # Redirection operators
+            '|', '||', '&&',       # Pipe and logical operators  
+            ';', '&',              # Command separators
+            '$(', '`',             # Command substitution
+            '*', '?', '[',         # Glob patterns (when not quoted)
+            '~',                   # Home directory expansion
+            '{', '}',              # Brace expansion
+            'EOF'                  # Heredoc delimiter (common case)
+        }
+        
+        # Check each argument for shell operators
+        for arg in command:
+            # Direct operator match
+            if arg in shell_operators:
+                return True
+            # Check for operators within arguments
+            if any(op in arg for op in ['>', '<', '|', ';', '$(', '`', '&&', '||']):
+                return True
+            # Check for heredoc patterns
+            if arg.startswith("'EOF'") or arg.startswith('"EOF"') or arg == 'EOF':
+                return True
+        
+        return False
+    
+    def _detect_malformed_double_wrapping(self, command: List[str]) -> tuple[bool, List[str]]:
+        """
+        Detect and fix malformed double-wrapped shell commands.
+        
+        Args:
+            command: List of command arguments
+            
+        Returns:
+            Tuple of (is_malformed, corrected_command)
+        """
+        # Check if this is a malformed double-wrapped command like:
+        # ['sh', '-c', 'sh -c \'complex command\'']
+        if (len(command) == 3 and 
+            command[0] == 'sh' and 
+            command[1] == '-c' and 
+            command[2].startswith('sh -c ')):
+            
+            # Extract the inner command from the double wrapping
+            inner_command = command[2][6:]  # Remove 'sh -c ' prefix
+            
+            # Clean up the inner command by removing one layer of quoting
+            # This is a simplified cleanup - for production might need more robust parsing
+            if inner_command.startswith("'") and inner_command.endswith("'"):
+                inner_command = inner_command[1:-1]
+            elif inner_command.startswith('"') and inner_command.endswith('"'):
+                inner_command = inner_command[1:-1]
+            
+            corrected_command = ["sh", "-c", inner_command]
+            return True, corrected_command
+        
+        return False, command
+
+    def _validate_and_suggest_command(self, command: List[str]) -> tuple[bool, str, List[str]]:
+        """
+        Validate command format and provide helpful suggestions for LLM.
+        
+        Args:
+            command: List of command arguments
+            
+        Returns:
+            Tuple of (is_valid, error_message, suggested_command)
+        """
+        # First check for malformed double-wrapping
+        is_malformed, corrected_command = self._detect_malformed_double_wrapping(command)
+        if is_malformed:
+            error_msg = (
+                f"MALFORMED DOUBLE-WRAPPED COMMAND DETECTED:\n"
+                f"Your command has redundant shell wrapping that can cause timeouts.\n\n"
+                f"PROBLEMATIC COMMAND: {command}\n"
+                f"ISSUE: Double shell wrapping like 'sh -c \"sh -c ...\"' causes parsing errors.\n\n"
+                f"AUTOMATIC FIX APPLIED: Removed redundant outer shell wrapper.\n"
+                f"CORRECTED TO: {corrected_command}\n\n"
+                f"FOR FUTURE REFERENCE:\n"
+                f"- Use either raw commands or single shell wrapping, not both\n"
+                f"- For complex commands, use ['sh', '-c', 'command_string'] format\n"
+            )
+            return False, error_msg, corrected_command
+        
+        # Check if command needs shell interpretation
+        if not self._requires_shell_interpretation(command):
+            return True, "", command
+        
+        # Command needs shell interpretation - provide helpful guidance
+        original_cmd_str = " ".join(command)
+        
+        # Create a properly quoted shell command
+        try:
+            # Try to create a safe shell command
+            shell_cmd = " ".join(shlex.quote(arg) for arg in command)
+            suggested_command = ["sh", "-c", shell_cmd]
+            
+            error_msg = (
+                f"SHELL COMMAND FORMATTING ISSUE DETECTED:\n"
+                f"Your command contains shell operators that need shell interpretation.\n\n"
+                f"PROBLEMATIC COMMAND: {command}\n"
+                f"ISSUE: Shell operators like '>', '<<', '|', etc. are being treated as literal arguments.\n\n"
+                f"AUTOMATIC FIX APPLIED: The command has been automatically wrapped in 'sh -c' for proper shell interpretation.\n"
+                f"CONVERTED TO: {suggested_command}\n\n"
+                f"FOR FUTURE REFERENCE:\n"
+                f"- For simple commands like ['ls', '-la'], use the list format\n"
+                f"- For complex commands with redirection/pipes, they will be auto-wrapped\n"
+                f"- Original command string: '{original_cmd_str}'\n"
+            )
+            
+            return False, error_msg, suggested_command
+            
+        except Exception as e:
+            # Fallback if quoting fails
+            error_msg = (
+                f"COMMAND PARSING ERROR:\n"
+                f"Could not safely parse command with shell operators: {command}\n"
+                f"Error: {str(e)}\n\n"
+                f"SUGGESTION: For complex shell commands, try simpler alternatives or break into steps."
+            )
+            return False, error_msg, command
+    
     def _setup_code_execution_tools(self):
         """Set up the code execution tools using the code provider."""
         # Clear existing default tools to avoid duplicates
@@ -575,12 +718,28 @@ class TinyCodeAgent(TinyAgent):
                 If the command is rejected for security reasons, stderr will contain the reason.
                 The stdout will include information about which working directory was used.
             """))
-            async def run_shell(command: List[str], absolute_workdir: str,  description: str, timeout: int = 60) -> str:
+            async def bash(command: List[str], absolute_workdir: str, description: str, timeout: int = 60) -> str:
                 """Execute shell commands securely using the configured provider."""
                 try:
+                    
                     # Use the default working directory if none is specified
                     effective_workdir = absolute_workdir or self.default_workdir
                     print(f" {command} to {description}")
+                    
+                    # Validate and potentially auto-fix the command (Solution 1 + 3)
+                    is_valid, validation_message, processed_command = self._validate_and_suggest_command(command)
+                    
+                    # If command was auto-wrapped, log the helpful message for LLM learning
+                    if not is_valid and validation_message:
+                        # Print the educational message for LLM to learn from
+                        print(f"\n{'='*60}")
+                        print("COMMAND AUTO-CORRECTION APPLIED:")
+                        print(validation_message)
+                        print(f"{'='*60}\n")
+                    
+                    # Use the processed command (either original or auto-wrapped)
+                    final_command = processed_command
+                    
                     # Verify that the working directory exists
                     if effective_workdir and not os.path.exists(effective_workdir):
                         return json.dumps({
@@ -596,7 +755,19 @@ class TinyCodeAgent(TinyAgent):
                             "exit_code": 1
                         })
                     
-                    result = await self.code_provider.execute_shell(command, timeout, effective_workdir)
+                    result = await self.code_provider.execute_shell(final_command, timeout, effective_workdir)
+                    
+                    # If auto-correction was applied, include the educational message in stderr
+                    # so the LLM can learn from it for future commands
+                    if not is_valid and validation_message:
+                        # Prepend the educational message to stderr (or create it if empty)
+                        educational_note = (
+                            f"\n--- COMMAND AUTO-CORRECTION INFO ---\n"
+                            f"{validation_message}\n"
+                            f"--- END AUTO-CORRECTION INFO ---\n\n"
+                        )
+                        current_stderr = result.get("stderr", "")
+                        result["stderr"] = educational_note + current_stderr
                     
                     # Apply truncation if enabled
                     if self.truncation_config["enabled"] and "stdout" in result and result["stdout"]:
@@ -618,7 +789,7 @@ class TinyCodeAgent(TinyAgent):
                     
                     # Create a git checkpoint if auto_git_checkpoint is enabled
                     if self.auto_git_checkpoint and result.get("exit_code", 1) == 0:
-                        checkpoint_result = await self._create_git_checkpoint(command, description, effective_workdir)
+                        checkpoint_result = await self._create_git_checkpoint(final_command, description, effective_workdir)
                         self.log_manager.get_logger(__name__).info(f"Git checkpoint {effective_workdir} result: {checkpoint_result}")
                     
                     return json.dumps(result)
@@ -632,7 +803,7 @@ class TinyCodeAgent(TinyAgent):
                     
                     return json.dumps({"error": f"Error executing shell command: {str(e)}"})
             
-            self.add_tool(run_shell)
+            self.add_tool(bash)
     
     async def _create_git_checkpoint(self, command: List[str], description: str, workdir: str) -> Dict[str, Any]:
         """

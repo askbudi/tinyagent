@@ -315,6 +315,126 @@ agent.add_callback(MyHook())
 - **Listen for events**: Check `event_name` and use `**kwargs` for event data.
 - **See examples**: Each official hook (see below) includes a `run_example()` in its file.
 
+### 🚨 Important: Hook Interface Guidelines
+
+#### **New Hook Interface (Recommended)**
+
+When creating hooks that need to modify LLM messages, use the new interface that supports both legacy and modern patterns:
+
+```python
+class MyHook:
+    async def __call__(self, event_name: str, agent, *args, **kwargs):
+        """
+        Hook that works with both new and legacy interfaces.
+        
+        Args:
+            event_name: The event name
+            agent: The TinyAgent instance
+            *args: May contain kwargs_dict for new interface
+            **kwargs: Legacy interface or fallback
+        """
+        # Handle both interfaces for maximum compatibility
+        if args and isinstance(args[0], dict):
+            # New interface: kwargs_dict passed as positional argument
+            event_kwargs = args[0]
+        else:
+            # Legacy interface: use **kwargs
+            event_kwargs = kwargs
+        
+        if event_name == "llm_start":
+            # ✅ CORRECT: Modify event_kwargs["messages"] (what goes to LLM)
+            messages = event_kwargs.get("messages", [])
+            
+            # Example: Add cache control, clean up fields, etc.
+            for message in messages:
+                if isinstance(message, dict) and "created_at" in message:
+                    del message["created_at"]  # Remove unsupported fields
+```
+
+#### **Legacy Hook Interface (Still Supported)**
+
+```python
+async def my_legacy_hook(event_name, agent, **kwargs):
+    if event_name == "llm_start":
+        # ⚠️  LIMITATION: Cannot modify messages sent to LLM
+        # This interface is read-only for message modification
+        messages = kwargs.get("messages", [])
+        print(f"LLM will be called with {len(messages)} messages")
+```
+
+#### ❌ **DON'T: Modify Conversation History**
+```python
+async def bad_hook(event_name, agent, *args, **kwargs):
+    if event_name == "llm_start":
+        # ❌ WRONG: Don't modify agent.messages (conversation history)
+        agent.messages = modified_messages  # This corrupts conversation history!
+```
+
+#### 🏗️ **Architecture Explanation**
+- **`agent.messages`** = Pristine conversation history (read-only for hooks)
+- **`event_kwargs["messages"]`** = Copy of messages sent to LLM this call (modifiable by new interface hooks)
+- **Protection**: TinyAgent automatically protects `agent.messages` from hook corruption
+- **Chain-friendly**: Multiple hooks can safely modify `event_kwargs["messages"]` in sequence
+- **Backward Compatible**: Legacy hooks continue to work for read-only operations
+
+#### 📝 **Use Cases for Message Modification**
+- **Prompt Caching**: Add cache control headers for supported models (see `anthropic_prompt_cache`)
+- **Field Cleanup**: Remove unsupported fields like `created_at` for certain providers (see `MessageCleanupHook`)
+- **Content Preprocessing**: Transform message content before sending to LLM
+- **Token Optimization**: Compress or format messages for token efficiency
+
+#### 🔧 **Built-in Hooks Using New Interface**
+All built-in hooks have been updated to use the new interface:
+- ✅ `MessageCleanupHook`: Removes `created_at` fields from LLM messages
+- ✅ `AnthropicPromptCacheCallback`: Adds cache control to large messages
+- ✅ `TokenTracker`: Tracks token usage and costs
+- ✅ `RichUICallback`: Rich terminal UI
+- ✅ `GradioCallback`: Web-based chat interface
+- ✅ `JupyterNotebookCallback`: Jupyter notebook integration
+
+---
+
+## 🚀 Anthropic Prompt Caching (New!)
+
+TinyAgent now includes Anthropic prompt caching that automatically adds cache control to substantial messages for Claude models, helping reduce API costs.
+
+### Quick Start
+
+Enable caching with just one line:
+
+```python
+from tinyagent import TinyAgent
+from tinyagent.hooks import anthropic_prompt_cache
+
+agent = TinyAgent(model="claude-3-5-sonnet-20241022")
+
+# Add Anthropic prompt caching
+cache_callback = anthropic_prompt_cache()
+agent.add_callback(cache_callback)
+
+# Use normally - caching happens automatically for large messages
+response = await agent.run("Long prompt here...")
+```
+
+### How It Works
+
+- **Automatic Detection**: Only works with Claude-3 and Claude-4 models that support prompt caching
+- **Smart Triggering**: Adds cache control only to messages over ~1000 tokens 
+- **Simple Integration**: Uses TinyAgent's native callback system
+- **No Configuration**: Works out of the box with sensible defaults
+
+### Supported Models
+
+- **Claude-3 models**: claude-3-5-sonnet, claude-3-5-haiku, claude-3-haiku, claude-3-sonnet, claude-3-opus
+- **Claude-4 models**: claude-4-*, claude-4o-*, and any future Claude-4 variants
+
+### Benefits
+
+- **Cost Reduction**: Automatic caching for substantial messages
+- **Zero Configuration**: Just add the callback and it works
+- **Model-Aware**: Only activates for supported Claude models
+- **Lightweight**: Minimal overhead and complexity
+
 ---
 
 ## List of Available Hooks
@@ -323,9 +443,13 @@ You can import and use these hooks from `tinyagent.hooks`:
 
 | Hook Name                | Description                                      | Example Import                                  |
 |--------------------------|--------------------------------------------------|-------------------------------------------------|
+| `anthropic_prompt_cache` | Prompt caching for Claude-3/Claude-4 models     | `from tinyagent.hooks import anthropic_prompt_cache` |
+| `MessageCleanupHook`     | Removes unsupported fields from LLM messages    | `from tinyagent.hooks.message_cleanup import MessageCleanupHook` |
+| `TokenTracker`           | Comprehensive token usage and cost tracking     | `from tinyagent.hooks.token_tracker import TokenTracker` |
 | `LoggingManager`         | Granular logging control for all modules         | `from tinyagent.hooks.logging_manager import LoggingManager` |
 | `RichUICallback`         | Rich terminal UI (with [rich](https://github.com/Textualize/rich)) | `from tinyagent.hooks.rich_ui_callback import RichUICallback` |
 | `GradioCallback` | Interactive browser-based chat UI: file uploads, live thinking, tool calls, token stats | `from tinyagent.hooks.gradio_callback import GradioCallback`         |
+| `JupyterNotebookCallback` | Interactive Jupyter notebook integration        | `from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback` |
 
 To see more details and usage, check the docstrings and `run_example()` in each hook file.
 
@@ -383,8 +507,11 @@ You can chat with TinyAgent and build your own TinyAgent for your use case.
 ## Contributing Hooks
 
 - Place new hooks in the `tinyagent/hooks/` directory.
+- **Use the new hook interface** for maximum compatibility (see hook guidelines above).
 - Add an example usage as `async def run_example()` in the same file.
 - Use `"gpt-4.1-mini"` as the default model in examples.
+- Include proper error handling and compatibility for both new and legacy interfaces.
+- Test your hook with the compatibility test framework in `test_all_hooks_compatibility.py`.
 
 ---
 

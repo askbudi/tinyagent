@@ -12,7 +12,7 @@ tinyagent = ["prompts/*.yaml"]
 
 [project]
 name = "tinyagent-py"
-version = "0.0.19"
+version = "0.1.11"
 description = "TinyAgent with MCP Client, CodeAgent (Thinking, Planning, Interactive Python and Shell with high variaety of sandboxing(seatbelt, Modal, E2B, docker, etc) ), and Extendable Hooks, Tiny but powerful"
 readme = "README.md"
 authors = [
