@@ -365,4 +365,590 @@ class ModalProvider(CodeExecutionProvider):
         # Modal handles cleanup automatically, but we can reset state
         self.executed_default_codes = False
         self._globals_dict = {}
-        self._locals_dict = {} 
+        self._locals_dict = {}
+    
+    # File operation methods for sandbox-constrained file manipulation
+    async def read_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
+        """Read file within Modal sandbox boundaries."""
+        code = f"""
+import os
+import mimetypes
+from pathlib import Path
+
+def read_file_impl(file_path, start_line=1, max_lines=None, encoding='utf-8'):
+    try:
+        # Basic path validation
+        if not file_path or '..' in file_path:
+            return {{
+                "success": False,
+                "error": "Invalid file path",
+                "path": file_path,
+                "size": 0
+            }}
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return {{
+                "success": False,
+                "error": "File not found",
+                "path": file_path,
+                "size": 0
+            }}
+        
+        # Check if it's a file (not directory)
+        if not os.path.isfile(file_path):
+            return {{
+                "success": False,
+                "error": "Path is not a file",
+                "path": file_path,
+                "size": 0
+            }}
+        
+        # Get file size
+        file_size = os.path.getsize(file_path)
+        
+        # Check for reasonable file size (100MB limit)
+        if file_size > 100 * 1024 * 1024:
+            return {{
+                "success": False,
+                "error": f"File too large: {{file_size}} bytes (limit: 100MB)",
+                "path": file_path,
+                "size": file_size
+            }}
+        
+        # Check if it's a text file
+        def is_text_file(path):
+            try:
+                mime_type, _ = mimetypes.guess_type(path)
+                if mime_type and mime_type.startswith('text/'):
+                    return True
+                
+                text_extensions = {{
+                    '.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.yaml', '.yml',
+                    '.md', '.rst', '.csv', '.sql', '.sh', '.bash', '.zsh', '.fish',
+                    '.c', '.cpp', '.h', '.java', '.go', '.rs', '.php', '.rb', '.pl',
+                    '.ts', '.jsx', '.tsx', '.vue', '.svelte', '.ini', '.cfg', '.conf',
+                    '.log', '.dockerfile', '.gitignore', '.env'
+                }}
+                
+                if Path(path).suffix.lower() in text_extensions:
+                    return True
+                
+                # Check first few bytes for null bytes
+                with open(path, 'rb') as f:
+                    sample = f.read(1024)
+                    if b'\\0' in sample:
+                        return False
+                    
+                    try:
+                        sample.decode('utf-8')
+                        return True
+                    except UnicodeDecodeError:
+                        return False
+            except Exception:
+                return False
+        
+        if not is_text_file(file_path):
+            return {{
+                "success": False,
+                "error": "This file appears to be binary. I can only read text-based files like source code, configuration files, and documentation.",
+                "path": file_path,
+                "size": file_size
+            }}
+        
+        # Read the file
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                if start_line > 1:
+                    # Skip lines before start_line
+                    for _ in range(start_line - 1):
+                        try:
+                            next(f)
+                        except StopIteration:
+                            break
+                
+                lines = []
+                line_count = 0
+                for line in f:
+                    lines.append(line.rstrip('\\n\\r'))
+                    line_count += 1
+                    if max_lines and line_count >= max_lines:
+                        break
+                
+                content = '\\n'.join(lines)
+                
+                return {{
+                    "success": True,
+                    "content": content,
+                    "path": file_path,
+                    "size": file_size,
+                    "error": None
+                }}
+        
+        except UnicodeDecodeError as e:
+            return {{
+                "success": False,
+                "error": f"Could not decode file with encoding '{{encoding}}': {{str(e)}}",
+                "path": file_path,
+                "size": file_size
+            }}
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error reading file: {{str(e)}}",
+                "path": file_path,
+                "size": file_size
+            }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "path": file_path,
+            "size": 0
+        }}
+
+# Execute the file read
+result = read_file_impl("{file_path}", {kwargs.get('start_line', 1)}, {kwargs.get('max_lines', None)}, "{kwargs.get('encoding', 'utf-8')}")
+print(f"FILE_READ_RESULT: {{result}}")
+"""
+        
+        try:
+            response = await self.execute_python([code])
+            # Extract result from printed output
+            import re
+            output = response.get("printed_output", "")
+            match = re.search(r"FILE_READ_RESULT: (.+)", output)
+            if match:
+                import ast
+                result = ast.literal_eval(match.group(1))
+                return result
+            else:
+                return {
+                    "success": False,
+                    "error": "Could not parse file read result",
+                    "path": file_path,
+                    "size": 0
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing file read: {str(e)}",
+                "path": file_path,
+                "size": 0
+            }
+    
+    async def write_file(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
+        """Write file within Modal sandbox boundaries."""
+        create_dirs = kwargs.get('create_dirs', True)
+        encoding = kwargs.get('encoding', 'utf-8')
+        
+        # Prepare content for safe insertion into Python code
+        content_repr = repr(content)
+        
+        code = f"""
+import os
+from pathlib import Path
+
+def write_file_impl(file_path, content, create_dirs=True, encoding='utf-8'):
+    try:
+        # Basic path validation
+        if not file_path or '..' in file_path:
+            return {{
+                "success": False,
+                "error": "Invalid file path",
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }}
+        
+        file_path_obj = Path(file_path)
+        
+        # Create parent directories if needed
+        if create_dirs and not file_path_obj.parent.exists():
+            try:
+                file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                return {{
+                    "success": False,
+                    "error": f"Could not create parent directories: {{str(e)}}",
+                    "path": file_path,
+                    "bytes_written": 0,
+                    "operation": "write"
+                }}
+        
+        # Determine operation before writing
+        existed_before = file_path_obj.exists()
+
+        # Write the file
+        try:
+            with open(file_path, 'w', encoding=encoding) as f:
+                f.write(content)
+            
+            bytes_written = len(content.encode(encoding))
+            operation = "created" if not existed_before else "overwritten"
+            
+            return {{
+                "success": True,
+                "path": file_path,
+                "bytes_written": bytes_written,
+                "operation": operation,
+                "error": None
+            }}
+        
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error writing file: {{str(e)}}",
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "path": file_path,
+            "bytes_written": 0,
+            "operation": "write"
+        }}
+
+# Execute the file write
+result = write_file_impl({repr(file_path)}, {content_repr}, {create_dirs}, {repr(encoding)})
+print("FILE_WRITE_RESULT:", result)
+"""
+        
+        try:
+            response = await self.execute_python([code])
+            if self.log_manager:
+                self.log_manager.get_logger('tinyagent.code_agent.providers.modal_provider').debug(f"ModalProvider.write_file raw response: {response}")
+            
+            # Extract result from printed output
+            import re
+            output = response.get("printed_output", "")
+            match = re.search(r"FILE_WRITE_RESULT: (.+)", output)
+            if match:
+                import ast
+                result = ast.literal_eval(match.group(1))
+                return result
+            else:
+                return {
+                    "success": False,
+                    "error": "Could not parse file write result",
+                    "path": file_path,
+                    "bytes_written": 0,
+                    "operation": "write"
+                }
+        except Exception as e:
+            if self.log_manager:
+                self.log_manager.get_logger('tinyagent.code_agent.providers.modal_provider').debug(f"ModalProvider.write_file exception: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": f"Error executing file write: {str(e)}",
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }
+    
+    async def update_file(self, file_path: str, old_content: str, new_content: str, **kwargs) -> Dict[str, Any]:
+        """Update file content with exact string replacement within Modal sandbox."""
+        expected_matches = kwargs.get('expected_matches', 1)
+        
+        code = f"""
+import os
+
+def update_file_impl(file_path, old_content, new_content, expected_matches=1):
+    try:
+        # Basic path validation
+        if not file_path or '..' in file_path:
+            return {{
+                "success": False,
+                "error": "Invalid file path",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return {{
+                "success": False,
+                "error": "File not found",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Read current content
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                current_content = f.read()
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error reading file: {{str(e)}}",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Count occurrences of old_content
+        match_count = current_content.count(old_content)
+        
+        if match_count == 0:
+            return {{
+                "success": False,
+                "error": "Old content not found in file",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        if match_count != expected_matches:
+            return {{
+                "success": False,
+                "error": f"Expected {{expected_matches}} matches but found {{match_count}}",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Perform replacement
+        updated_content = current_content.replace(old_content, new_content)
+        
+        # Write back to file
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(updated_content)
+            
+            bytes_written = len(updated_content.encode('utf-8'))
+            
+            return {{
+                "success": True,
+                "path": file_path,
+                "changes_made": True,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": bytes_written,
+                "error": None
+            }}
+        
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error writing updated file: {{str(e)}}",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "path": file_path,
+            "changes_made": False,
+            "old_content": old_content,
+            "new_content": new_content,
+            "bytes_written": 0
+        }}
+
+# Execute the file update
+result = update_file_impl({repr(file_path)}, {repr(old_content)}, {repr(new_content)}, {expected_matches})
+print("FILE_UPDATE_RESULT:", result)
+"""
+        
+        try:
+            response = await self.execute_python([code])
+            # Extract result from printed output
+            import re
+            output = response.get("printed_output", "")
+            match = re.search(r"FILE_UPDATE_RESULT: (.+)", output)
+            if match:
+                import ast
+                result = ast.literal_eval(match.group(1))
+                return result
+            else:
+                return {
+                    "success": False,
+                    "error": "Could not parse file update result",
+                    "path": file_path,
+                    "changes_made": False,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "bytes_written": 0
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing file update: {str(e)}",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }
+    
+ 
+        """Search files within Modal sandbox boundaries."""
+        file_types = kwargs.get('file_types', None)
+        case_sensitive = kwargs.get('case_sensitive', False)
+        regex = kwargs.get('regex', False)
+        
+        code = f"""
+import os
+import re
+import fnmatch
+from pathlib import Path
+
+def search_files_impl(pattern, directory=".", file_types=None, case_sensitive=False, regex=False):
+    try:
+        # Basic path validation
+        if not directory or '..' in directory:
+            return {{
+                "success": False,
+                "error": "Invalid directory path",
+                "matches": [],
+                "pattern": pattern,
+                "directory": directory
+            }}
+        
+        # Check if directory exists
+        if not os.path.exists(directory):
+            return {{
+                "success": False,
+                "error": "Directory not found",
+                "matches": [],
+                "pattern": pattern,
+                "directory": directory
+            }}
+        
+        if not os.path.isdir(directory):
+            return {{
+                "success": False,
+                "error": "Path is not a directory", 
+                "matches": [],
+                "pattern": pattern,
+                "directory": directory
+            }}
+        
+        matches = []
+        search_flags = 0 if case_sensitive else re.IGNORECASE
+        
+        # Compile regex pattern if needed
+        if regex:
+            try:
+                compiled_pattern = re.compile(pattern, search_flags)
+            except re.error as e:
+                return {{
+                    "success": False,
+                    "error": f"Invalid regex pattern: {{str(e)}}",
+                    "matches": [],
+                    "pattern": pattern,
+                    "directory": directory
+                }}
+        
+        # Walk through directory
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                file_path = os.path.join(root, file)
+                relative_path = os.path.relpath(file_path, directory)
+                
+                # Filter by file types if specified
+                if file_types:
+                    file_extension = Path(file).suffix.lower()
+                    if file_extension not in [ext.lower() for ext in file_types]:
+                        continue
+                
+                # Check if file is text-based
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except (UnicodeDecodeError, PermissionError):
+                    # Skip binary files or files we can't read
+                    continue
+                except Exception:
+                    # Skip files with other errors
+                    continue
+                
+                # Search for pattern in file content
+                lines = content.split('\\n')
+                for line_num, line in enumerate(lines, 1):
+                    found = False
+                    if regex:
+                        if compiled_pattern.search(line):
+                            found = True
+                    else:
+                        search_line = line if case_sensitive else line.lower()
+                        search_pattern = pattern if case_sensitive else pattern.lower()
+                        if search_pattern in search_line:
+                            found = True
+                    
+                    if found:
+                        matches.append({{
+                            "file": relative_path,
+                            "line": line_num,
+                            "content": line.strip()
+                        }})
+        
+        return {{
+            "success": True,
+            "matches": matches,
+            "pattern": pattern,
+            "directory": directory,
+            "error": None
+        }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "matches": [],
+            "pattern": pattern,
+            "directory": directory
+        }}
+
+# Execute the file search
+result = search_files_impl("{pattern}", "{directory}", {file_types}, {case_sensitive}, {regex})
+print(f"FILE_SEARCH_RESULT: {{result}}")
+"""
+        
+        try:
+            response = await self.execute_python([code])
+            # Extract result from printed output
+            import re
+            output = response.get("printed_output", "")
+            match = re.search(r"FILE_SEARCH_RESULT: (.+)", output, re.DOTALL)
+            if match:
+                import ast
+                result = ast.literal_eval(match.group(1))
+                return result
+            else:
+                return {
+                    "success": False,
+                    "error": "Could not parse file search result",
+                    "matches": [],
+                    "pattern": pattern,
+                    "directory": directory
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing file search: {str(e)}",
+                "matches": [],
+                "pattern": pattern,
+                "directory": directory
+            } 

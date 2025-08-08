@@ -189,6 +189,35 @@ New York, Paris, and San Francisco
 """)
 ```
 
+### Using the Bash tool (updated API)
+
+The bash tool now accepts a single command string and optional working directory:
+
+```python
+# Good: single command string
+# bash(command="ls -la")
+# bash(command="npm test", absolute_workdir="/abs/path/to/project")
+```
+
+Prefer specialized tools for file operations and search:
+- Use `read_file`, `write_file`, `update_file` for file manipulation (sandboxed)
+- Use `glob` for file pattern matching (sandboxed)
+- Use `grep` for content search (sandboxed)
+
+### File tools (sandboxed)
+
+File tools route through the provider (Seatbelt/Modal), keeping operations sandboxed:
+
+```python
+# read_file(file_path="/abs/path/to/README.md", start_line=1, max_lines=100)
+# write_file(file_path="/abs/path/to/notes.txt", content="Hello", create_dirs=True)
+# update_file(file_path="/abs/path/to/app.py", old_content="foo()", new_content="bar()", expected_matches=1)
+# glob(pattern="**/*.py", absolute_path="/abs/path/to/repo")
+# grep(pattern="TODO", absolute_path="/abs/path/to/repo", output_mode="files_with_matches")
+```
+
+These tools integrate with universal tool control hooks, enabling approval flows (e.g., display diffs for `write_file`/`update_file`).
+
 ### Base64 Encoding/Decoding
 
 By default, TinyCodeAgent blocks code that uses base64 encoding/decoding as a security measure. 

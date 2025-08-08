@@ -379,3 +379,94 @@ class CodeExecutionProvider(ABC):
             return error_message
         else:
             return response['stdout']
+    
+    # File operation methods for sandbox-constrained file manipulation
+    @abstractmethod
+    async def read_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
+        """
+        Read file within sandbox boundaries.
+        
+        Args:
+            file_path: Path to the file
+            start_line: Starting line number (1-based)
+            max_lines: Maximum lines to read
+            encoding: File encoding
+            
+        Returns:
+            {
+                "success": bool,
+                "content": str | None,
+                "path": str,
+                "size": int,
+                "error": str | None
+            }
+        """
+        pass
+    
+    @abstractmethod 
+    async def write_file(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
+        """
+        Write file within sandbox boundaries.
+        
+        Args:
+            file_path: Path to the target file
+            content: Content to write
+            create_dirs: Create parent directories if needed
+            encoding: File encoding
+            
+        Returns:
+            {
+                "success": bool,
+                "path": str,
+                "bytes_written": int,
+                "operation": str,
+                "error": str | None
+            }
+        """
+        pass
+    
+    @abstractmethod
+    async def update_file(self, file_path: str, old_content: str, new_content: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update file content with exact string replacement.
+        
+        Args:
+            file_path: Path to the file
+            old_content: Exact content to replace
+            new_content: Replacement content
+            expected_matches: Expected number of matches
+            
+        Returns:
+            {
+                "success": bool,
+                "path": str,
+                "changes_made": bool,
+                "old_content": str,
+                "new_content": str,
+                "bytes_written": int,
+                "error": str | None
+            }
+        """
+        pass
+    
+
+        """
+        Search files within sandbox boundaries.
+        
+        Args:
+            pattern: Search pattern
+            directory: Directory to search
+            file_types: File extensions to include
+            case_sensitive: Case-sensitive search
+            regex: Treat pattern as regex
+            
+        Returns:
+            {
+                "success": bool,
+                "matches": List[Dict[str, Any]],
+                "pattern": str,
+                "directory": str,
+                "error": str | None
+            }
+        """
+        pass

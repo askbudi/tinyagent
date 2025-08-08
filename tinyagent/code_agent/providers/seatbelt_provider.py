@@ -1062,4 +1062,343 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
                     self.logger.debug("Removed temporary seatbelt profile: %s", self.seatbelt_profile_path)
             except Exception as e:
                 if self.logger:
-                    self.logger.warning("Failed to remove temporary seatbelt profile: %s", str(e)) 
+                    self.logger.warning("Failed to remove temporary seatbelt profile: %s", str(e))
+
+    async def read_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
+        """Read a file using sandbox-constrained execution."""
+        start_line = kwargs.get('start_line', 1)
+        max_lines = kwargs.get('max_lines')
+        encoding = kwargs.get('encoding', 'utf-8')
+        
+        code = f"""
+import os
+import mimetypes
+
+file_path = {repr(file_path)}
+start_line = {start_line}
+max_lines = {max_lines}
+encoding = {repr(encoding)}
+
+try:
+    # Check if file exists
+    if not os.path.exists(file_path):
+        result = {{"success": False, "error": f"File not found: {{file_path}}"}}
+    elif os.path.isdir(file_path):
+        result = {{"success": False, "error": f"Path is a directory, not a file: {{file_path}}"}}
+    else:
+        # Check if file is binary
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if mime_type and not mime_type.startswith('text/'):
+            with open(file_path, 'rb') as f:
+                sample = f.read(1024)
+                if b'\\x00' in sample:
+                    result = {{"success": False, "error": f"Cannot read binary file: {{file_path}}"}}
+                else:
+                    # Might be text despite mime type
+                    pass
+        
+        if 'result' not in locals():
+            # Read the file
+            with open(file_path, 'r', encoding=encoding) as f:
+                lines = f.readlines()
+            
+            # Apply line range
+            if start_line > 1:
+                lines = lines[start_line-1:]
+            if max_lines:
+                lines = lines[:max_lines]
+            
+            content = ''.join(lines)
+            file_size = os.path.getsize(file_path)
+            
+            result = {{
+                "success": True,
+                "content": content,
+                "file_path": file_path,
+                "file_size": file_size,
+                "lines_read": len(lines),
+                "total_lines": len(open(file_path, 'r', encoding=encoding).readlines())
+            }}
+            
+except Exception as e:
+    result = {{"success": False, "error": str(e)}}
+
+print("RESULT:", result)
+"""
+        
+        try:
+            result = await self.execute_python([code])
+            if self.log_manager:
+                self.log_manager.get_logger('tinyagent.code_agent.providers.seatbelt_provider').debug(f"SeatbeltProvider.read_file raw result: {result}")
+            
+            if result.get("success"):
+                output_lines = result.get("printed_output", "").strip().split('\n')
+                for line in output_lines:
+                    if line.startswith("RESULT:"):
+                        import ast
+                        return ast.literal_eval(line[8:])
+                return {"success": False, "error": "Failed to parse file read result"}
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+        except Exception as e:
+            if self.log_manager:
+                self.log_manager.get_logger('tinyagent.code_agent.providers.seatbelt_provider').debug(f"SeatbeltProvider.read_file exception: {e}", exc_info=True)
+            return {"success": False, "error": f"Execution error: {str(e)}"}
+
+    async def write_file(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
+        """Write content to a file using sandbox-constrained execution."""
+        create_dirs = kwargs.get('create_dirs', True)
+        encoding = kwargs.get('encoding', 'utf-8')
+        
+        code = f"""
+import os
+
+file_path = {repr(file_path)}
+content = {repr(content)}
+create_dirs = {create_dirs}
+encoding = {repr(encoding)}
+
+try:
+    # Create directories if needed
+    if create_dirs:
+        dir_path = os.path.dirname(file_path)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+    
+    # Write the file
+    with open(file_path, 'w', encoding=encoding) as f:
+        f.write(content)
+    
+    file_size = os.path.getsize(file_path)
+    
+    result = {{
+        "success": True,
+        "file_path": file_path,
+        "bytes_written": len(content.encode(encoding)),
+        "file_size": file_size
+    }}
+    
+except Exception as e:
+    result = {{"success": False, "error": str(e)}}
+
+print("RESULT:", result)
+"""
+        
+        try:
+            result = await self.execute_python([code])
+            if self.log_manager:
+                self.log_manager.get_logger('tinyagent.code_agent.providers.seatbelt_provider').debug(f"SeatbeltProvider.write_file raw result: {result}")
+            
+            if result.get("success"):
+                output_lines = result.get("printed_output", "").strip().split('\n')
+                for line in output_lines:
+                    if line.startswith("RESULT:"):
+                        import ast
+                        return ast.literal_eval(line[8:])
+                return {"success": False, "error": "Failed to parse file write result"}
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+        except Exception as e:
+            if self.log_manager:
+                self.log_manager.get_logger('tinyagent.code_agent.providers.seatbelt_provider').debug(f"SeatbeltProvider.write_file exception: {e}", exc_info=True)
+            return {"success": False, "error": f"Execution error: {str(e)}"}
+
+    async def update_file(self, file_path: str, old_content: str, new_content: str, **kwargs) -> Dict[str, Any]:
+        """Update specific content in a file using exact string matching."""
+        expected_matches = kwargs.get('expected_matches', 1)
+        
+        code = f"""
+import os
+
+file_path = {repr(file_path)}
+old_content = {repr(old_content)}
+new_content = {repr(new_content)}
+expected_matches = {expected_matches}
+
+try:
+    # Check if file exists
+    if not os.path.exists(file_path):
+        result = {{"success": False, "error": f"File not found: {{file_path}}"}}
+    elif os.path.isdir(file_path):
+        result = {{"success": False, "error": f"Path is a directory, not a file: {{file_path}}"}}
+    else:
+        # Read current content
+        with open(file_path, 'r', encoding='utf-8') as f:
+            current_content = f.read()
+        
+        # Count matches
+        match_count = current_content.count(old_content)
+        
+        if match_count == 0:
+            result = {{"success": False, "error": f"Old content not found in file: {{file_path}}"}}
+        elif expected_matches > 0 and match_count != expected_matches:
+            result = {{"success": False, "error": f"Expected {{expected_matches}} matches but found {{match_count}} in file: {{file_path}}"}}
+        else:
+            # Perform replacement
+            updated_content = current_content.replace(old_content, new_content)
+            
+            # Write back to file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(updated_content)
+            
+            file_size = os.path.getsize(file_path)
+            
+            result = {{
+                "success": True,
+                "file_path": file_path,
+                "matches_replaced": match_count,
+                "file_size": file_size
+            }}
+            
+except Exception as e:
+    result = {{"success": False, "error": str(e)}}
+
+print("RESULT:", result)
+"""
+        
+        try:
+            result = await self.execute_python([code])
+            if result.get("success"):
+                output_lines = result.get("printed_output", "").strip().split('\n')
+                for line in output_lines:
+                    if line.startswith("RESULT:"):
+                        import ast
+                        return ast.literal_eval(line[8:])
+                return {"success": False, "error": "Failed to parse file update result"}
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+        except Exception as e:
+            return {"success": False, "error": f"Execution error: {str(e)}"}
+
+
+        """Search for files and content using pattern matching."""
+        file_types = kwargs.get('file_types', [])
+        case_sensitive = kwargs.get('case_sensitive', False)
+        regex = kwargs.get('regex', False)
+        
+        code = f"""
+import os
+import re
+import fnmatch
+
+pattern = {repr(pattern)}
+directory = {repr(directory)}
+file_types = {file_types}
+case_sensitive = {case_sensitive}
+use_regex = {regex}
+
+try:
+    if not os.path.exists(directory):
+        result = {{"success": False, "error": f"Directory not found: {{directory}}"}}
+    elif not os.path.isdir(directory):
+        result = {{"success": False, "error": f"Path is not a directory: {{directory}}"}}
+    else:
+        matches = []
+        
+        # Compile regex pattern if needed
+        if use_regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                regex_pattern = re.compile(pattern, flags)
+            except re.error as e:
+                result = {{"success": False, "error": f"Invalid regex pattern: {{str(e)}}"}}
+        
+        if 'result' not in locals():
+            # Walk through directory
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(file_path, directory)
+                    
+                    # Filter by file types if specified
+                    if file_types:
+                        file_ext = os.path.splitext(file)[1].lower()
+                        if file_ext not in [f".{{ext.lower()}}" for ext in file_types]:
+                            continue
+                    
+                    try:
+                        # Check if file is text (avoid binary files)
+                        with open(file_path, 'rb') as f:
+                            sample = f.read(1024)
+                            if b'\\x00' in sample:
+                                continue  # Skip binary files
+                        
+                        # Read and search file content
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        if use_regex:
+                            if regex_pattern.search(content):
+                                matches.append({{
+                                    "file_path": relative_path,
+                                    "full_path": file_path,
+                                    "match_type": "content"
+                                }})
+                        else:
+                            search_content = content if case_sensitive else content.lower()
+                            search_pattern = pattern if case_sensitive else pattern.lower()
+                            
+                            if search_pattern in search_content:
+                                matches.append({{
+                                    "file_path": relative_path,
+                                    "full_path": file_path,
+                                    "match_type": "content"
+                                }})
+                        
+                        # Also check filename matching
+                        search_filename = file if case_sensitive else file.lower()
+                        filename_pattern = pattern if case_sensitive else pattern.lower()
+                        
+                        if use_regex:
+                            if regex_pattern.search(file):
+                                matches.append({{
+                                    "file_path": relative_path,
+                                    "full_path": file_path,
+                                    "match_type": "filename"
+                                }})
+                        else:
+                            if fnmatch.fnmatch(search_filename, f"*{{filename_pattern}}*"):
+                                matches.append({{
+                                    "file_path": relative_path,
+                                    "full_path": file_path,
+                                    "match_type": "filename"
+                                }})
+                    
+                    except (UnicodeDecodeError, PermissionError):
+                        continue  # Skip files we can't read
+            
+            # Remove duplicates (same file matched by both content and filename)
+            unique_matches = []
+            seen_paths = set()
+            for match in matches:
+                if match["file_path"] not in seen_paths:
+                    unique_matches.append(match)
+                    seen_paths.add(match["file_path"])
+            
+            result = {{
+                "success": True,
+                "matches": unique_matches,
+                "total_matches": len(unique_matches),
+                "search_directory": directory,
+                "pattern": pattern
+            }}
+            
+except Exception as e:
+    result = {{"success": False, "error": str(e)}}
+
+print("RESULT:", result)
+"""
+        
+        try:
+            result = await self.execute_python([code])
+            if result.get("success"):
+                output_lines = result.get("printed_output", "").strip().split('\n')
+                for line in output_lines:
+                    if line.startswith("RESULT:"):
+                        import ast
+                        return ast.literal_eval(line[8:])
+                return {"success": False, "error": "Failed to parse file search result"}
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+        except Exception as e:
+            return {"success": False, "error": f"Execution error: {str(e)}"} 

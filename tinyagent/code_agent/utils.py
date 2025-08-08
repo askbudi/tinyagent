@@ -2,12 +2,13 @@ import sys
 import cloudpickle
 import subprocess
 import os
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from .safety import validate_code_safety, function_safety_context
 import shlex
 import yaml
 from pathlib import Path
 import re
+import platform
 
 
 def clean_response(resp: Dict[str, Any]) -> Dict[str, Any]:
@@ -452,3 +453,447 @@ def _run_python(
         "updated_globals": updated_globals,
         "updated_locals": updated_locals
     } 
+
+def detect_system_capabilities() -> Dict[str, Any]:
+    """Detect runtime system capabilities for dynamic bash tool enhancement.
+    
+    Returns:
+        Dictionary containing:
+        - os_info: Basic OS information
+        - modern_tools: Available modern CLI tools
+        - find_capabilities: BSD vs GNU find detection
+        - shells: Available shells
+        - preferred_alternatives: Mapping of commands to better alternatives
+    """
+    capabilities = {
+        'os_info': {
+            'system': platform.system(),
+            'release': platform.release(),
+            'machine': platform.machine(),
+            'is_macos': platform.system() == 'Darwin',
+            'is_linux': platform.system() == 'Linux',
+            'is_windows': platform.system() == 'Windows'
+        },
+        'modern_tools': {},
+        'find_capabilities': {
+            'supports_maxdepth': False,
+            'type': 'unknown'
+        },
+        'shells': [],
+        'preferred_alternatives': {}
+    }
+    
+    # Detect modern CLI tools
+    modern_tools_to_check = {
+        'rg': {'purpose': 'faster grep', 'alternative_to': 'grep'},
+        'fd': {'purpose': 'faster find', 'alternative_to': 'find'},
+        'bat': {'purpose': 'better cat with syntax highlighting', 'alternative_to': 'cat'},
+        'exa': {'purpose': 'better ls with git integration', 'alternative_to': 'ls'},
+        'tree': {'purpose': 'directory tree visualization', 'alternative_to': 'ls -R'},
+        'jq': {'purpose': 'JSON processing', 'alternative_to': 'grep/sed'},
+        'fzf': {'purpose': 'fuzzy finder', 'alternative_to': 'grep'},
+        'ag': {'purpose': 'fast grep', 'alternative_to': 'grep'}
+    }
+    
+    for tool, info in modern_tools_to_check.items():
+        try:
+            result = subprocess.run(['which', tool], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                capabilities['modern_tools'][tool] = {
+                    'available': True,
+                    'path': result.stdout.strip(),
+                    **info
+                }
+                # Build preferred alternatives mapping
+                alt_to = info.get('alternative_to')
+                if alt_to:
+                    if alt_to not in capabilities['preferred_alternatives']:
+                        capabilities['preferred_alternatives'][alt_to] = []
+                    capabilities['preferred_alternatives'][alt_to].append(tool)
+            else:
+                capabilities['modern_tools'][tool] = {'available': False, **info}
+        except:
+            capabilities['modern_tools'][tool] = {'available': False, **info}
+    
+    # Check find capabilities (BSD vs GNU)
+    try:
+        # Test if find supports -maxdepth (GNU feature)
+        test_result = subprocess.run(
+            ['find', '.', '-maxdepth', '0', '-type', 'd'],
+            capture_output=True, text=True, timeout=3, cwd='/tmp'
+        )
+        if test_result.returncode == 0:
+            capabilities['find_capabilities']['supports_maxdepth'] = True
+            capabilities['find_capabilities']['type'] = 'GNU'
+        else:
+            capabilities['find_capabilities']['type'] = 'BSD'
+    except:
+        # Fallback detection based on OS
+        if capabilities['os_info']['is_macos']:
+            capabilities['find_capabilities']['type'] = 'BSD'
+        elif capabilities['os_info']['is_linux']:
+            capabilities['find_capabilities']['supports_maxdepth'] = True
+            capabilities['find_capabilities']['type'] = 'GNU'
+    
+    # Check available shells
+    common_shells = ['bash', 'zsh', 'sh', 'fish', 'tcsh', 'dash']
+    for shell in common_shells:
+        try:
+            result = subprocess.run(['which', shell], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                capabilities['shells'].append({
+                    'name': shell,
+                    'path': result.stdout.strip()
+                })
+        except:
+            pass
+    
+    return capabilities
+
+
+def get_system_info():
+    """Get essential system information for bash command execution with platform-specific guidance"""
+    info = []
+    
+    # OS information
+    os_name = platform.system()
+    info.append(f"OS: {os_name}")
+    info.append(f"OS Version: {platform.release()}")
+    info.append(f"Architecture: {platform.machine()}")
+    
+    # Shell information
+    try:
+        shell = os.environ.get('SHELL', 'unknown')
+        info.append(f"Default Shell: {shell}")
+    except:
+        info.append("Default Shell: unknown")
+    
+    # Path separator
+    info.append(f"Path Separator: '{os.path.sep}'")
+    
+    # Check if common shells are available
+    common_shells = ['bash', 'zsh', 'sh', 'fish', 'tcsh']
+    available_shells = []
+    for shell in common_shells:
+        try:
+            result = subprocess.run(['which', shell], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                available_shells.append(shell)
+        except:
+            pass
+    if available_shells:
+        info.append(f"Available Shells: {', '.join(available_shells)}")
+    
+    # Add platform-specific command guidance
+    if os_name == "Darwin":  # macOS
+        info.append("PLATFORM NOTES: macOS/BSD - find lacks -maxdepth, use: ls -1d */ | head -20 for dirs")
+        info.append("SIMPLE COMMANDS: ls -la (list), mkdir -p (create dirs), ps aux (processes)")
+    elif os_name == "Linux":
+        info.append("PLATFORM NOTES: Linux/GNU - find supports -maxdepth, ls --color available")
+        info.append("SIMPLE COMMANDS: ls -la --color (list), find . -maxdepth 1 -type d (dirs)")
+    elif os_name == "Windows":
+        info.append("PLATFORM NOTES: Windows - prefer PowerShell cmdlets or WSL for Unix commands")
+        info.append("SIMPLE COMMANDS: dir (list), mkdir (create dirs), tasklist (processes)")
+    
+    return ' | '.join(info)
+
+
+def get_command_alternatives(capabilities: Dict[str, Any]) -> Dict[str, str]:
+    """Generate command alternative suggestions based on detected capabilities."""
+    alternatives = {
+        # Basic commands with platform-safe alternatives
+        'find': 'Use glob_tool() instead for file patterns',
+        'grep': 'Use grep_tool() for content search',
+        'cat': 'Use read_file() for file reading',
+        'head': 'Use read_file() with limit parameter',
+        'tail': 'Use read_file() with offset parameter',
+    }
+    
+    # Add modern tool alternatives if available
+    modern_tools = capabilities.get('modern_tools', {})
+    preferred_alts = capabilities.get('preferred_alternatives', {})
+    
+    for old_cmd, new_tools in preferred_alts.items():
+        available_tools = [tool for tool in new_tools if modern_tools.get(tool, {}).get('available', False)]
+        if available_tools:
+            tool_suggestions = []
+            for tool in available_tools:
+                purpose = modern_tools[tool].get('purpose', '')
+                tool_suggestions.append(f"{tool} ({purpose})")
+            alternatives[old_cmd] = f"Try: {' or '.join(tool_suggestions)}"
+    
+    return alternatives
+
+
+def get_helpful_error_tip(command: str, stderr: str, capabilities: Optional[Dict[str, Any]] = None) -> str:
+    """Generate helpful error tips based on command failure patterns and detected capabilities."""
+    try:
+        if capabilities is None:
+            capabilities = detect_system_capabilities()
+            
+        os_info = capabilities['os_info']
+        find_caps = capabilities['find_capabilities']
+        modern_tools = capabilities['modern_tools']
+        alternatives = get_command_alternatives(capabilities)
+        
+        tips = []
+        
+        # Enhanced system context with actionable info
+        os_type = "macOS (BSD)" if os_info['is_macos'] else "Linux (GNU)" if os_info['is_linux'] else "Windows"
+        tips.append(f"🔍 CONTEXT: Running on {os_type} | Platform-specific help below")
+        
+        # Enhanced pattern detection with specific solutions
+        command_lower = command.lower()
+        stderr_lower = stderr.lower()
+        
+        # Find command issues
+        if "find" in command:
+            if "-maxdepth" in command and not find_caps['supports_maxdepth']:
+                tips.append("❌ Your system's find doesn't support -maxdepth (BSD find)")
+                tips.append("✅ Try: ls -1d */ | head -20 (for directories)")
+                if modern_tools.get('fd', {}).get('available'):
+                    tips.append(f"✅ Or use fd: {modern_tools['fd']['path']}")
+            elif any(complex_flag in command for complex_flag in ['-exec', '-print0', '-delete']):
+                tips.append("❌ Complex find operations are platform-dependent")
+                tips.append("✅ Use glob_tool() for file patterns or simpler ls commands")
+            else:
+                tips.append("❌ find commands often fail across platforms")
+                tips.append(f"✅ {alternatives.get('find', 'Use glob_tool() instead')}")
+        
+        # ls command issues  
+        elif "ls" in command:
+            if "--color" in command and os_info['is_macos']:
+                tips.append("❌ macOS ls doesn't support --color (GNU option)")
+                tips.append("✅ Try: ls -la (or ls -G for color on macOS)")
+            elif any(gnu_flag in command for gnu_flag in ['--time-style', '--group-directories-first']):
+                tips.append("❌ GNU ls options not available on BSD/macOS")
+                tips.append("✅ Use basic ls -la for cross-platform compatibility")
+                if modern_tools.get('exa', {}).get('available'):
+                    tips.append(f"✅ Or try exa: {modern_tools['exa']['path']} -la")
+        
+        # grep command issues
+        elif "grep" in command:
+            if "-r" in command or "--recursive" in command:
+                tips.append("❌ Avoid bash grep for recursive file searches")
+                tips.append("✅ Use grep_tool(pattern='...', output_mode='content') instead")
+                if modern_tools.get('rg', {}).get('available'):
+                    tips.append(f"✅ Or use ripgrep: {modern_tools['rg']['path']} 'pattern'")
+            elif any(pattern in stderr_lower for pattern in ['invalid option', 'unrecognized option']):
+                tips.append("❌ grep option compatibility varies across systems")
+                tips.append("✅ Use basic grep patterns or grep_tool() for consistency")
+        
+        # File reading commands
+        elif any(cmd in command for cmd in ['cat', 'head', 'tail', 'less', 'more']):
+            file_cmd = next(cmd for cmd in ['cat', 'head', 'tail', 'less', 'more'] if cmd in command)
+            tips.append(f"❌ Use read_file() instead of {file_cmd} for better error handling")
+            if file_cmd == 'head':
+                tips.append("✅ read_file(path, limit=N) for first N lines")
+            elif file_cmd == 'tail':
+                tips.append("✅ read_file(path, offset=-N) for last N lines") 
+            else:
+                tips.append("✅ read_file(path) for full file content")
+            
+            if modern_tools.get('bat', {}).get('available') and file_cmd == 'cat':
+                tips.append(f"✅ Or use bat for syntax highlighting: {modern_tools['bat']['path']}")
+        
+        # Permission and sandbox errors
+        elif any(perm_error in stderr_lower for perm_error in ['permission denied', 'operation not permitted', 'not allowed']):
+            tips.append("❌ Permission/sandbox restriction detected")
+            tips.append("✅ Try alternative approach with specialized tools")
+            tips.append("✅ Check if you need different working directory")
+        
+        # Command not found errors
+        elif "command not found" in stderr_lower or "not found" in stderr_lower:
+            missing_cmd = None
+            # Try to extract the missing command
+            if "command not found" in stderr_lower:
+                parts = stderr_lower.split("command not found")
+                if parts:
+                    missing_cmd = parts[0].strip().split()[-1] if parts[0].strip() else None
+            
+            tips.append("❌ Command not available on this system")
+            if missing_cmd and missing_cmd in alternatives:
+                tips.append(f"✅ {alternatives[missing_cmd]}")
+            tips.append("✅ Use specialized tools (read_file, glob_tool, grep_tool)")
+        
+        # Network/connectivity issues
+        elif any(net_error in stderr_lower for net_error in ['connection', 'network', 'timeout', 'unreachable']):
+            tips.append("❌ Network connectivity issue detected")
+            tips.append("✅ Check network connection and retry")
+            tips.append("✅ Consider using local alternatives if available")
+        
+        # File/directory not found
+        elif any(not_found in stderr_lower for not_found in ['no such file', 'cannot access', 'does not exist']):
+            tips.append("❌ File or directory not found")
+            tips.append("✅ Check file path and working directory")
+            tips.append("✅ Use ls -la to verify current directory contents")
+        
+        # Enhanced fallback with progressive complexity
+        if len(tips) <= 1:  # Only system info
+            tips.append("🎯 NEXT ACTIONS:")
+            tips.append("1. Try simpler command: ls -la, mkdir -p, ps aux")
+            tips.append("2. Use specialized tools: read_file(), glob_tool(), grep_tool()")
+            tips.append("3. Check command syntax for your platform")
+            
+            # Suggest available modern alternatives with clear benefits
+            available_modern = [name for name, info in modern_tools.items() if info.get('available')]
+            if available_modern:
+                high_value_tools = [t for t in available_modern if t in ['rg', 'fd', 'bat']]
+                if high_value_tools:
+                    tips.append(f"4. Try faster alternatives: {', '.join(high_value_tools)}")
+        
+        return " | ".join(tips)
+        
+    except Exception as e:
+        # Enhanced fallback that includes basic capability detection
+        try:
+            basic_info = get_system_info()
+            return f"System: {basic_info} | Error generating tips: {str(e)}"
+        except:
+            return f"Error generating tips: {str(e)}"
+
+
+def generate_dynamic_bash_description(capabilities: Optional[Dict[str, Any]] = None) -> str:
+    """Generate dynamic bash tool description based on detected system capabilities.
+    
+    Applies prompt engineering best practices:
+    - Clear hierarchy with specific examples
+    - Platform-specific guidance
+    - Action-oriented instructions
+    - Error prevention through steering
+    """
+    if capabilities is None:
+        capabilities = detect_system_capabilities()
+    
+    os_info = capabilities['os_info']
+    find_caps = capabilities['find_capabilities']
+    modern_tools = capabilities['modern_tools']
+    
+    # Base description with clear tool hierarchy
+    description = """Execute shell commands safely in provider sandbox.
+
+🚨 CRITICAL: USE SPECIALIZED TOOLS FIRST (they handle cross-platform issues automatically):
+• File operations: read_file(), write_file(), update_file() instead of cat/echo/>
+• File discovery: glob_tool(pattern="**/*.py") instead of find commands  
+• Content search: grep_tool(pattern="...", output_mode="content") instead of grep/rg
+• These tools are SAFER and FASTER than equivalent bash commands
+
+"""
+    
+    # Dynamic platform-specific quick reference
+    if os_info['is_macos']:
+        description += """🍎 YOUR SYSTEM: macOS (BSD commands)
+SAFE COMMANDS THAT WORK:
+• ls -la, ls -1d */  (directories)
+• mkdir -p, ps aux, df -h
+• git status, npm test, which node
+
+COMMANDS THAT FAIL ON YOUR SYSTEM:
+❌ find . -maxdepth 1  → ✅ ls -1d */ | head -20
+❌ ls --color         → ✅ ls -G  
+❌ sed -i ''          → ✅ Use update_file() instead
+
+"""
+    elif os_info['is_linux']:
+        description += """🐧 YOUR SYSTEM: Linux (GNU commands)
+SAFE COMMANDS THAT WORK:
+• ls -la --color, find . -maxdepth 1 -type d
+• mkdir -p, ps aux, df -h  
+• git status, npm test, which node
+
+ENHANCED OPTIONS AVAILABLE:
+✅ find . -maxdepth 1 -type d (GNU find supports this)
+✅ ls --color=auto (GNU ls supports this)
+✅ Advanced grep/sed options work
+
+"""
+    elif os_info['is_windows']:
+        description += """🪟 YOUR SYSTEM: Windows
+RECOMMENDED APPROACH:
+• Use PowerShell commands or WSL for Unix compatibility
+• Basic: dir, mkdir, tasklist
+• Consider: wsl bash for Unix commands
+
+"""
+    
+    # Modern tools with clear value proposition
+    available_modern = {name: info for name, info in modern_tools.items() if info.get('available', False)}
+    if available_modern:
+        description += "⚡ FASTER ALTERNATIVES DETECTED ON YOUR SYSTEM:\n"
+        priority_tools = {'rg': '10x faster than grep', 'fd': '5x faster than find', 'bat': 'syntax highlighting'}
+        
+        for tool in ['rg', 'fd', 'bat']:  # Show high-impact tools first
+            if tool in available_modern:
+                info = available_modern[tool]
+                benefit = priority_tools.get(tool, info.get('purpose', ''))
+                description += f"• {tool}: {benefit} at {info['path']}\n"
+        
+        # Show remaining tools
+        for tool, info in available_modern.items():
+            if tool not in ['rg', 'fd', 'bat']:
+                description += f"• {tool}: {info.get('purpose', '')} at {info['path']}\n"
+        description += "\n"
+    
+    # Tier-based command safety guide
+    description += """🎯 BASH COMMAND SAFETY GUIDE:
+
+TIER 1 - SAFE EVERYWHERE (use these freely):
+• Build: npm run build, pytest, cargo test, make install
+• Git: git status, git add, git commit, git log --oneline -10
+• System: ps aux, df -h, uname -a, whoami, which command
+• Directories: mkdir -p path/to/dir, ls -la
+
+TIER 2 - PLATFORM DIFFERENCES (check examples above):
+• find (BSD vs GNU differences)
+• ls with flags (--color works on Linux, -G on macOS)
+• sed -i (syntax varies)
+
+TIER 3 - AVOID IN BASH (use specialized tools):
+❌ Reading files: cat, head, tail, less, more
+❌ Writing files: echo >, cat >, tee
+❌ Searching: grep -r, find -name, locate
+❌ File operations: cp, mv, rm (for code files)
+
+"""
+    
+    # Quick error recovery guide
+    description += f"""🔧 WHEN COMMANDS FAIL:
+1. Check if you're on {'macOS (BSD)' if os_info['is_macos'] else 'Linux (GNU)' if os_info['is_linux'] else 'Windows'}
+2. Try simpler version: ls -la instead of ls --color
+3. Use specialized tool: read_file() instead of cat
+4. Look for error patterns: "not found" = tool not available"""
+    
+    if find_caps['type'] == 'BSD':
+        description += "\n5. On your system: Use ls -1d */ instead of find . -maxdepth 1"
+    
+    description += """
+
+📋 COMMON WORKFLOWS:
+
+Check project status:
+bash(command="git status && ls -la")
+bash(command="which node python pip")
+
+Run tests and builds:  
+bash(command="npm test")
+bash(command="python -m pytest tests/ -v")
+bash(command="cargo build --release")
+
+Process management:
+bash(command="ps aux | grep python")
+bash(command="kill -9 $(pgrep -f 'process_name')")
+
+System diagnostics:
+bash(command="df -h")  # Disk space
+bash(command="free -h")  # Memory (Linux)
+bash(command="top -l 1 -s 0 | head -10")  # Processes snapshot
+
+Arguments:
+• command (string): Shell command to execute
+• absolute_workdir (optional): Working directory  
+• timeout (optional): Max seconds (default: 60)
+
+Returns: {stdout: "...", stderr: "...", exit_code: 0}
+"""
+    
+    return description

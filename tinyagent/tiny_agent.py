@@ -36,11 +36,14 @@ DEFAULT_RETRY_CONFIG = {
         "litellm.APIConnectionError",
         "litellm.RateLimitError",
         "litellm.ServiceUnavailableError",
-        "litellm.APITimeoutError"
+        "litellm.APITimeoutError",
+        "litellm.BadRequestError"  # Include BadRequestError for tool validation issues
     ],
     # Rate limit specific configuration
     "rate_limit_backoff_min": 60,  # Minimum wait time for rate limit errors (60 seconds)
     "rate_limit_backoff_max": 90,  # Maximum wait time for rate limit errors (90 seconds)
+    # Tool validation error specific configuration
+    "tool_validation_max_retries": 2,  # Limited retries for tool validation errors
 }
 
 def load_template(path: str,key:str="system_prompt") -> str:
@@ -384,6 +387,7 @@ class TinyAgent:
         summary_config: Optional[Dict[str, Any]] = None,
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
+        enable_todo_write: bool = True,
     ):
         """
         Initialize the Tiny Agent.
@@ -414,6 +418,7 @@ class TinyAgent:
             parallel_tool_calls: Whether to enable parallel tool calls. If True, the agent will ask the model
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is True.
+            enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
                     """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
@@ -519,6 +524,9 @@ class TinyAgent:
         # Add a list to store custom tools (functions and classes)
         self.custom_tools: List[Dict[str, Any]] = []
         self.custom_tool_handlers: Dict[str, Any] = {}
+        
+        # Store tool enablement flags
+        self._todo_write_enabled = enable_todo_write
         # 1) User and session management
         self.user_id = user_id or self._generate_session_id()
         self.session_id = session_id or self._generate_session_id()
@@ -546,10 +554,24 @@ class TinyAgent:
         
         # register our usage‐merging hook
         self.add_callback(self._on_llm_end)
+        
+        # Add TodoWrite tool if enabled
+        if self._todo_write_enabled:
+            self._setup_todo_write_tool()
     
     def _generate_session_id(self) -> str:
         """Produce a unique session identifier."""
         return str(uuid.uuid4())
+
+    def _setup_todo_write_tool(self) -> None:
+        """Set up the TodoWrite tool for task management."""
+        try:
+            from tinyagent.tools.todo_write import todo_write
+            self.add_tool(todo_write)
+            self.logger.debug("TodoWrite tool enabled")
+        except ImportError as e:
+            self.logger.warning(f"Could not import TodoWrite tool: {e}")
+            self._todo_write_enabled = False
 
     def count_tokens(self, text: str) -> int:
             """Count tokens in a string using tiktoken."""
@@ -756,6 +778,43 @@ class TinyAgent:
                             
             except Exception as e:
                 self.logger.error(f"Error in callback for {event_name}: {str(e)} {traceback.format_exc()}")
+    
+    async def _run_tool_control_hooks(self, event_name: str, tool_name: str, tool_args: dict, tool_call) -> Optional[Dict[str, Any]]:
+        """
+        Run tool control hooks that can approve/deny/modify tool execution.
+        
+        Args:
+            event_name: "before_tool_execution" or "after_tool_execution"
+            tool_name: Name of the tool being executed
+            tool_args: Tool arguments
+            tool_call: Full tool call object
+            
+        Returns:
+            None to proceed, or Dict with control instructions:
+            {
+                "proceed": bool,
+                "alternative_response": str,
+                "modified_args": Dict[str, Any],
+                "modified_result": str
+            }
+        """
+        for callback in self.callbacks:
+            try:
+                # Check if callback is a hook that handles tool control
+                if hasattr(callback, event_name):
+                    hook_method = getattr(callback, event_name)
+                    if callable(hook_method):
+                        if asyncio.iscoroutinefunction(hook_method):
+                            result = await hook_method(event_name, self, tool_name=tool_name, tool_args=tool_args, tool_call=tool_call)
+                        else:
+                            result = hook_method(event_name, self, tool_name=tool_name, tool_args=tool_args, tool_call=tool_call)
+                        
+                        if result:
+                            return result
+            except Exception as e:
+                self.logger.error(f"Error in tool control hook for {event_name}: {str(e)}")
+        
+        return None
     
     async def connect_to_server(self, command: str, args: List[str], 
                                include_tools: Optional[List[str]] = None, 
@@ -1070,6 +1129,28 @@ class TinyAgent:
                         
                         await self._run_callbacks("tool_start", tool_call=tool_call)
 
+                        # Parse tool arguments first
+                        try:
+                            tool_args = json.loads(function_info.arguments)
+                        except json.JSONDecodeError:
+                            self.logger.error(f"Could not parse tool arguments: {function_info.arguments}")
+                            tool_args = {}
+
+                        # Run pre-execution hooks for tool control
+                        tool_control_result = await self._run_tool_control_hooks("before_tool_execution", tool_name, tool_args, tool_call)
+                        if tool_control_result and not tool_control_result.get("proceed", True):
+                            # Hook denied execution
+                            tool_result_content = tool_control_result.get("alternative_response", f"Tool execution cancelled: {tool_name}")
+                            tool_message = {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": tool_result_content,
+                                "created_at": int(time.time())
+                            }
+                            await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
+                            return tool_message
+
                         tool_result_content = ""
                         
                         # Create a tool message
@@ -1082,12 +1163,6 @@ class TinyAgent:
                         }
                         
                         try:
-                            # Parse tool arguments
-                            try:
-                                tool_args = json.loads(function_info.arguments)
-                            except json.JSONDecodeError:
-                                self.logger.error(f"Could not parse tool arguments: {function_info.arguments}")
-                                tool_args = {}
                             
                             # Handle control flow tools
                             if tool_name == "final_answer":
@@ -1136,6 +1211,11 @@ class TinyAgent:
                             self.logger.error(f"Unexpected error processing tool call {tool_call_id}: {str(e)}")
                             tool_result_content = f"Error processing tool call: {str(e)}"
                         finally:
+                            # Run post-execution hooks for tool control
+                            post_control_result = await self._run_tool_control_hooks("after_tool_execution", tool_name, {"result": tool_result_content}, tool_call)
+                            if post_control_result and "modified_result" in post_control_result:
+                                tool_result_content = post_control_result["modified_result"]
+                            
                             # Always add the tool message to ensure each tool call has a response
                             tool_message["content"] = tool_result_content
                             await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
@@ -1355,6 +1435,36 @@ class TinyAgent:
             
         return False
 
+    def _is_tool_validation_error(self, exception: Exception) -> bool:
+        """
+        Check if an exception is a tool call validation error that could be retried.
+        
+        Args:
+            exception: The exception to check
+            
+        Returns:
+            True if this is a tool validation error, False otherwise
+        """
+        if not exception:
+            return False
+        
+        error_message = str(exception).lower()
+        tool_validation_indicators = [
+            "tool call validation failed",
+            "parameters for tool",
+            "did not match schema",
+            "missing properties",
+            "tool_use_failed",
+            "invalid tool call",
+            "malformed tool call"
+        ]
+        
+        for indicator in tool_validation_indicators:
+            if indicator in error_message:
+                return True
+        
+        return False
+
     async def _litellm_with_retry(self, **kwargs) -> Any:
         """
         Execute litellm.acompletion with retry logic for handling transient errors.
@@ -1380,6 +1490,9 @@ class TinyAgent:
         rate_limit_backoff_min = self.retry_config.get("rate_limit_backoff_min", 60)  # 60 seconds
         rate_limit_backoff_max = self.retry_config.get("rate_limit_backoff_max", 90)  # 90 seconds
         
+        # Tool validation error specific configuration
+        tool_validation_max_retries = self.retry_config.get("tool_validation_max_retries", 2)  # Limited retries
+        
         attempt = 0
         last_exception = None
         
@@ -1393,14 +1506,22 @@ class TinyAgent:
             try:
                 # First attempt or retry
                 if attempt > 0:
-                    # Check if this is a rate limit error and handle it specially
+                    # Check error type and handle it specially
                     is_rate_limit_error = self._is_rate_limit_error(last_exception)
+                    is_tool_validation_error = self._is_tool_validation_error(last_exception)
                     
                     if is_rate_limit_error:
                         # Use longer backoff for rate limit errors (60-90 seconds)
                         backoff = rate_limit_backoff_min + (rate_limit_backoff_max - rate_limit_backoff_min) * random.random()
                         self.logger.warning(
                             f"Rate limit error detected. Retry attempt {attempt}/{max_retries} for LLM call after {backoff:.2f}s delay. "
+                            f"Previous error: {str(last_exception)}"
+                        )
+                    elif is_tool_validation_error:
+                        # Use short backoff for tool validation errors (1-2 seconds) 
+                        backoff = 1 + random.random()  # 1-2 seconds
+                        self.logger.warning(
+                            f"Tool validation error detected. Retry attempt {attempt}/{max_retries} for LLM call after {backoff:.2f}s delay. "
                             f"Previous error: {str(last_exception)}"
                         )
                     else:
@@ -1441,15 +1562,36 @@ class TinyAgent:
                         should_retry = True
                         break
                 
-                if not should_retry or attempt >= max_retries:
-                    # Either not a retryable error or we've exhausted retries
+                # Special handling for tool validation errors
+                is_tool_validation_error = self._is_tool_validation_error(e)
+                if is_tool_validation_error:
+                    # Tool validation errors should always be retryable (within their limit)
+                    should_retry = True
+                
+                if is_tool_validation_error and attempt >= tool_validation_max_retries:
+                    # We've exhausted tool validation retries
+                    self.logger.error(
+                        f"LLM call failed after {attempt} tool validation retry attempts. "
+                        f"Error: {str(e)}"
+                    )
+                    raise
+                
+                if not should_retry or (attempt >= max_retries and not is_tool_validation_error):
+                    # Either not a retryable error or we've exhausted general retries
+                    # (but allow tool validation errors to continue within their limit)
                     self.logger.error(
                         f"LLM call failed after {attempt} attempt(s). Error: {str(e)}"
                     )
                     raise
                 
                 # Log the error and continue to next retry attempt
-                error_type = "rate limit" if self._is_rate_limit_error(e) else "general"
+                if self._is_rate_limit_error(e):
+                    error_type = "rate limit"
+                elif self._is_tool_validation_error(e):
+                    error_type = "tool validation"
+                else:
+                    error_type = "general"
+                    
                 self.logger.warning(
                     f"LLM call failed (attempt {attempt+1}/{max_retries+1}) - {error_type} error: {str(e)}. Will retry."
                 )
@@ -1476,6 +1618,7 @@ class TinyAgent:
         persist_tool_configs: bool = False,
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
+        enable_todo_write: bool = True,
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
@@ -1506,6 +1649,7 @@ class TinyAgent:
             parallel_tool_calls: Whether to enable parallel tool calls. If True, the agent will ask the model
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is None (disabled).
+            enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
         """
         agent = cls(
             model=model,
@@ -1520,7 +1664,8 @@ class TinyAgent:
             storage=storage,
             persist_tool_configs=persist_tool_configs,
             retry_config=retry_config,
-            parallel_tool_calls=parallel_tool_calls
+            parallel_tool_calls=parallel_tool_calls,
+            enable_todo_write=enable_todo_write
         )
         if agent._needs_session_load:
             await agent.init_async()

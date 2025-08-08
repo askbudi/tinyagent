@@ -6,6 +6,7 @@ including specialized subagents for different use cases and the factory function
 to create custom subagents.
 
 Available tools:
+- TodoWrite: Task management and tracking tool for structured todo lists
 - Subagent framework: Context-aware subagent tools for parallel task execution
 - Pre-built subagents: Ready-to-use specialists for common tasks
 - Factory functions: Create custom subagents with specific configurations
@@ -38,6 +39,17 @@ from .subagent import (
     create_task_tool
 )
 
+# Import TodoWrite tool
+from .todo_write import (
+    todo_write,
+    TodoManager,
+    TodoItem,
+    get_todo_manager,
+    enable_todo_write_tool,
+    get_current_todos,
+    get_todo_summary
+)
+
 # Import pre-built subagents
 from .builders import (
     # Research subagents
@@ -61,6 +73,15 @@ from .builders import (
 )
 
 __all__ = [
+    # TodoWrite tool
+    "todo_write",
+    "TodoManager",
+    "TodoItem", 
+    "get_todo_manager",
+    "enable_todo_write_tool",
+    "get_current_todos",
+    "get_todo_summary",
+    
     # Configuration
     "SubagentConfig",
     

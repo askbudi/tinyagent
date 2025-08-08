@@ -20,7 +20,9 @@ from .providers.base import CodeExecutionProvider
 from .providers.modal_provider import ModalProvider
 from .providers.seatbelt_provider import SeatbeltProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
-from .utils import truncate_output, format_truncation_message
+from .utils import truncate_output, format_truncation_message, get_system_info, get_helpful_error_tip, detect_system_capabilities, generate_dynamic_bash_description
+from .tools.file_tools import read_file, write_file, update_file, glob_tool, grep_tool
+from .shell_validator import SimpleShellValidator, create_validator_from_provider_config
 import datetime
 
 
@@ -72,6 +74,8 @@ class TinyCodeAgent(TinyAgent):
         auto_git_checkpoint: bool = False,
         enable_python_tool: bool = True,
         enable_shell_tool: bool = True,
+        enable_file_tools: bool = True,
+        enable_todo_write: bool = True,
         **agent_kwargs
     ):
         """
@@ -100,6 +104,8 @@ class TinyCodeAgent(TinyAgent):
             auto_git_checkpoint: If True, automatically create git checkpoints after each successful shell command
             enable_python_tool: If True (default), enable the run_python tool for Python code execution
             enable_shell_tool: If True (default), enable the bash tool for shell command execution
+            enable_file_tools: If True (default), enable sandbox-constrained file tools (read_file, write_file, update_file, glob_tool, grep_tool)
+            enable_todo_write: If True (default), enable the TodoWrite tool for task management
             **agent_kwargs: Additional arguments passed to TinyAgent
             
         Provider Config Options:
@@ -144,6 +150,8 @@ class TinyCodeAgent(TinyAgent):
         # Store tool enablement flags
         self._python_tool_enabled = enable_python_tool
         self._shell_tool_enabled = enable_shell_tool
+        self._file_tools_enabled = enable_file_tools
+        self._todo_write_enabled = enable_todo_write
         
         # Set up truncation configuration with defaults
         default_truncation = {
@@ -155,6 +163,14 @@ class TinyCodeAgent(TinyAgent):
         
         # Create the code execution provider
         self.code_provider = self._create_provider(provider, self.provider_config)
+        
+        # Create shell validator with provider-specific configuration
+        provider_config_with_type = self.provider_config.copy()
+        provider_config_with_type['provider_type'] = provider
+        self.shell_validator = create_validator_from_provider_config(provider_config_with_type)
+        
+        # Detect system capabilities for enhanced bash tool functionality
+        self.system_capabilities = detect_system_capabilities()
         
         # Set user variables in the provider
         if self.user_variables:
@@ -174,6 +190,7 @@ class TinyCodeAgent(TinyAgent):
             system_prompt=self.system_prompt,
             logger=log_manager.get_logger('tinyagent.tiny_agent') if log_manager else None,
             summary_config=summary_config,
+            enable_todo_write=enable_todo_write,
             **agent_kwargs
         )
         
@@ -199,9 +216,26 @@ class TinyCodeAgent(TinyAgent):
             config_authorized_imports = config.get("authorized_imports", [])
             final_authorized_imports = list(set(self.authorized_imports + config_authorized_imports))
             
+            # Add file operation imports if file tools are enabled
+            if self._file_tools_enabled:
+                file_imports = ["os", "pathlib", "Path", "mimetypes", "re", "glob"]
+                final_authorized_imports.extend(file_imports)
+                final_authorized_imports = list(set(final_authorized_imports))  # Remove duplicates
+            
+            # Merge authorized_functions from both sources and add file operations if file tools are enabled
+            config_authorized_functions = config.get("authorized_functions", [])
+            final_authorized_functions = list(set(config_authorized_functions))
+            
+            # Add file operation functions if file tools are enabled
+            if self._file_tools_enabled:
+                file_functions = ["open", "Path.mkdir", "Path.exists", "Path.parent", "os.path.exists", "os.path.join", "os.listdir", "os.walk"]
+                final_authorized_functions.extend(file_functions)
+                final_authorized_functions = list(set(final_authorized_functions))  # Remove duplicates
+            
             final_config = config.copy()
             final_config["pip_packages"] = final_pip_packages
             final_config["authorized_imports"] = final_authorized_imports
+            final_config["authorized_functions"] = final_authorized_functions
             final_config["check_string_obfuscation"] = self.check_string_obfuscation
             
             # Shell safety configuration (default to False for Modal)
@@ -252,6 +286,32 @@ class TinyCodeAgent(TinyAgent):
             
             # Environment variables to make available in the sandbox
             environment_variables = config.get("environment_variables", {})
+            
+            # Merge authorized_imports from both sources and add file operations if file tools are enabled
+            config_authorized_imports = config.get("authorized_imports", [])
+            final_authorized_imports = list(set(config_authorized_imports))
+            
+            # Add file operation imports if file tools are enabled
+            if self._file_tools_enabled:
+                file_imports = ["os", "pathlib", "Path", "mimetypes", "re", "glob"]
+                final_authorized_imports.extend(file_imports)
+                final_authorized_imports = list(set(final_authorized_imports))  # Remove duplicates
+            
+            # Update filtered_config with authorized_imports
+            filtered_config["authorized_imports"] = final_authorized_imports
+            
+            # Merge authorized_functions from both sources and add file operations if file tools are enabled
+            config_authorized_functions = config.get("authorized_functions", [])
+            final_authorized_functions = list(set(config_authorized_functions))
+            
+            # Add file operation functions if file tools are enabled
+            if self._file_tools_enabled:
+                file_functions = ["open", "Path.mkdir", "Path.exists", "Path.parent", "os.path.exists", "os.path.join", "os.listdir", "os.walk"]
+                final_authorized_functions.extend(file_functions)
+                final_authorized_functions = list(set(final_authorized_functions))  # Remove duplicates
+            
+            # Update filtered_config with authorized_functions
+            filtered_config["authorized_functions"] = final_authorized_functions
             
             # Create the seatbelt provider
             return SeatbeltProvider(
@@ -306,6 +366,11 @@ class TinyCodeAgent(TinyAgent):
         if self.user_variables:
             variables_info = self._build_variables_prompt()
             base_prompt += "\n\n" + variables_info
+        
+        # Add environment information if bash tool is enabled
+        if self._shell_tool_enabled:
+            env_info = self._build_env_prompt()
+            base_prompt += "\n\n" + env_info
         
         return base_prompt
     
@@ -401,147 +466,24 @@ class TinyCodeAgent(TinyAgent):
         
         return "\n".join(code_tools_lines)
     
-    def _requires_shell_interpretation(self, command: List[str]) -> bool:
-        """
-        Check if command contains shell operators requiring shell interpretation.
+    def _build_env_prompt(self) -> str:
+        """Build the environment section for the system prompt."""
+        env_lines = ["<ENV>", ""]
         
-        Args:
-            command: List of command arguments
-            
-        Returns:
-            True if the command contains shell operators that need shell interpretation
-        """
-        # Check if command is already properly wrapped with sh -c
-        # This prevents double-wrapping which causes timeouts
-        if len(command) >= 3 and command[0] == 'sh' and command[1] == '-c':
-            return False  # Already properly formatted for shell interpretation
+        # Add current date
+        current_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        env_lines.append(f"Date: {current_date}")
         
-        # Check if command starts with other shell invocations
-        if len(command) > 0 and command[0] in ['bash', 'zsh', 'fish', 'dash']:
-            if len(command) >= 3 and command[1] == '-c':
-                return False  # Already shell-wrapped
+        # Add system information
+        system_info = get_system_info()
+        env_lines.append(f"SystemInfo: {system_info}")
         
-        # Common shell operators that require shell interpretation
-        shell_operators = {
-            '>', '>>', '<', '<<',  # Redirection operators
-            '|', '||', '&&',       # Pipe and logical operators  
-            ';', '&',              # Command separators
-            '$(', '`',             # Command substitution
-            '*', '?', '[',         # Glob patterns (when not quoted)
-            '~',                   # Home directory expansion
-            '{', '}',              # Brace expansion
-            'EOF'                  # Heredoc delimiter (common case)
-        }
+        env_lines.append("")
+        env_lines.append("</ENV>")
         
-        # Check each argument for shell operators
-        for arg in command:
-            # Direct operator match
-            if arg in shell_operators:
-                return True
-            # Check for operators within arguments
-            if any(op in arg for op in ['>', '<', '|', ';', '$(', '`', '&&', '||']):
-                return True
-            # Check for heredoc patterns
-            if arg.startswith("'EOF'") or arg.startswith('"EOF"') or arg == 'EOF':
-                return True
-        
-        return False
+        return "\n".join(env_lines)
     
-    def _detect_malformed_double_wrapping(self, command: List[str]) -> tuple[bool, List[str]]:
-        """
-        Detect and fix malformed double-wrapped shell commands.
-        
-        Args:
-            command: List of command arguments
-            
-        Returns:
-            Tuple of (is_malformed, corrected_command)
-        """
-        # Check if this is a malformed double-wrapped command like:
-        # ['sh', '-c', 'sh -c \'complex command\'']
-        if (len(command) == 3 and 
-            command[0] == 'sh' and 
-            command[1] == '-c' and 
-            command[2].startswith('sh -c ')):
-            
-            # Extract the inner command from the double wrapping
-            inner_command = command[2][6:]  # Remove 'sh -c ' prefix
-            
-            # Clean up the inner command by removing one layer of quoting
-            # This is a simplified cleanup - for production might need more robust parsing
-            if inner_command.startswith("'") and inner_command.endswith("'"):
-                inner_command = inner_command[1:-1]
-            elif inner_command.startswith('"') and inner_command.endswith('"'):
-                inner_command = inner_command[1:-1]
-            
-            corrected_command = ["sh", "-c", inner_command]
-            return True, corrected_command
-        
-        return False, command
-
-    def _validate_and_suggest_command(self, command: List[str]) -> tuple[bool, str, List[str]]:
-        """
-        Validate command format and provide helpful suggestions for LLM.
-        
-        Args:
-            command: List of command arguments
-            
-        Returns:
-            Tuple of (is_valid, error_message, suggested_command)
-        """
-        # First check for malformed double-wrapping
-        is_malformed, corrected_command = self._detect_malformed_double_wrapping(command)
-        if is_malformed:
-            error_msg = (
-                f"MALFORMED DOUBLE-WRAPPED COMMAND DETECTED:\n"
-                f"Your command has redundant shell wrapping that can cause timeouts.\n\n"
-                f"PROBLEMATIC COMMAND: {command}\n"
-                f"ISSUE: Double shell wrapping like 'sh -c \"sh -c ...\"' causes parsing errors.\n\n"
-                f"AUTOMATIC FIX APPLIED: Removed redundant outer shell wrapper.\n"
-                f"CORRECTED TO: {corrected_command}\n\n"
-                f"FOR FUTURE REFERENCE:\n"
-                f"- Use either raw commands or single shell wrapping, not both\n"
-                f"- For complex commands, use ['sh', '-c', 'command_string'] format\n"
-            )
-            return False, error_msg, corrected_command
-        
-        # Check if command needs shell interpretation
-        if not self._requires_shell_interpretation(command):
-            return True, "", command
-        
-        # Command needs shell interpretation - provide helpful guidance
-        original_cmd_str = " ".join(command)
-        
-        # Create a properly quoted shell command
-        try:
-            # Try to create a safe shell command
-            shell_cmd = " ".join(shlex.quote(arg) for arg in command)
-            suggested_command = ["sh", "-c", shell_cmd]
-            
-            error_msg = (
-                f"SHELL COMMAND FORMATTING ISSUE DETECTED:\n"
-                f"Your command contains shell operators that need shell interpretation.\n\n"
-                f"PROBLEMATIC COMMAND: {command}\n"
-                f"ISSUE: Shell operators like '>', '<<', '|', etc. are being treated as literal arguments.\n\n"
-                f"AUTOMATIC FIX APPLIED: The command has been automatically wrapped in 'sh -c' for proper shell interpretation.\n"
-                f"CONVERTED TO: {suggested_command}\n\n"
-                f"FOR FUTURE REFERENCE:\n"
-                f"- For simple commands like ['ls', '-la'], use the list format\n"
-                f"- For complex commands with redirection/pipes, they will be auto-wrapped\n"
-                f"- Original command string: '{original_cmd_str}'\n"
-            )
-            
-            return False, error_msg, suggested_command
-            
-        except Exception as e:
-            # Fallback if quoting fails
-            error_msg = (
-                f"COMMAND PARSING ERROR:\n"
-                f"Could not safely parse command with shell operators: {command}\n"
-                f"Error: {str(e)}\n\n"
-                f"SUGGESTION: For complex shell commands, try simpler alternatives or break into steps."
-            )
-            return False, error_msg, command
+    # Complex validation methods removed - now using SimpleShellValidator
     
     def _setup_code_execution_tools(self):
         """Set up the code execution tools using the code provider."""
@@ -624,159 +566,52 @@ class TinyCodeAgent(TinyAgent):
             self.add_tool(run_python)
         
         if self._shell_tool_enabled:
-            @tool(name="bash", description=dedent("""
-            This tool executes shell commands securely in a sandboxed environment.
-            Only a limited set of safe commands are allowed for security reasons.
-            Before executing the command, please follow these steps:
-              
-              1. Directory Verification:
-                 - If the command will create new directories or files, first use ls to verify the parent directory exists and is the correct location
-                 - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
-              
-              2. Command Execution:
-                 - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
-                 - Examples of proper quoting:
-                   - cd "/Users/name/My Documents" (correct)
-                   - cd /Users/name/My Documents (incorrect - will fail)
-                   - python "/path/with spaces/script.py" (correct)
-                   - python /path/with spaces/script.py (incorrect - will fail)
-                 - After ensuring proper quoting, execute the command.
-                 - Capture the output of the command.
-              
-              Usage notes:
-                - The command argument is required.
-                - You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested, batch your tool calls together for optimal performance.
-                - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).
-                - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
-                - If the output is too large, it will be truncated before being returned to you.
-                
-               - If you _still_ need to run `grep`, STOP. ALWAYS USE ripgrep at `rg` first, which all ${PRODUCT_NAME} users have pre-installed.
-              "  - When issuing multiple commands, use the ; or && operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).\n" +
-                - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.
-                  <good-example>
-                  pytest /foo/bar/tests
-                  </good-example>
-                  <bad-example>
-                  cd /foo/bar && pytest tests
-                  </bad-example>
+            # Generate dynamic bash tool description based on detected capabilities
+            bash_description = generate_dynamic_bash_description(self.system_capabilities)
             
-            ## IMPORTANT: Bash Tool Usage
-            
-            When using the bash tool, you MUST provide all required parameters:
-            
-            **Correct Usage:**
-            ```
-            bash(
-                command=["ls", "-la"],
-                absolute_workdir="/path/to/directory", 
-                description="List files in directory"
-            )
-            ```
-            
-            **For creating files with content, use these safe patterns:**
-            
-            1. **Simple file creation:**
-            ```
-            bash(
-                command=["touch", "filename.txt"],
-                absolute_workdir="/working/directory",
-                description="Create empty file"
-            )
-            ```
-            
-            2. **Write content using cat and heredoc:**
-            ```
-            bash(
-                command=["sh", "-c", "cat > filename.txt << 'EOF'\nYour content here\nEOF"],
-                absolute_workdir="/working/directory", 
-                description="Create file with content"
-            )
-            ```
-            
-            3. **Write content using echo:**
-            ```
-            bash(
-                command=["sh", "-c", "echo 'Your content' > filename.txt"],
-                absolute_workdir="/working/directory",
-                description="Write content to file"
-            )
-            ```
-            
-            **Never:**
-            - Call bash() without all required parameters
-            - Use complex nested quotes without testing
-            - Try to create large files in a single command (break into parts)
-
-            Args:
-                command: list[str]: The shell command to execute as a list of strings.  Example: ["ls", "-la"] or ["cat", "file.txt"]
-                    
-                absolute_workdir: str: could be presented workdir in the system prompt or one of the subdirectories of the workdir. This is the only allowed path, and accessing else will result in an error.
-                description: str: A clear, concise description of what this command does in 5-10 words.
-                timeout: int: Maximum execution time in seconds (default: 60).
-            Returns:
-                Dictionary with stdout, stderr, and exit_code from the command execution.
-                If the command is rejected for security reasons, stderr will contain the reason.
-                The stdout will include information about which working directory was used.
-            """))
-            async def bash(command: List[str], absolute_workdir: str, description: str, timeout: int = 60) -> str:
-                """Execute shell commands securely using the configured provider."""
+            @tool(name="bash", description=bash_description)
+            async def bash(command: str, absolute_workdir: Optional[str] = None, timeout: int = 60) -> str:
+                """Execute shell commands via provider with minimal mediation."""
                 try:
-                    
-                    # Use the default working directory if none is specified
                     effective_workdir = absolute_workdir or self.default_workdir
-                    print(f" {command} to {description}")
-                    
-                    # Validate and potentially auto-fix the command (Solution 1 + 3)
-                    is_valid, validation_message, processed_command = self._validate_and_suggest_command(command)
-                    
-                    # If command was auto-wrapped, log the helpful message for LLM learning
-                    if not is_valid and validation_message:
-                        # Print the educational message for LLM to learn from
-                        print(f"\n{'='*60}")
-                        print("COMMAND AUTO-CORRECTION APPLIED:")
-                        print(validation_message)
-                        print(f"{'='*60}\n")
-                    
-                    # Use the processed command (either original or auto-wrapped)
-                    final_command = processed_command
-                    
-                    # Verify that the working directory exists
+
+                    # Provider enforces safety. Run as bash -c "<command>" to preserve quoting/pipes.
+                    final_command: List[str] = ["bash", "-c", command]
+
+                    # Optional lightweight workdir checks
                     if effective_workdir and not os.path.exists(effective_workdir):
                         return json.dumps({
                             "stdout": "",
                             "stderr": f"Working directory does not exist: {effective_workdir}",
                             "exit_code": 1
                         })
-                    
                     if effective_workdir and not os.path.isdir(effective_workdir):
                         return json.dumps({
                             "stdout": "",
                             "stderr": f"Path is not a directory: {effective_workdir}",
                             "exit_code": 1
                         })
-                    
+
                     result = await self.code_provider.execute_shell(final_command, timeout, effective_workdir)
-                    
-                    # If auto-correction was applied, include the educational message in stderr
-                    # so the LLM can learn from it for future commands
-                    if not is_valid and validation_message:
-                        # Prepend the educational message to stderr (or create it if empty)
-                        educational_note = (
-                            f"\n--- COMMAND AUTO-CORRECTION INFO ---\n"
-                            f"{validation_message}\n"
-                            f"--- END AUTO-CORRECTION INFO ---\n\n"
-                        )
-                        current_stderr = result.get("stderr", "")
-                        result["stderr"] = educational_note + current_stderr
-                    
+
+                    # If provider reports an error or any stderr output, append helpful tip
+                    if result and (
+                        result.get("exit_code", 0) != 0 or (result.get("stderr") and result["stderr"].strip())
+                    ):
+                        try:
+                            helpful_tip = get_helpful_error_tip(command, result.get("stderr", ""), self.system_capabilities)
+                            result["stderr"] = (result.get("stderr", "") or "") + f"\nTip: {helpful_tip}"
+                        except Exception as e:
+                            if self.log_manager:
+                                self.log_manager.get_logger(__name__).debug(f"Error getting helpful tip: {e}")
+
                     # Apply truncation if enabled
-                    if self.truncation_config["enabled"] and "stdout" in result and result["stdout"]:
+                    if self.truncation_config["enabled"] and result.get("stdout"):
                         truncated_output, is_truncated, original_tokens, original_lines = truncate_output(
                             result["stdout"],
                             max_tokens=self.truncation_config["max_tokens"],
                             max_lines=self.truncation_config["max_lines"]
                         )
-                        
                         if is_truncated:
                             result["stdout"] = format_truncation_message(
                                 truncated_output,
@@ -786,24 +621,40 @@ class TinyCodeAgent(TinyAgent):
                                 self.truncation_config["max_lines"],
                                 "bash_output"
                             )
-                    
-                    # Create a git checkpoint if auto_git_checkpoint is enabled
+
+                    # Auto git checkpoint with a succinct description derived from the command
                     if self.auto_git_checkpoint and result.get("exit_code", 1) == 0:
-                        checkpoint_result = await self._create_git_checkpoint(final_command, description, effective_workdir)
-                        self.log_manager.get_logger(__name__).info(f"Git checkpoint {effective_workdir} result: {checkpoint_result}")
-                    
+                        desc = (command[:80] + "…") if len(command) > 80 else command
+                        checkpoint_result = await self._create_git_checkpoint(final_command, desc, effective_workdir)
+                        if self.log_manager:
+                            self.log_manager.get_logger(__name__).info(
+                                f"Git checkpoint {effective_workdir} result: {checkpoint_result}"
+                            )
+
                     return json.dumps(result)
                 except Exception as e:
-                    COLOR = {
-                        "RED": "\033[91m",
-                        "ENDC": "\033[0m",
-                    }
+                    COLOR = {"RED": "\033[91m", "ENDC": "\033[0m"}
                     print(f"{COLOR['RED']}{str(e)}{COLOR['ENDC']}")
                     print(f"{COLOR['RED']}{traceback.format_exc()}{COLOR['ENDC']}")
-                    
-                    return json.dumps({"error": f"Error executing shell command: {str(e)}"})
-            
+                    try:
+                        helpful_tip = get_helpful_error_tip(command, str(e), self.system_capabilities)
+                    except Exception:
+                        helpful_tip = get_system_info()
+                    return json.dumps({
+                        "stdout": "",
+                        "stderr": (f"Error executing shell command: {str(e)}" + (f"\nTip: {helpful_tip}" if helpful_tip else "")),
+                        "exit_code": 1
+                    })
+
             self.add_tool(bash)
+        
+        # Add file tools if enabled
+        if self._file_tools_enabled:
+            self.add_tool(read_file)
+            self.add_tool(write_file)
+            self.add_tool(update_file)
+            self.add_tool(glob_tool)
+            self.add_tool(grep_tool)
     
     async def _create_git_checkpoint(self, command: List[str], description: str, workdir: str) -> Dict[str, Any]:
         """

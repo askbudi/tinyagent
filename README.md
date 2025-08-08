@@ -36,6 +36,16 @@ This is a tiny agent framework that uses MCP and LiteLLM to interact with langua
 - **TinyCodeAgent**: Specialized agent for secure Python code execution with pluggable providers  
 - **Subagent Tools**: Revolutionary parallel task execution system with context isolation and specialized workers
 
+### What's new for developers
+
+- **Sandboxed File Tools**: `read_file`, `write_file`, `update_file`, `glob`, `grep` now route through provider sandboxes (Seatbelt/Modal) for secure file operations
+- **Enhanced Shell Tool**: Improved `bash` tool with better safety validation, platform-specific tips, and provider-backed execution
+- **TodoWrite Tool**: Built-in task management system for tracking progress and organizing complex workflows
+- **Provider System**: Pluggable execution backends (Modal.com, Seatbelt sandbox) with unified API
+- **Universal Tool Hooks**: Control any tool execution via `before_tool_execution`/`after_tool_execution` callbacks
+- **Subagent Tools**: Revolutionary parallel task execution with specialized workers and context isolation
+- **Enhanced Security**: Comprehensive validation, sandboxing, and permission controls
+
 ## Installation
 
 ### Using pip
@@ -88,6 +98,342 @@ uv pip install tinyagent-py[all]
 
 ```
 
+## Developer Boilerplate & Quick Start
+
+### 🚀 TinyAgent with New Tools
+
+```python
+import asyncio
+import os
+from tinyagent import TinyAgent
+from tinyagent.tools.subagent import create_general_subagent
+from tinyagent.tools.todo_write import enable_todo_write_tool
+
+async def create_enhanced_tinyagent():
+    """Create a TinyAgent with all new tools and capabilities."""
+    
+    # Initialize TinyAgent
+    agent = TinyAgent(
+        model="gpt-4o-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        enable_todo_write=True  # Enable TodoWrite tool by default
+    )
+    
+    # Add a general-purpose subagent for parallel tasks
+    helper_subagent = create_general_subagent(
+        name="helper",
+        model="gpt-4.1-mini",
+        max_turns=20,
+        enable_python=True,
+        enable_shell=True
+    )
+    agent.add_tool(helper_subagent)
+    
+    # Connect to MCP servers for extended functionality
+    await agent.connect_to_server("npx", ["@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+    
+    return agent
+
+async def main():
+    agent = await create_enhanced_tinyagent()
+    
+    try:
+        # Example: Complex task with subagent delegation
+        result = await agent.run("""
+            I need help with a travel planning project:
+            1. Create a todo list for this task
+            2. Use the helper subagent to find 5 accommodations in Paris for December 2024
+            3. Research transportation options between airports and city center
+            4. Organize all findings into a structured report
+            
+            Make sure to track progress with the todo system.
+        """)
+        
+        print("Result:", result)
+    finally:
+        await agent.close()
+
+# Run the example
+asyncio.run(main())
+```
+
+### 🛠️ TinyCodeAgent with File Tools & Providers
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+from tinyagent.hooks.rich_code_ui_callback import RichCodeUICallback
+
+async def create_enhanced_code_agent():
+    """Create TinyCodeAgent with all file tools and provider features."""
+    
+    # Option 1: Using Seatbelt Provider (macOS sandbox)
+    seatbelt_agent = TinyCodeAgent(
+        model="gpt-4o-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="seatbelt",
+        provider_config={
+            "python_env_path": "/usr/local/bin/python3",
+            "additional_read_dirs": ["/Users/username/projects"],
+            "additional_write_dirs": ["/Users/username/projects/output"],
+            "environment_variables": {"PROJECT_ROOT": "/Users/username/projects"}
+        },
+        # Enable all new tools
+        enable_python_tool=True,
+        enable_shell_tool=True, 
+        enable_file_tools=True,
+        enable_todo_write=True,
+        # Working directory for operations
+        default_workdir="/Users/username/projects",
+        # Auto git checkpoints after shell commands
+        auto_git_checkpoint=True,
+        # Rich UI for better visualization
+        ui="rich"
+    )
+    
+    return seatbelt_agent
+
+async def create_modal_code_agent():
+    """Create TinyCodeAgent with Modal.com provider."""
+    
+    modal_agent = TinyCodeAgent(
+        model="gpt-4o-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="modal",
+        provider_config={
+            "pip_packages": ["requests", "pandas", "matplotlib", "seaborn"],
+            "bypass_shell_safety": False  # More restrictive for cloud execution
+        },
+        authorized_imports=["requests", "pandas", "matplotlib", "seaborn", "numpy"],
+        enable_python_tool=True,
+        enable_shell_tool=True,
+        enable_file_tools=True,
+        enable_todo_write=True,
+        local_execution=False,  # Use Modal cloud execution
+        truncation_config={
+            "max_tokens": 5000,
+            "max_lines": 300,
+            "enabled": True
+        }
+    )
+    
+    return modal_agent
+
+async def demonstrate_file_tools():
+    """Demonstrate the new file tools functionality."""
+    
+    agent = await create_enhanced_code_agent()
+    
+    try:
+        result = await agent.run("""
+        I need to analyze a Python project structure:
+        
+        1. Use glob to find all Python files in the current directory
+        2. Use grep to search for "class" definitions across all Python files
+        3. Read the main configuration file if it exists
+        4. Create a summary report of the project structure
+        5. Track progress with todos
+        
+        Make sure to use the new file tools for secure operations.
+        """)
+        
+        print("Analysis Result:", result)
+        
+    finally:
+        await agent.close()
+
+# Choose your provider
+async def main():
+    print("Demonstrating TinyCodeAgent with enhanced file tools...")
+    await demonstrate_file_tools()
+
+asyncio.run(main())
+```
+
+### 📁 File Tools Usage Examples
+
+```python
+import asyncio
+from tinyagent import TinyCodeAgent
+
+async def file_tools_examples():
+    """Examples of using the new sandboxed file tools."""
+    
+    agent = TinyCodeAgent(
+        model="gpt-4.1-mini",
+        provider="seatbelt",  # or "modal"
+        enable_file_tools=True
+    )
+    
+    try:
+        # Example 1: Project structure analysis
+        await agent.run("""
+        Use glob to find all Python files in this project:
+        - Pattern: "**/*.py" 
+        - Search in: "/Users/username/myproject"
+        
+        Then use grep to find all function definitions:
+        - Pattern: "def "
+        - Search in the same directory
+        
+        Finally, read the main.py file to understand the entry point.
+        """)
+        
+        # Example 2: Safe file modification
+        await agent.run("""
+        I need to update a configuration file:
+        1. Read config.json to see current settings
+        2. Update the database URL using update_file tool
+        3. Verify the changes were applied correctly
+        
+        Make sure to use exact string matching for safety.
+        """)
+        
+        # Example 3: Code generation and file creation
+        await agent.run("""
+        Create a new Python module:
+        1. Use write_file to create utils/helpers.py
+        2. Add utility functions for string manipulation
+        3. Include proper docstrings and type hints
+        4. Create a simple test file for the utilities
+        """)
+        
+    finally:
+        await agent.close()
+
+asyncio.run(file_tools_examples())
+```
+
+### 🔧 Grep and Glob Tool Examples
+
+```python
+# Glob tool examples
+await agent.run("""
+Find all JavaScript files in the frontend directory:
+Use glob with pattern "**/*.{js,jsx}" in "/path/to/frontend"
+""")
+
+await agent.run("""
+Find all markdown documentation:
+Use glob with pattern "**/*.md" in "/path/to/project"
+""")
+
+# Grep tool examples  
+await agent.run("""
+Search for all TODO comments in the codebase:
+Use grep with pattern "TODO|FIXME|XXX" and regex=True
+Search in "/path/to/project" directory
+Use output_mode="content" to see the actual lines
+""")
+
+await agent.run("""
+Find all API endpoints in Python files:
+Use grep with pattern "@app.route" 
+Search only in Python files using glob="**/*.py"
+""")
+```
+
+### 📋 TodoWrite Tool Integration
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+from tinyagent.tools.todo_write import get_current_todos, get_todo_summary
+
+async def todo_workflow_example():
+    """Example of using TodoWrite for task management."""
+    
+    agent = TinyAgent(
+        model="gpt-4.1-mini",
+        enable_todo_write=True  # Enabled by default
+    )
+    
+    try:
+        # The agent can automatically use TodoWrite during complex tasks
+        result = await agent.run("""
+        I need to build a web scraping system:
+        1. Create a todo list for this project
+        2. Research the target website structure
+        3. Implement the scraping logic with error handling
+        4. Add data validation and cleaning
+        5. Create output formatting and export functions
+        6. Write tests for each component
+        7. Update todos as you progress
+        
+        Use the TodoWrite tool to track all these steps.
+        """)
+        
+        # Check current todos programmatically
+        current_todos = get_current_todos()
+        summary = get_todo_summary()
+        
+        print(f"Project Status: {summary}")
+        print(f"Active Todos: {len(current_todos)}")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(todo_workflow_example())
+```
+
+### 🔒 Universal Tool Control with Hooks
+
+```python
+import asyncio
+from tinyagent import TinyCodeAgent
+from tinyagent.code_agent.tools.file_tools import FileOperationApprovalHook, ProductionApprovalHook
+
+class CustomFileHook(FileOperationApprovalHook):
+    """Custom hook for file operation control."""
+    
+    async def before_tool_execution(self, event_name: str, agent, **kwargs):
+        tool_name = kwargs.get("tool_name")
+        tool_args = kwargs.get("tool_args", {})
+        
+        # Custom logic for file operations
+        if tool_name in ["write_file", "update_file"]:
+            file_path = tool_args.get("file_path", "")
+            
+            # Block operations on sensitive files
+            if "secret" in file_path.lower() or "password" in file_path.lower():
+                print(f"🚫 Blocked file operation on sensitive file: {file_path}")
+                return {"proceed": False, "reason": "Sensitive file access denied"}
+            
+            # Log all file modifications
+            print(f"📝 File operation: {tool_name} on {file_path}")
+        
+        return {"proceed": True}
+
+async def controlled_agent_example():
+    """Example of agent with file operation controls."""
+    
+    agent = TinyCodeAgent(
+        model="gpt-4.1-mini", 
+        provider="seatbelt",
+        enable_file_tools=True
+    )
+    
+    # Add custom file control hook
+    file_hook = CustomFileHook(auto_approve=False)
+    agent.add_callback(file_hook)
+    
+    try:
+        await agent.run("""
+        Analyze and modify some project files:
+        1. Read the main application file
+        2. Update version information in package.json
+        3. Create a backup of important configuration
+        
+        The system will control which operations are allowed.
+        """)
+        
+    finally:
+        await agent.close()
+
+asyncio.run(controlled_agent_example())
+```
+
 ## Usage
 
 ### TinyAgent (Core Agent)
@@ -127,26 +473,67 @@ I need accommodation in Toronto between 15th to 20th of May. Give me 5 options f
 await test_agent(task, model="gpt-4.1-mini")
 ```
 
-## TinyCodeAgent - Code Execution Made Easy
+## TinyCodeAgent - Advanced Code Execution with File Tools
 
-TinyCodeAgent is a specialized agent for executing Python code with enterprise-grade reliability and extensible execution providers.
+TinyCodeAgent is a specialized agent for secure code execution with comprehensive file operations, multiple provider backends, and advanced tooling.
 
-### Quick Start with TinyCodeAgent
+### Key New Features
+
+- **🔒 Sandboxed File Operations**: Native `read_file`, `write_file`, `update_file`, `glob`, `grep` tools
+- **🛠️ Provider System**: Switch between Modal.com (cloud) and Seatbelt (local sandbox) execution
+- **📋 Built-in Task Management**: Integrated TodoWrite tool for tracking complex workflows  
+- **🔧 Enhanced Shell Tool**: Improved `bash` tool with validation and platform-specific guidance
+- **🎯 Universal Tool Hooks**: Control and audit any tool execution with callback system
+- **⚡ Auto Git Checkpoints**: Automatic version control after shell commands
+- **🖥️ Rich UI Integration**: Enhanced terminal and Jupyter interfaces
+
+### Quick Start with Enhanced TinyCodeAgent
 
 ```python
 import asyncio
 from tinyagent import TinyCodeAgent
 
 async def main():
-    # Initialize with minimal configuration
+    # Initialize with all new features enabled
     agent = TinyCodeAgent(
         model="gpt-4.1-mini",
-        api_key="your-openai-api-key"
+        api_key="your-openai-api-key",
+        provider="seatbelt",  # or "modal" for cloud execution
+        
+        # Enable all new tools
+        enable_file_tools=True,      # read_file, write_file, update_file, glob, grep
+        enable_shell_tool=True,      # Enhanced bash tool
+        enable_todo_write=True,      # Task management
+        
+        # Provider-specific config
+        provider_config={
+            "additional_read_dirs": ["/path/to/your/project"],
+            "additional_write_dirs": ["/path/to/output"],
+            "python_env_path": "/usr/local/bin/python3"
+        },
+        
+        # Auto git checkpoints
+        auto_git_checkpoint=True,
+        
+        # Rich terminal UI
+        ui="rich"
     )
     
     try:
-        # Ask the agent to solve a coding problem
-        result = await agent.run("Calculate the factorial of 10 and explain the algorithm")
+        # Complex task with file operations and task tracking
+        result = await agent.run("""
+        I need to analyze and refactor a Python project:
+        
+        1. Use glob to find all Python files in the project
+        2. Use grep to identify functions that need refactoring
+        3. Read key files to understand the architecture  
+        4. Create a refactoring plan with todos
+        5. Implement improvements with file operations
+        6. Run tests to verify changes
+        
+        Use the todo system to track progress throughout.
+        """)
+        
         print(result)
     finally:
         await agent.close()
@@ -213,23 +600,103 @@ print(response)
 ```
 
 
-### Configuration Options
+### Full Configuration Options
 
 ```python
 from tinyagent import TinyCodeAgent
-from tinyagent.code_agent.tools import get_weather, get_traffic
+from tinyagent.code_agent.tools.file_tools import ProductionApprovalHook
 
-# Full configuration example
+# Complete configuration example with all new features
 agent = TinyCodeAgent(
+    # Core configuration
     model="gpt-4.1-mini",
-    api_key="your-api-key", 
-    provider="modal",
-    tools=[get_weather, get_traffic],
-    authorized_imports=["requests", "pandas", "numpy"],
+    api_key="your-api-key",
+    
+    # Provider selection and config
+    provider="seatbelt",  # "modal", "seatbelt", or "local"
     provider_config={
-        "pip_packages": ["requests", "pandas"],
-        "sandbox_name": "my-code-sandbox"
+        # Seatbelt-specific options
+        "python_env_path": "/usr/local/bin/python3",
+        "additional_read_dirs": ["/Users/username/projects", "/Users/username/data"],
+        "additional_write_dirs": ["/Users/username/projects/output"],
+        "environment_variables": {
+            "PROJECT_ROOT": "/Users/username/projects",
+            "DATA_PATH": "/Users/username/data"
+        },
+        "bypass_shell_safety": True,  # More permissive for local development
+        
+        # Modal-specific options (if using provider="modal")
+        # "pip_packages": ["requests", "pandas", "matplotlib"],
+        # "bypass_shell_safety": False,  # More restrictive for cloud
+    },
+    
+    # Tool enablement (all True by default)
+    enable_python_tool=True,         # Python code execution
+    enable_shell_tool=True,          # Enhanced bash tool
+    enable_file_tools=True,          # read_file, write_file, update_file, glob, grep
+    enable_todo_write=True,          # Task management system
+    
+    # Python environment setup
+    authorized_imports=["requests", "pandas", "numpy", "matplotlib", "seaborn"],
+    pip_packages=["requests", "pandas", "matplotlib"],  # For Modal provider
+    
+    # File and shell operations
+    default_workdir="/Users/username/projects",
+    auto_git_checkpoint=True,        # Auto git commits after shell commands
+    
+    # Output control
+    truncation_config={
+        "max_tokens": 5000,
+        "max_lines": 300, 
+        "enabled": True
+    },
+    
+    # UI and logging
+    ui="rich",                       # "rich", "jupyter", or None
+    log_manager=None,                # Optional LoggingManager instance
+    
+    # Security and validation
+    check_string_obfuscation=True,   # Check for potential obfuscated code
+    
+    # Memory management
+    summary_config={
+        "max_messages": 50,
+        "summary_model": "gpt-4.1-mini"
     }
+)
+
+# Add custom file operation controls
+file_hook = ProductionApprovalHook()  # Requires approval for file modifications
+agent.add_callback(file_hook)
+```
+
+### Provider-Specific Configuration
+
+#### Seatbelt Provider (Local macOS Sandbox)
+```python
+seatbelt_config = {
+    "python_env_path": "/usr/local/bin/python3",
+    "additional_read_dirs": ["/path/to/read/access"],
+    "additional_write_dirs": ["/path/to/write/access"], 
+    "environment_variables": {"VAR": "value"},
+    "bypass_shell_safety": True  # More permissive for local dev
+}
+
+agent = TinyCodeAgent(provider="seatbelt", provider_config=seatbelt_config)
+```
+
+#### Modal Provider (Cloud Execution)
+```python
+modal_config = {
+    "pip_packages": ["requests", "pandas", "matplotlib"],
+    "bypass_shell_safety": False,  # More restrictive for cloud
+    "additional_safe_shell_commands": ["custom_cmd"],
+}
+
+agent = TinyCodeAgent(
+    provider="modal", 
+    provider_config=modal_config,
+    local_execution=False  # Use Modal cloud (default)
 )
 ```
 
@@ -652,6 +1119,27 @@ You can import and use these hooks from `tinyagent.hooks`:
 | `RichUICallback`         | Rich terminal UI (with [rich](https://github.com/Textualize/rich)) | `from tinyagent.hooks.rich_ui_callback import RichUICallback` |
 | `GradioCallback` | Interactive browser-based chat UI: file uploads, live thinking, tool calls, token stats | `from tinyagent.hooks.gradio_callback import GradioCallback`         |
 | `JupyterNotebookCallback` | Interactive Jupyter notebook integration        | `from tinyagent.hooks.jupyter_notebook_callback import JupyterNotebookCallback` |
+
+### File Tools 🗂️ 
+Sandboxed file operations from `tinyagent.code_agent.tools.file_tools`:
+
+| Tool Function  | Description                                      | Example Import                                  |
+|----------------|--------------------------------------------------|-------------------------------------------------|
+| `read_file`    | Read text file content with line numbers and pagination | `from tinyagent.code_agent.tools.file_tools import read_file` |
+| `write_file`   | Write content to files with directory creation support | `from tinyagent.code_agent.tools.file_tools import write_file` |
+| `update_file`  | Safe file updates using exact string replacement | `from tinyagent.code_agent.tools.file_tools import update_file` |
+| `glob_tool`    | Fast pattern matching for finding files         | `from tinyagent.code_agent.tools.file_tools import glob_tool` |
+| `grep_tool`    | Content search with regex support (ripgrep-like) | `from tinyagent.code_agent.tools.file_tools import grep_tool` |
+
+### Task Management 📋
+Built-in todo system from `tinyagent.tools.todo_write`:
+
+| Tool Function         | Description                                      | Example Import                                  |
+|-----------------------|--------------------------------------------------|-------------------------------------------------|
+| `todo_write`          | Create and manage structured task lists         | `from tinyagent.tools.todo_write import todo_write` |
+| `enable_todo_write_tool` | Enable/disable TodoWrite tool for an agent   | `from tinyagent.tools.todo_write import enable_todo_write_tool` |
+| `get_current_todos`   | Get current todo list programmatically          | `from tinyagent.tools.todo_write import get_current_todos` |
+| `get_todo_summary`    | Get summary statistics of todo list             | `from tinyagent.tools.todo_write import get_todo_summary` |
 
 ### Subagent Tools 🚀
 Revolutionary parallel task execution system from `tinyagent.tools.subagent`:
