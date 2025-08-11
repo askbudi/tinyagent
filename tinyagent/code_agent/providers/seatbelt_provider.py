@@ -7,6 +7,7 @@ import subprocess
 import cloudpickle
 import json
 import re
+import shutil
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -134,6 +135,18 @@ class SeatbeltProvider(CodeExecutionProvider):
         self.authorized_functions = authorized_functions or []
         self.check_string_obfuscation = check_string_obfuscation
         self.is_trusted_code = kwargs.get("trust_code", False)
+
+        # Create a sandbox-safe temp directory for all transient files used by the sandboxed process
+        # We intentionally choose /private/tmp because the default macOS sandbox profile may not allow
+        # the per-user TMPDIR path under /var/folders, and our default profile already allows /private/tmp.
+        try:
+            self.sandbox_tmp_dir = os.path.join("/private/tmp", f"tinyagent_{os.getpid()}")
+            os.makedirs(self.sandbox_tmp_dir, exist_ok=True)
+        except Exception as e:
+            # Fallback to current working directory if creation fails
+            self.sandbox_tmp_dir = os.getcwd()
+            if self.logger:
+                self.logger.warning("Falling back to CWD for sandbox temp dir due to error: %s", str(e))
         
         # Log initialization
         if self.logger:
@@ -208,6 +221,10 @@ class SeatbeltProvider(CodeExecutionProvider):
             'LANG': os.environ.get('LANG', 'en_US.UTF-8'),
             'LC_ALL': os.environ.get('LC_ALL', 'en_US.UTF-8'),
         }
+
+        # Ensure TMPDIR inside the sandbox points to an allowed location
+        if getattr(self, 'sandbox_tmp_dir', None):
+            base_env['TMPDIR'] = self.sandbox_tmp_dir
         
         # Add Python-specific environment variables if available
         python_vars = ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'CONDA_DEFAULT_ENV', 'CONDA_PREFIX']
@@ -365,7 +382,7 @@ class SeatbeltProvider(CodeExecutionProvider):
             self.executed_default_codes = True
         
         # Create a temporary file for the Python state and code
-        with tempfile.NamedTemporaryFile(suffix='_state.pkl', prefix='tinyagent_', delete=False, mode='wb') as state_file:
+        with tempfile.NamedTemporaryFile(suffix='_state.pkl', prefix='tinyagent_', delete=False, mode='wb', dir=self.sandbox_tmp_dir) as state_file:
             # Serialize the globals and locals dictionaries
             cloudpickle.dump({
                 'globals': self._globals_dict,
@@ -378,7 +395,7 @@ class SeatbeltProvider(CodeExecutionProvider):
             state_file_path = state_file.name
         
         # Create a temporary file for the Python code
-        with tempfile.NamedTemporaryFile(suffix='.py', prefix='tinyagent_', delete=False, mode='w') as code_file:
+        with tempfile.NamedTemporaryFile(suffix='.py', prefix='tinyagent_', delete=False, mode='w', dir=self.sandbox_tmp_dir) as code_file:
             # Write the wrapper script that will execute the code and maintain state
             code_file.write(f"""
 import sys
@@ -421,7 +438,7 @@ trusted_code = state['trusted_code']
 check_string_obfuscation = state['check_string_obfuscation']
 
 # The code to execute
-code = '''
+code = r'''
 {complete_code}
 '''
 
@@ -523,16 +540,56 @@ def run_code():
 # Run the code and get the result
 result = run_code()
 
-# Serialize the globals and locals for the next run
-with open(state_path, 'wb') as f:
-    cloudpickle.dump({{
-        'globals': result['updated_globals'],
-        'locals': result['updated_locals'],
-        'authorized_imports': authorized_imports,
-        'authorized_functions': authorized_functions,
-        'trusted_code': trusted_code,
-        'check_string_obfuscation': check_string_obfuscation
-    }}, f)
+# Serialize the globals and locals for the next run safely
+def _is_picklable(obj):
+    try:
+        cloudpickle.dumps(obj)
+        return True
+    except Exception:
+        return False
+
+def _sanitize_state_dict(d):
+    safe = {{}}
+    for k, v in d.items():
+        try:
+            if k.startswith('__'):
+                continue
+            if k in ['builtins', 'traceback', 'contextlib', 'io', 'ast', 'sys']:
+                continue
+            if _is_picklable(v):
+                safe[k] = v
+        except Exception:
+            continue
+    return safe
+
+try:
+    safe_globals = _sanitize_state_dict(result.get('updated_globals', {{}}))
+    safe_locals = _sanitize_state_dict(result.get('updated_locals', {{}}))
+
+    tmp_state_path = state_path + '.tmp'
+    with open(tmp_state_path, 'wb') as f:
+        cloudpickle.dump({{
+            'globals': safe_globals,
+            'locals': safe_locals,
+            'authorized_imports': authorized_imports,
+            'authorized_functions': authorized_functions,
+            'trusted_code': trusted_code,
+            'check_string_obfuscation': check_string_obfuscation
+        }}, f)
+    # Atomic replace to avoid truncation on failure
+    try:
+        os.replace(tmp_state_path, state_path)
+    except Exception:
+        # Fallback to copy if replace not available
+        import shutil as _shutil
+        _shutil.copyfile(tmp_state_path, state_path)
+        try:
+            os.unlink(tmp_state_path)
+        except Exception:
+            pass
+except Exception as _e:
+    # If state save fails, continue without blocking result output
+    pass
 
 # Clean the result for output
 cleaned_result = {{
@@ -1063,6 +1120,13 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
             except Exception as e:
                 if self.logger:
                     self.logger.warning("Failed to remove temporary seatbelt profile: %s", str(e))
+
+        # Remove sandbox temp directory
+        try:
+            if getattr(self, 'sandbox_tmp_dir', None) and os.path.isdir(self.sandbox_tmp_dir):
+                shutil.rmtree(self.sandbox_tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
     async def read_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
         """Read a file using sandbox-constrained execution."""
