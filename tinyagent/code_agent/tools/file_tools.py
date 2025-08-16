@@ -214,7 +214,52 @@ async def read_file(
             return content
         else:
             error_msg = resp.get("error") or "Unknown error"
-            return f"Error: {error_msg}"
+            
+            # Provide detailed diagnostic information for debugging
+            diagnostic_info = []
+            diagnostic_info.append(f"File path: {file_path}")
+            diagnostic_info.append(f"Provider type: {type(agent.code_provider).__name__}")
+            diagnostic_info.append(f"Error message: {error_msg}")
+            
+            # Include additional error details if available
+            if resp.get("details"):
+                diagnostic_info.append(f"Error details: {resp['details']}")
+            if resp.get("exception_type"):
+                diagnostic_info.append(f"Exception type: {resp['exception_type']}")
+            if resp.get("raw_result"):
+                raw = resp["raw_result"]
+                if raw.get("stderr"):
+                    diagnostic_info.append(f"Stderr: {raw['stderr']}")
+                if raw.get("error_traceback"):
+                    diagnostic_info.append(f"Traceback: {raw['error_traceback']}")
+            
+            # Provide troubleshooting suggestions
+            suggestions = []
+            if "Permission denied" in error_msg or "access denied" in error_msg.lower():
+                suggestions.append("Check if the file path is within the sandbox boundaries")
+                suggestions.append("Verify the file exists and is readable")
+            elif "File not found" in error_msg or "not found" in error_msg.lower():
+                suggestions.append("Verify the file path is correct and absolute")
+                suggestions.append("Check if the file exists in the expected location")
+            elif "binary file" in error_msg.lower():
+                suggestions.append("This tool can only read text files")
+                suggestions.append("Use appropriate binary file handling tools if needed")
+            else:
+                suggestions.append("Check the sandbox configuration and permissions")
+                suggestions.append("Verify the provider is properly initialized")
+            
+            diagnostic_msg = "\n".join(diagnostic_info)
+            suggestion_msg = "\n".join([f"  • {s}" for s in suggestions])
+            
+            return f"""Error reading file: {error_msg}
+
+Diagnostic Information:
+{diagnostic_msg}
+
+Troubleshooting Suggestions:
+{suggestion_msg}
+
+Raw Provider Response: {resp}"""
             
     except Exception as e:
         if logger:
@@ -257,8 +302,54 @@ async def write_file(
             except Exception:
                 return f"Successfully wrote content to {sanitize_path(file_path)}"
         else:
-            error_msg = get_friendly_error_message("write_error", file_path, resp.get("error", ""))
-            return f"Error: {error_msg}"
+            error_msg = resp.get("error") or "Unknown error"
+            
+            # Provide detailed diagnostic information for debugging
+            diagnostic_info = []
+            diagnostic_info.append(f"File path: {file_path}")
+            diagnostic_info.append(f"Provider type: {type(agent.code_provider).__name__ if agent and hasattr(agent, 'code_provider') else 'Unknown'}")
+            diagnostic_info.append(f"Content length: {len(content)} characters")
+            diagnostic_info.append(f"Error message: {error_msg}")
+            
+            # Include additional error details if available
+            if resp.get("details"):
+                diagnostic_info.append(f"Error details: {resp['details']}")
+            if resp.get("exception_type"):
+                diagnostic_info.append(f"Exception type: {resp['exception_type']}")
+            if resp.get("raw_result"):
+                raw = resp["raw_result"]
+                if raw.get("stderr"):
+                    diagnostic_info.append(f"Stderr: {raw['stderr']}")
+                if raw.get("error_traceback"):
+                    diagnostic_info.append(f"Traceback: {raw['error_traceback']}")
+            
+            # Provide troubleshooting suggestions
+            suggestions = []
+            if "Permission denied" in error_msg or "access denied" in error_msg.lower():
+                suggestions.append("Check if the target directory is writable within sandbox boundaries")
+                suggestions.append("Verify the parent directory exists")
+            elif "No such file or directory" in error_msg:
+                suggestions.append("The parent directory may not exist")
+                suggestions.append("Consider using create_dirs=True parameter")
+            elif "disk space" in error_msg.lower() or "no space" in error_msg.lower():
+                suggestions.append("Check available disk space")
+                suggestions.append("Try reducing content size")
+            else:
+                suggestions.append("Check the sandbox configuration and write permissions")
+                suggestions.append("Verify the file path is valid and absolute")
+            
+            diagnostic_msg = "\n".join(diagnostic_info)
+            suggestion_msg = "\n".join([f"  • {s}" for s in suggestions])
+            
+            return f"""Error writing file: {error_msg}
+
+Diagnostic Information:
+{diagnostic_msg}
+
+Troubleshooting Suggestions:
+{suggestion_msg}
+
+Raw Provider Response: {resp}"""
             
     except Exception as e:
         if logger:
@@ -299,8 +390,58 @@ async def update_file(
                 return f"Successfully updated {sanitize_path(file_path)}. Wrote {bytes_written} bytes."
             return f"Successfully updated {sanitize_path(file_path)}."
         else:
-            error_msg = get_friendly_error_message("update_error", file_path, resp.get("error", ""))
-            return f"Error: {error_msg}"
+            error_msg = resp.get("error") or "Unknown error"
+            
+            # Provide detailed diagnostic information for debugging
+            diagnostic_info = []
+            diagnostic_info.append(f"File path: {file_path}")
+            diagnostic_info.append(f"Provider type: {type(agent.code_provider).__name__ if agent and hasattr(agent, 'code_provider') else 'Unknown'}")
+            diagnostic_info.append(f"Old content length: {len(old_content)} characters")
+            diagnostic_info.append(f"New content length: {len(new_content)} characters")
+            diagnostic_info.append(f"Expected matches: {expected_matches}")
+            diagnostic_info.append(f"Error message: {error_msg}")
+            
+            # Include additional error details if available
+            if resp.get("details"):
+                diagnostic_info.append(f"Error details: {resp['details']}")
+            if resp.get("exception_type"):
+                diagnostic_info.append(f"Exception type: {resp['exception_type']}")
+            if resp.get("raw_result"):
+                raw = resp["raw_result"]
+                if raw.get("stderr"):
+                    diagnostic_info.append(f"Stderr: {raw['stderr']}")
+                if raw.get("error_traceback"):
+                    diagnostic_info.append(f"Traceback: {raw['error_traceback']}")
+            
+            # Provide troubleshooting suggestions
+            suggestions = []
+            if "not found" in error_msg.lower():
+                suggestions.append("The old_content string was not found in the file")
+                suggestions.append("Check that the old_content matches exactly (including whitespace)")
+                suggestions.append("Use read_file first to see the current file content")
+            elif "matches" in error_msg.lower():
+                suggestions.append("The number of matches didn't meet expectations")
+                suggestions.append("Use read_file to verify the current content")
+                suggestions.append("Consider adjusting the expected_matches parameter")
+            elif "Permission denied" in error_msg or "access denied" in error_msg.lower():
+                suggestions.append("Check if the file is writable within sandbox boundaries")
+                suggestions.append("Verify file permissions and sandbox configuration")
+            else:
+                suggestions.append("Check the sandbox configuration and file permissions")
+                suggestions.append("Verify the file exists and is readable/writable")
+            
+            diagnostic_msg = "\n".join(diagnostic_info)
+            suggestion_msg = "\n".join([f"  • {s}" for s in suggestions])
+            
+            return f"""Error updating file: {error_msg}
+
+Diagnostic Information:
+{diagnostic_msg}
+
+Troubleshooting Suggestions:
+{suggestion_msg}
+
+Raw Provider Response: {resp}"""
             
     except Exception as e:
         if logger:
@@ -338,31 +479,106 @@ async def glob_tool(
                 logger.debug(error_msg)
             return f"Error: {error_msg}"
         
-        # Use provider sandbox search_files to list files, then filter client-side by glob
+        # Use shell execution to find files matching the glob pattern
         agent = _get_current_agent()
         if not agent or not hasattr(agent, 'code_provider'):
             return "Error: Code provider not available for sandboxed file operations."
 
         directory = sanitize_path(absolute_path)
-        # Broad search: empty pattern to collect all text files; we will filter by glob
-        resp = await agent.code_provider.search_files(pattern="", directory=directory, regex=False)
+        
+        # Check if directory exists first
+        if not os.path.exists(directory):
+            return f"Error: Directory '{directory}' does not exist."
+        
+        # Use find command to list files and apply glob pattern
+        # On macOS and other platforms, patterns with wildcards need to be quoted to prevent shell expansion
+        
+        # For shell safety, always quote patterns that contain shell metacharacters
+        def quote_pattern_if_needed(pattern_str):
+            # Quote the pattern if it contains shell metacharacters
+            if any(char in pattern_str for char in ['*', '?', '[', ']', '{', '}', ' ']):
+                return f'"{pattern_str}"'
+            return pattern_str
+        
+        if pattern.startswith('**/'):
+            # Recursive glob pattern like **/*.py
+            file_pattern = pattern[3:]  # Remove **/ prefix
+            quoted_pattern = quote_pattern_if_needed(file_pattern)
+            find_command = ["find", directory, "-type", "f", "-name", quoted_pattern]
+        elif '*' in pattern or '?' in pattern:
+            # Simple glob pattern like *.py or README*
+            quoted_pattern = quote_pattern_if_needed(pattern)
+            find_command = ["find", directory, "-maxdepth", "1", "-type", "f", "-name", quoted_pattern]
+        else:
+            # Exact filename - still quote to be safe
+            quoted_pattern = quote_pattern_if_needed(pattern)
+            find_command = ["find", directory, "-maxdepth", "1", "-type", "f", "-name", quoted_pattern]
 
-        if not resp.get("success"):
-            return f"Error: {resp.get('error', 'Search failed')}"
+        try:
+            resp = await agent.code_provider.execute_shell(
+                command=find_command,
+                timeout=30,
+                workdir=directory
+            )
+            
+            if resp.get("exit_code") != 0:
+                stderr = resp.get("stderr", "")
+                stdout = resp.get("stdout", "")
+                
+                # Provide detailed diagnostic information for debugging
+                diagnostic_info = []
+                diagnostic_info.append(f"Pattern: {pattern}")
+                diagnostic_info.append(f"Directory: {absolute_path}")
+                diagnostic_info.append(f"Find command: {' '.join(find_command)}")
+                diagnostic_info.append(f"Exit code: {resp.get('exit_code')}")
+                diagnostic_info.append(f"Provider type: {type(agent.code_provider).__name__ if agent and hasattr(agent, 'code_provider') else 'Unknown'}")
+                
+                if stderr:
+                    diagnostic_info.append(f"Stderr: {stderr}")
+                if stdout:
+                    diagnostic_info.append(f"Stdout: {stdout}")
+                
+                # Provide troubleshooting suggestions
+                suggestions = []
+                if "No such file or directory" in stderr:
+                    suggestions.append("Verify the directory path exists and is accessible")
+                    suggestions.append("Check sandbox read permissions for the directory")
+                elif "Permission denied" in stderr:
+                    suggestions.append("Check if the directory is within sandbox boundaries")
+                    suggestions.append("Verify read permissions for the target directory")
+                else:
+                    suggestions.append("Check the sandbox configuration and permissions")
+                    suggestions.append("Verify the find command is available in the provider")
+                
+                diagnostic_msg = "\n".join(diagnostic_info)
+                suggestion_msg = "\n".join([f"  • {s}" for s in suggestions])
+                
+                return f"""Error in glob search: Find command failed
 
-        matches = resp.get("matches", [])
-        all_paths = _extract_match_paths(matches, base_dir=directory)
+Diagnostic Information:
+{diagnostic_msg}
 
-        # Apply glob filtering to relative paths from directory
-        rel_paths = [os.path.relpath(p, directory) for p in all_paths]
-        filtered = [p for p in rel_paths if fnmatch.fnmatch(p, pattern)]
-        abs_filtered = [os.path.join(directory, p) for p in filtered]
+Troubleshooting Suggestions:
+{suggestion_msg}
 
-        if not abs_filtered:
-            return f"No files found matching pattern '{pattern}' in directory '{absolute_path}'"
-
-        abs_filtered.sort()
-        return "\n".join(abs_filtered)
+Raw Provider Response: {resp}"""
+            
+            # Parse the output to get file paths
+            stdout = resp.get("stdout", "").strip()
+            if not stdout:
+                return f"No files found matching pattern '{pattern}' in directory '{absolute_path}'"
+            
+            # Split lines and filter out empty lines
+            file_paths = [line.strip() for line in stdout.split('\n') if line.strip()]
+            
+            # Convert to absolute paths and sort
+            abs_paths = [os.path.abspath(path) for path in file_paths]
+            abs_paths.sort()
+            
+            return "\n".join(abs_paths)
+            
+        except Exception as e:
+            return f"Error executing find command: {str(e)}"
             
     except Exception as e:
         if logger:
@@ -414,55 +630,123 @@ async def grep_tool(
             return "Error: Code provider not available for sandboxed file operations."
 
         directory = sanitize_path(absolute_path)
-        resp = await agent.code_provider.search_files(
-            pattern=pattern,
-            directory=directory,
-            case_sensitive=(False if i else True) if i is not None else False,
-            regex=(True if regex else False),
-        )
-
-        if not resp.get("success"):
-            return f"Error: {resp.get('error', 'Search failed')}"
-
-        matches = resp.get("matches", [])
-
-        # Optionally filter by glob on the relative path
-        if glob:
-            filtered = []
-            for m in matches:
-                rel = m.get('file_path') or m.get('file') or m.get('full_path') or m.get('path')
-                if not rel:
-                    continue
-                if fnmatch.fnmatch(rel, glob):
-                    filtered.append(m)
-            matches = filtered
-
+        
+        # Check if directory exists first
+        if not os.path.exists(directory):
+            return f"Error: Directory '{directory}' does not exist."
+        
+        # Build grep command
+        grep_command = ["grep"]
+        
+        # Add flags
+        if i:  # Case insensitive
+            grep_command.append("-i")
+        if not regex:  # Literal search (not regex)
+            grep_command.append("-F")
+        
+        # Add output mode flags
         if output_mode == "files_with_matches":
-            files = _extract_match_paths(matches, base_dir=directory)
-            if not files:
-                return f"No matches found for pattern '{pattern}' in directory '{absolute_path}'"
-            files.sort()
-            return "\n".join(files)
+            grep_command.append("-l")  # Only show filenames
         elif output_mode == "count":
-            files = _extract_match_paths(matches, base_dir=directory)
-            return str(len(set(files)))
-        else:  # content
-            # Format: path:line: content (best-effort; provider may include line numbers)
-            lines: List[str] = []
-            for m in matches:
-                rel = m.get('file_path') or m.get('file') or m.get('full_path') or m.get('path')
-                if not rel:
-                    continue
-                abs_path = rel if os.path.isabs(rel) else os.path.join(directory, rel)
-                line_no = m.get('line')
-                snippet = m.get('content') or ""
-                if line_no is not None:
-                    lines.append(f"{abs_path}:{line_no}: {snippet}")
+            grep_command.append("-c")  # Count matches
+        else:  # content mode
+            grep_command.extend(["-n", "-H"])  # Show line numbers and filenames
+        
+        # Add recursive search
+        grep_command.append("-r")
+        
+        # Add pattern
+        grep_command.append(pattern)
+        
+        # Add directory
+        grep_command.append(directory)
+        
+        # If glob filter is specified, add --include
+        if glob:
+            grep_command.extend(["--include", glob])
+        
+        try:
+            resp = await agent.code_provider.execute_shell(
+                command=grep_command,
+                timeout=30,
+                workdir=directory
+            )
+            
+            # grep returns exit code 1 when no matches found, which is normal
+            if resp.get("exit_code") not in [0, 1]:
+                stderr = resp.get("stderr", "")
+                stdout = resp.get("stdout", "")
+                
+                # Provide detailed diagnostic information for debugging
+                diagnostic_info = []
+                diagnostic_info.append(f"Pattern: {pattern}")
+                diagnostic_info.append(f"Directory: {absolute_path}")
+                diagnostic_info.append(f"Grep command: {' '.join(grep_command)}")
+                diagnostic_info.append(f"Exit code: {resp.get('exit_code')}")
+                diagnostic_info.append(f"Provider type: {type(agent.code_provider).__name__ if agent and hasattr(agent, 'code_provider') else 'Unknown'}")
+                
+                if stderr:
+                    diagnostic_info.append(f"Stderr: {stderr}")
+                if stdout:
+                    diagnostic_info.append(f"Stdout: {stdout}")
+                
+                # Provide troubleshooting suggestions
+                suggestions = []
+                if "No such file or directory" in stderr:
+                    suggestions.append("Verify the directory path exists and is accessible")
+                    suggestions.append("Check sandbox read permissions for the directory")
+                elif "Permission denied" in stderr:
+                    suggestions.append("Check if the directory is within sandbox boundaries")
+                    suggestions.append("Verify read permissions for the target directory")
                 else:
-                    lines.append(f"{abs_path}: {snippet}")
-            if not lines:
+                    suggestions.append("Check the sandbox configuration and permissions")
+                    suggestions.append("Verify the grep command is available in the provider")
+                
+                diagnostic_msg = "\n".join(diagnostic_info)
+                suggestion_msg = "\n".join([f"  • {s}" for s in suggestions])
+                
+                return f"""Error in grep search: Grep command failed
+
+Diagnostic Information:
+{diagnostic_msg}
+
+Troubleshooting Suggestions:
+{suggestion_msg}
+
+Raw Provider Response: {resp}"""
+            
+            # Parse the output based on mode
+            stdout = resp.get("stdout", "").strip()
+            
+            if resp.get("exit_code") == 1:  # No matches found
                 return f"No matches found for pattern '{pattern}' in directory '{absolute_path}'"
-            return "\n".join(lines)
+            
+            if not stdout:
+                return f"No matches found for pattern '{pattern}' in directory '{absolute_path}'"
+            
+            # Split lines and filter out empty lines
+            output_lines = [line.strip() for line in stdout.split('\n') if line.strip()]
+            
+            if output_mode == "files_with_matches":
+                # grep -l returns just filenames
+                return "\n".join(sorted(output_lines))
+            elif output_mode == "count":
+                # grep -c returns filename:count format, sum all counts
+                total_count = 0
+                for line in output_lines:
+                    if ':' in line:
+                        try:
+                            count = int(line.split(':')[-1])
+                            total_count += count
+                        except ValueError:
+                            pass
+                return str(total_count)
+            else:  # content mode
+                # grep -n -H returns filename:line:content format
+                return "\n".join(output_lines)
+            
+        except Exception as e:
+            return f"Error executing grep command: {str(e)}"
             
     except Exception as e:
         if logger:

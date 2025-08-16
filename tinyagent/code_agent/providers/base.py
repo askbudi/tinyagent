@@ -381,7 +381,6 @@ class CodeExecutionProvider(ABC):
             return response['stdout']
     
     # File operation methods for sandbox-constrained file manipulation
-    @abstractmethod
     async def read_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
         """
         Read file within sandbox boundaries.
@@ -401,9 +400,21 @@ class CodeExecutionProvider(ABC):
                 "error": str | None
             }
         """
-        pass
+        code = self._generate_read_file_code(file_path, **kwargs)
+        
+        try:
+            response = await self.execute_python([code])
+            result = self._parse_file_operation_result(response, "FILE_READ_RESULT")
+            return self._standardize_read_response(result, file_path)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing file read: {str(e)}",
+                "path": file_path,
+                "size": 0,
+                "content": None
+            }
     
-    @abstractmethod 
     async def write_file(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
         """
         Write file within sandbox boundaries.
@@ -423,9 +434,21 @@ class CodeExecutionProvider(ABC):
                 "error": str | None
             }
         """
-        pass
+        code = self._generate_write_file_code(file_path, content, **kwargs)
+        
+        try:
+            response = await self.execute_python([code])
+            result = self._parse_file_operation_result(response, "FILE_WRITE_RESULT")
+            return self._standardize_write_response(result, file_path)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing file write: {str(e)}",
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }
     
-    @abstractmethod
     async def update_file(self, file_path: str, old_content: str, new_content: str, **kwargs) -> Dict[str, Any]:
         """
         Update file content with exact string replacement.
@@ -447,26 +470,391 @@ class CodeExecutionProvider(ABC):
                 "error": str | None
             }
         """
-        pass
-    
-
-        """
-        Search files within sandbox boundaries.
+        code = self._generate_update_file_code(file_path, old_content, new_content, **kwargs)
         
-        Args:
-            pattern: Search pattern
-            directory: Directory to search
-            file_types: File extensions to include
-            case_sensitive: Case-sensitive search
-            regex: Treat pattern as regex
-            
-        Returns:
-            {
-                "success": bool,
-                "matches": List[Dict[str, Any]],
-                "pattern": str,
-                "directory": str,
-                "error": str | None
+        try:
+            response = await self.execute_python([code])
+            result = self._parse_file_operation_result(response, "FILE_UPDATE_RESULT")
+            return self._standardize_update_response(result, file_path, old_content, new_content)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Error executing file update: {str(e)}",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
             }
+    
+    async def search_files(self, pattern: str, directory: str = ".", **kwargs) -> Dict[str, Any]:
         """
-        pass
+        Placeholder search_files method. Since we removed search_files and rely on grep/glob,
+        this method returns an error encouraging use of grep/glob tools instead.
+        """
+        return {
+            "success": False,
+            "error": "search_files method has been removed. Please use glob or grep tools instead for file searching.",
+            "matches": [],
+            "pattern": pattern,
+            "directory": directory
+        }
+    
+    # Helper methods for file operations
+    def _generate_read_file_code(self, file_path: str, **kwargs) -> str:
+        """Generate Python code for reading a file."""
+        start_line = kwargs.get('start_line', 1)
+        max_lines = kwargs.get('max_lines', None)
+        encoding = kwargs.get('encoding', 'utf-8')
+        
+        return f"""
+import os
+import mimetypes
+from pathlib import Path
+
+def read_file_impl(file_path, start_line=1, max_lines=None, encoding='utf-8'):
+    try:
+        # Basic path validation
+        if not file_path or '..' in file_path:
+            return {{
+                "success": False,
+                "error": "Invalid file path",
+                "path": file_path,
+                "size": 0,
+                "content": None
+            }}
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return {{
+                "success": False,
+                "error": "File not found",
+                "path": file_path,
+                "size": 0,
+                "content": None
+            }}
+        
+        # Check if it's a file (not directory)
+        if not os.path.isfile(file_path):
+            return {{
+                "success": False,
+                "error": "Path is not a file",
+                "path": file_path,
+                "size": 0,
+                "content": None
+            }}
+        
+        # Get file size
+        file_size = os.path.getsize(file_path)
+        
+        # Check for reasonable file size (100MB limit)
+        if file_size > 100 * 1024 * 1024:
+            return {{
+                "success": False,
+                "error": f"File too large: {{file_size}} bytes (limit: 100MB)",
+                "path": file_path,
+                "size": file_size,
+                "content": None
+            }}
+        
+        # Read the file
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                if start_line > 1:
+                    # Skip lines before start_line
+                    for _ in range(start_line - 1):
+                        try:
+                            next(f)
+                        except StopIteration:
+                            break
+                
+                lines = []
+                line_count = 0
+                for line in f:
+                    lines.append(line.rstrip('\\n\\r'))
+                    line_count += 1
+                    if max_lines and line_count >= max_lines:
+                        break
+                
+                content = '\\n'.join(lines)
+                
+                return {{
+                    "success": True,
+                    "content": content,
+                    "path": file_path,
+                    "size": file_size,
+                    "error": None
+                }}
+        
+        except UnicodeDecodeError as e:
+            return {{
+                "success": False,
+                "error": f"Could not decode file with encoding '{{encoding}}': {{str(e)}}",
+                "path": file_path,
+                "size": file_size,
+                "content": None
+            }}
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error reading file: {{str(e)}}",
+                "path": file_path,
+                "size": file_size,
+                "content": None
+            }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "path": file_path,
+            "size": 0,
+            "content": None
+        }}
+
+# Execute the file read
+result = read_file_impl({repr(file_path)}, {start_line}, {max_lines}, {repr(encoding)})
+print(f"FILE_READ_RESULT: {{result}}")
+"""
+
+    def _generate_write_file_code(self, file_path: str, content: str, **kwargs) -> str:
+        """Generate Python code for writing a file."""
+        create_dirs = kwargs.get('create_dirs', True)
+        encoding = kwargs.get('encoding', 'utf-8')
+        content_repr = repr(content)
+        
+        return f"""
+import os
+from pathlib import Path
+
+def write_file_impl(file_path, content, create_dirs=True, encoding='utf-8'):
+    try:
+        # Basic path validation
+        if not file_path or '..' in file_path:
+            return {{
+                "success": False,
+                "error": "Invalid file path",
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }}
+        
+        file_path_obj = Path(file_path)
+        
+        # Create parent directories if needed
+        if create_dirs and not file_path_obj.parent.exists():
+            try:
+                file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                return {{
+                    "success": False,
+                    "error": f"Could not create parent directories: {{str(e)}}",
+                    "path": file_path,
+                    "bytes_written": 0,
+                    "operation": "write"
+                }}
+        
+        # Determine operation type
+        operation = "overwritten" if os.path.exists(file_path) else "created"
+        
+        # Write the file
+        try:
+            with open(file_path, 'w', encoding=encoding) as f:
+                f.write(content)
+            
+            bytes_written = len(content.encode(encoding))
+            
+            return {{
+                "success": True,
+                "path": file_path,
+                "bytes_written": bytes_written,
+                "operation": operation,
+                "error": None
+            }}
+        
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error writing file: {{str(e)}}",
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "path": file_path,
+            "bytes_written": 0,
+            "operation": "write"
+        }}
+
+# Execute the file write
+result = write_file_impl({repr(file_path)}, {content_repr}, {create_dirs}, {repr(encoding)})
+print(f"FILE_WRITE_RESULT: {{result}}")
+"""
+
+    def _generate_update_file_code(self, file_path: str, old_content: str, new_content: str, **kwargs) -> str:
+        """Generate Python code for updating a file."""
+        old_content_repr = repr(old_content)
+        new_content_repr = repr(new_content)
+        
+        return f"""
+import os
+
+def update_file_impl(file_path, old_content, new_content):
+    try:
+        # Basic path validation
+        if not file_path or '..' in file_path:
+            return {{
+                "success": False,
+                "error": "Invalid file path",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return {{
+                "success": False,
+                "error": "File not found",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Read current content
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                current_content = f.read()
+        except Exception as e:
+            return {{
+                "success": False,
+                "error": f"Error reading file: {{str(e)}}",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Check if old_content exists in file
+        if old_content not in current_content:
+            return {{
+                "success": False,
+                "error": "Old content not found in file",
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }}
+        
+        # Replace content
+        updated_content = current_content.replace(old_content, new_content)
+        changes_made = updated_content != current_content
+        
+        if changes_made:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(updated_content)
+                
+                bytes_written = len(updated_content.encode('utf-8'))
+                
+                return {{
+                    "success": True,
+                    "path": file_path,
+                    "changes_made": True,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "bytes_written": bytes_written,
+                    "error": None
+                }}
+            except Exception as e:
+                return {{
+                    "success": False,
+                    "error": f"Error writing updated file: {{str(e)}}",
+                    "path": file_path,
+                    "changes_made": False,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "bytes_written": 0
+                }}
+        else:
+            return {{
+                "success": True,
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0,
+                "error": None
+            }}
+    
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": f"Unexpected error: {{str(e)}}",
+            "path": file_path,
+            "changes_made": False,
+            "old_content": old_content,
+            "new_content": new_content,
+            "bytes_written": 0
+        }}
+
+# Execute the file update
+result = update_file_impl({repr(file_path)}, {old_content_repr}, {new_content_repr})
+print(f"FILE_UPDATE_RESULT: {{result}}")
+"""
+
+    def _parse_file_operation_result(self, response: Dict[str, Any], result_pattern: str) -> Dict[str, Any]:
+        """Parse file operation result from execution response."""
+        import re
+        import ast
+        try:
+            output = response.get("printed_output", "")
+            match = re.search(rf"{result_pattern}: (.+)", output)
+            if match:
+                return ast.literal_eval(match.group(1))
+            else:
+                return {"success": False, "error": "Could not parse operation result"}
+        except Exception as e:
+            return {"success": False, "error": f"Error parsing result: {str(e)}"}
+
+    def _standardize_read_response(self, result: Dict[str, Any], file_path: str) -> Dict[str, Any]:
+        """Ensure read response follows standard format."""
+        return {
+            "success": result.get("success", False),
+            "content": result.get("content"),
+            "path": result.get("path", file_path),
+            "size": result.get("size", 0),
+            "error": result.get("error")
+        }
+
+    def _standardize_write_response(self, result: Dict[str, Any], file_path: str) -> Dict[str, Any]:
+        """Ensure write response follows standard format."""
+        return {
+            "success": result.get("success", False),
+            "path": result.get("path", file_path),
+            "bytes_written": result.get("bytes_written", 0),
+            "operation": result.get("operation", "write"),
+            "error": result.get("error")
+        }
+
+    def _standardize_update_response(self, result: Dict[str, Any], file_path: str, old_content: str, new_content: str) -> Dict[str, Any]:
+        """Ensure update response follows standard format."""
+        return {
+            "success": result.get("success", False),
+            "path": result.get("path", file_path),
+            "changes_made": result.get("changes_made", False),
+            "old_content": result.get("old_content", old_content),
+            "new_content": result.get("new_content", new_content),
+            "bytes_written": result.get("bytes_written", 0),
+            "error": result.get("error")
+        }
