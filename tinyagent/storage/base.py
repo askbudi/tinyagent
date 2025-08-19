@@ -48,7 +48,7 @@ class Storage(ABC):
                 return
             try:
                 state = agent.to_dict()
-                await self.save_session(agent.session_id, state)
+                await self.save_session(agent.session_id, state, agent.user_id)
             except Exception as e:
                 # Add error handling to prevent storage issues from breaking the agent
                 agent.logger.error(f"Storage auto-save failed: {str(e)}")
