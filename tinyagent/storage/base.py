@@ -32,7 +32,7 @@ class Storage(ABC):
 
     def attach(self, agent: "TinyAgent") -> None:
         """
-        Hook this storage to a TinyAgent so that on every `llm_end`
+        Hook this storage to a TinyAgent so that on every `message_add`
         it will auto‐persist the agent's state.
 
         Usage:
@@ -40,10 +40,19 @@ class Storage(ABC):
         or in TinyAgent.__init__:
             if storage: storage.attach(self)
         """
-        async def _auto_save(event_name: str, agent: "TinyAgent", **kwargs):
-            if event_name != "llm_end":
+        async def _auto_save(event_name: str, agent: "TinyAgent", *args, **kwargs):
+            # Handle both calling conventions:
+            # - message_add: (event_name, agent, **kwargs)
+            # - other events: (event_name, agent, kwargs_dict) - where kwargs_dict is a positional arg
+            if event_name != "message_add":
                 return
-            state = agent.to_dict()
-            await self.save_session(agent.session_id, state)
+            try:
+                state = agent.to_dict()
+                await self.save_session(agent.session_id, state)
+            except Exception as e:
+                # Add error handling to prevent storage issues from breaking the agent
+                agent.logger.error(f"Storage auto-save failed: {str(e)}")
+                import traceback
+                agent.logger.debug(f"Storage auto-save traceback: {traceback.format_exc()}")
 
         agent.callbacks.append(_auto_save) 

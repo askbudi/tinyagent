@@ -595,7 +595,7 @@ class TinyAgent:
     async def _on_llm_end(self, event_name: str, agent: "TinyAgent", **kwargs) -> None:
         """
         Callback hook: after each LLM call, accumulate *all* fields from
-        litellm's response.usage into our metadata and persist.
+        litellm's response.usage into our metadata.
         """
         if event_name != "llm_end":
             return
@@ -616,8 +616,30 @@ class TinyAgent:
                     # fallback: overwrite or store as-is
                     bucket[field] = value
 
-        # persist after each LLM call
-        await self.save_agent()
+        # Note: Storage persistence is now handled by the storage.attach() callback
+        # on message_add events, which ensures all conversation messages are saved
+
+    def _serialize_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Serialize a single message, handling ChatCompletionMessageToolCall objects.
+        """
+        serialized_message = dict(message)
+        
+        # Handle tool_calls if present
+        if "tool_calls" in message and message["tool_calls"]:
+            serialized_tool_calls = []
+            for tool_call in message["tool_calls"]:
+                # Check if it's a ChatCompletionMessageToolCall object
+                if hasattr(tool_call, 'to_dict'):
+                    serialized_tool_calls.append(tool_call.to_dict())
+                elif hasattr(tool_call, 'dict'):
+                    serialized_tool_calls.append(tool_call.dict())
+                else:
+                    # Already a dict or other serializable object
+                    serialized_tool_calls.append(tool_call)
+            serialized_message["tool_calls"] = serialized_tool_calls
+        
+        return serialized_message
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -625,8 +647,8 @@ class TinyAgent:
         """
         # start from user's own session_state
         session_data = dict(self.session_state)
-        # always include the conversation
-        session_data["messages"] = self.messages
+        # always include the conversation with proper serialization
+        session_data["messages"] = [self._serialize_message(msg) for msg in self.messages]
 
         # optionally include tools
         if self.persist_tool_configs:
