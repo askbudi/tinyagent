@@ -434,6 +434,419 @@ async def controlled_agent_example():
 asyncio.run(controlled_agent_example())
 ```
 
+## Using Local Models with Ollama
+
+TinyAgent supports local models through Ollama via LiteLLM integration. This allows you to run models locally without requiring API keys or cloud services.
+
+### Prerequisites
+
+1. Install Ollama from [ollama.ai](https://ollama.ai)
+2. Pull the model you want to use:
+   ```bash
+   ollama pull qwen2.5-coder:7b
+   ollama pull codellama
+   ollama pull gpt-oss:20b
+   # or any other model from Ollama library
+   ```
+
+### Basic Usage with Ollama
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+
+async def main():
+    # Initialize TinyAgent with Ollama model
+    # Format: "ollama/<model-name>"
+    agent = TinyAgent(
+        model="ollama/qwen2.5-coder:7b",  # or "ollama/codellama", "ollama/mixtral", etc.
+        api_key=None,  # No API key needed for local models
+        temperature=0.7,
+        system_prompt="You are a helpful AI assistant running locally."
+    )
+    
+    try:
+        # Connect to MCP servers if needed
+        await agent.connect_to_server("npx", ["@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        
+        # Run the agent
+        result = await agent.run("What can you help me with today?")
+        print("Response:", result)
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### TinyCodeAgent with Ollama
+
+```python
+import asyncio
+from tinyagent import TinyCodeAgent
+
+async def main():
+    # Use code-optimized models for better results
+    agent = TinyCodeAgent(
+        model="ollama/qwen2.5-coder:7b",  # qwen2.5-coder:7b is optimized for code tasks
+        api_key=None,
+        provider="seatbelt",  # or "modal" for cloud execution
+        enable_python_tool=True,
+        enable_shell_tool=True,
+        enable_file_tools=True
+    )
+    
+    try:
+        result = await agent.run("""
+        Write a Python function to calculate fibonacci numbers
+        and test it with the first 10 numbers.
+        """)
+        print("Result:", result)
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### Advanced Ollama Configuration
+
+```python
+from tinyagent import TinyAgent
+
+# Custom Ollama endpoint (if not using default)
+agent = TinyAgent(
+    model="ollama/llama2",
+    api_key=None,
+    model_kwargs={
+        "api_base": "http://localhost:11434",  # Custom Ollama server
+        "num_predict": 2048,  # Max tokens to generate
+        "top_k": 40,
+        "top_p": 0.9,
+        "repeat_penalty": 1.1
+    }
+)
+
+# Using with hooks and callbacks
+from tinyagent.hooks.rich_ui_callback import RichUICallback
+
+agent = TinyAgent(
+    model="ollama/mixtral",
+    api_key=None,
+    temperature=0.5
+)
+
+# Add rich UI for better visualization
+ui = RichUICallback()
+agent.add_callback(ui)
+```
+
+### Recommended Ollama Models
+
+| Model | Best For | Command |
+|-------|----------|---------|
+| `llama2` | General purpose tasks | `ollama pull llama2` |
+| `codellama` | Code generation and analysis | `ollama pull codellama` |
+| `mixtral` | Advanced reasoning, larger context | `ollama pull mixtral` |
+| `mistral` | Fast, efficient general tasks | `ollama pull mistral` |
+| `phi` | Lightweight, fast responses | `ollama pull phi` |
+| `deepseek-coder` | Specialized code tasks | `ollama pull deepseek-coder` |
+
+### Performance Tips
+
+1. **Model Selection**: Choose models based on your task:
+   - Use `codellama` or `deepseek-coder` for code-heavy tasks
+   - Use `mixtral` for complex reasoning
+   - Use `phi` or `mistral` for faster responses
+
+2. **Resource Management**: Local models use your machine's resources:
+   ```python
+   # Adjust temperature for more deterministic outputs
+   agent = TinyAgent(
+       model="ollama/codellama",
+       temperature=0.1,  # Lower = more deterministic
+       model_kwargs={
+           "num_thread": 8,  # Adjust based on your CPU
+           "num_gpu": 1,     # If you have GPU support
+       }
+   )
+   ```
+
+3. **Context Length**: Be mindful of context limits:
+   ```python
+   # Configure for longer contexts if needed
+   agent = TinyAgent(
+       model="ollama/mixtral",
+       model_kwargs={
+           "num_ctx": 4096,  # Context window size
+       }
+   )
+   ```
+
+## Session Persistence with Storage
+
+TinyAgent supports persistent sessions across runs using various storage backends. This allows you to resume conversations, maintain conversation history, and preserve agent state between application restarts.
+
+### Available Storage Systems
+
+TinyAgent provides several storage backend options:
+
+- **SQLite Storage** (`sqlite_storage.py`) - Local file-based database, great for development and single-user applications
+- **PostgreSQL Storage** (`postgres_storage.py`) - Production-ready relational database for multi-user applications
+- **Redis Storage** (`redis_storage.py`) - In-memory database for high-performance, cache-like storage
+- **JSON File Storage** (`json_file_storage.py`) - Simple file-based storage for development and testing
+
+### SQLite Storage Example
+
+Here's a complete example using SQLite storage for session persistence:
+
+```python
+import asyncio
+import os
+from tinyagent import TinyAgent
+from tinyagent.storage.sqlite_storage import SqliteStorage
+
+async def persistent_agent_example():
+    """Example showing how to use SQLite storage for session persistence."""
+    
+    # Initialize SQLite storage
+    # This will create a local database file to store sessions
+    storage = SqliteStorage(
+        db_path="./agent_sessions.db",  # Local SQLite database file
+        table_name="tny_agent_sessions"  # Custom table name (optional)
+    )
+    
+    # Create agent with persistent storage
+    # If session_id exists, it will resume the previous conversation
+    agent = await TinyAgent.create(
+        model="gpt-4.1-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        session_id="user-123-chat",  # Unique session identifier
+        user_id="user-123",  # Optional user identifier
+        storage=storage,  # Enable persistent storage
+        metadata={
+            "user_name": "Alice",
+            "application": "customer-support",
+            "version": "1.0"
+        }
+    )
+    
+    try:
+        # First run - will create new session or resume existing one
+        print("=== First Interaction ===")
+        result1 = await agent.run("Hello! My name is Alice. What can you help me with?")
+        print(f"Agent: {result1}")
+        
+        # Second run - state is automatically persisted
+        print("\n=== Second Interaction ===")
+        result2 = await agent.run("Do you remember my name from our previous conversation?")
+        print(f"Agent: {result2}")
+        
+        # Check current conversation length
+        print(f"\nConversation has {len(agent.messages)} messages")
+        
+        # You can also manually save at any point
+        await agent.save_agent()
+        print("Session manually saved!")
+        
+    finally:
+        # Clean up resources
+        await agent.close()
+
+# Run the example
+asyncio.run(persistent_agent_example())
+```
+
+### Resuming Sessions
+
+You can resume a previous session by using the same `session_id`:
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+from tinyagent.storage.sqlite_storage import SqliteStorage
+
+async def resume_session_example():
+    """Example showing how to resume a previous session."""
+    
+    storage = SqliteStorage(db_path="./agent_sessions.db")
+    
+    # Resume existing session
+    agent = await TinyAgent.create(
+        model="gpt-4.1-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        session_id="user-123-chat",  # Same session ID as before
+        user_id="user-123",
+        storage=storage
+    )
+    
+    try:
+        # This will continue from where the previous conversation left off
+        print(f"Resumed session with {len(agent.messages)} previous messages")
+        
+        result = await agent.run("Can you summarize our conversation so far?")
+        print(f"Agent: {result}")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(resume_session_example())
+```
+
+### Multiple User Sessions
+
+Handle multiple users with separate sessions:
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+from tinyagent.storage.sqlite_storage import SqliteStorage
+
+async def multi_user_example():
+    """Example showing multiple user sessions."""
+    
+    storage = SqliteStorage(db_path="./multi_user_sessions.db")
+    
+    # User 1 session
+    agent1 = await TinyAgent.create(
+        model="gpt-4.1-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        session_id="chat-session-1",
+        user_id="user-alice",
+        storage=storage,
+        metadata={"user_name": "Alice", "role": "developer"}
+    )
+    
+    # User 2 session  
+    agent2 = await TinyAgent.create(
+        model="gpt-4.1-mini",
+        api_key=os.getenv("OPENAI_API_KEY"), 
+        session_id="chat-session-2",
+        user_id="user-bob",
+        storage=storage,
+        metadata={"user_name": "Bob", "role": "manager"}
+    )
+    
+    try:
+        # Each user gets their own isolated conversation
+        result1 = await agent1.run("Hi, I'm Alice and I'm working on a Python project.")
+        result2 = await agent2.run("Hello, I'm Bob and I need help with project management.")
+        
+        print(f"Alice's agent: {result1}")
+        print(f"Bob's agent: {result2}")
+        
+    finally:
+        await agent1.close()
+        await agent2.close()
+
+asyncio.run(multi_user_example())
+```
+
+### Advanced Storage Configuration
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+from tinyagent.storage.sqlite_storage import SqliteStorage
+from tinyagent.hooks.rich_ui_callback import RichUICallback
+
+async def advanced_storage_example():
+    """Advanced example with custom storage configuration."""
+    
+    # Initialize storage with custom table name and path
+    storage = SqliteStorage(
+        db_path="./data/conversations/agent.db",  # Custom path (directories will be created)
+        table_name="custom_sessions"  # Custom table name
+    )
+    
+    # Create agent with comprehensive configuration
+    agent = await TinyAgent.create(
+        model="gpt-4.1-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        session_id="advanced-session",
+        user_id="power-user",
+        storage=storage,
+        
+        # Additional configuration
+        metadata={
+            "application": "ai-assistant",
+            "version": "2.0",
+            "user_tier": "premium",
+            "features": ["code_execution", "file_access"]
+        },
+        
+        # Enable tool persistence (experimental)
+        persist_tool_configs=True,
+        
+        # Add conversation summarization for long sessions
+        summary_config={
+            "model": "gpt-4.1-mini",
+            "max_messages": 50,  # Summarize when over 50 messages
+            "system_prompt": "Provide a concise summary of this conversation."
+        }
+    )
+    
+    # Add rich UI for better visualization
+    ui = RichUICallback(show_thinking=True, show_tool_calls=True)
+    agent.add_callback(ui)
+    
+    try:
+        # Connect to tools/services
+        await agent.connect_to_server("npx", ["@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        
+        # Run agent with complex task
+        result = await agent.run("""
+        I'm planning a trip to Tokyo. Can you help me:
+        1. Find 3 good accommodation options
+        2. Research local transportation
+        3. Suggest must-visit attractions
+        4. Create a 3-day itinerary
+        
+        Keep track of all this information for our future conversations.
+        """)
+        
+        print(f"Result: {result}")
+        
+        # Check storage metadata
+        print(f"\nSession metadata: {agent.metadata}")
+        print(f"Messages in conversation: {len(agent.messages)}")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(advanced_storage_example())
+```
+
+### Storage Installation Requirements
+
+Different storage backends may require additional dependencies:
+
+```bash
+# SQLite (included with Python, no extra installation needed)
+pip install tinyagent-py[sqlite]
+
+# PostgreSQL
+pip install tinyagent-py[postgres]
+
+# Redis  
+pip install tinyagent-py[redis]
+
+# All storage backends
+pip install tinyagent-py[all]
+```
+
+### Best Practices for Storage
+
+1. **Session ID Management**: Use meaningful, unique session IDs (e.g., `user-{user_id}-{chat_type}-{timestamp}`)
+
+2. **Resource Cleanup**: Always call `await agent.close()` to properly close storage connections
+
+3. **Error Handling**: Wrap storage operations in try/except blocks
+
+4. **Database Maintenance**: For production systems, implement regular database maintenance and backups
+
+5. **Security**: Store database credentials securely using environment variables or secret management systems
+
+6. **Performance**: For high-traffic applications, consider using Redis or PostgreSQL instead of SQLite
+
 ## Usage
 
 ### TinyAgent (Core Agent)

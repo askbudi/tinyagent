@@ -35,6 +35,186 @@ async def main():
 asyncio.run(main())
 ```
 
+### Using Local Models with Ollama
+
+TinyCodeAgent supports local models through Ollama for code execution tasks without requiring cloud APIs.
+
+#### Prerequisites
+
+1. Install Ollama from [ollama.ai](https://ollama.ai)
+2. Pull code-optimized models:
+   ```bash
+   ollama pull codellama       # Best for code generation
+   ollama pull deepseek-coder  # Specialized for coding
+   ollama pull mixtral         # Good for complex reasoning
+   ollama pull llama2          # General purpose alternative
+   ```
+
+#### Basic Ollama Setup
+
+```python
+import asyncio
+from tinyagent import TinyCodeAgent
+
+async def main():
+    # Initialize with Ollama model
+    agent = TinyCodeAgent(
+        model="ollama/codellama",  # Code-optimized model
+        api_key=None,  # No API key needed
+        provider="seatbelt",  # Local sandbox execution
+        enable_python_tool=True,
+        enable_shell_tool=True,
+        enable_file_tools=True
+    )
+    
+    try:
+        result = await agent.run("""
+        Create a Python class for a binary search tree with insert, 
+        search, and traversal methods. Test it with sample data.
+        """)
+        print(result)
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+#### Advanced Ollama Configuration
+
+```python
+from tinyagent import TinyCodeAgent
+from tinyagent.hooks.rich_ui_callback import RichUICallback
+
+async def main():
+    # Enhanced configuration for local development
+    agent = TinyCodeAgent(
+        model="ollama/deepseek-coder",  # Specialized coding model
+        api_key=None,
+        
+        # Provider configuration for local execution
+        provider="seatbelt",
+        provider_config={
+            "python_env_path": "/usr/local/bin/python3",
+            "additional_read_dirs": ["/path/to/your/project"],
+            "additional_write_dirs": ["/path/to/output"],
+            "bypass_shell_safety": True  # More permissive for local dev
+        },
+        
+        # Model-specific parameters
+        model_kwargs={
+            "api_base": "http://localhost:11434",
+            "num_ctx": 4096,  # Context window
+            "temperature": 0.1,  # Lower for more deterministic code
+            "top_p": 0.9,
+            "repeat_penalty": 1.05
+        },
+        
+        # Enable all code tools
+        enable_python_tool=True,
+        enable_shell_tool=True, 
+        enable_file_tools=True,
+        enable_todo_write=True,
+        
+        # Local settings
+        default_workdir="/path/to/your/project",
+        auto_git_checkpoint=True,
+        
+        # UI enhancement
+        ui="rich"
+    )
+    
+    # Add rich terminal interface
+    ui_callback = RichUICallback(
+        show_thinking=True,
+        show_tool_calls=True,
+        markdown=True
+    )
+    agent.add_callback(ui_callback)
+    
+    try:
+        result = await agent.run("""
+        Analyze this Python project structure:
+        1. Use glob to find all Python files
+        2. Use grep to find all class definitions
+        3. Create a dependency graph
+        4. Generate refactoring suggestions
+        """)
+        print("Analysis complete:", result)
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+#### Model Recommendations for Code Tasks
+
+| Model | Best For | Performance | Resource Usage |
+|-------|----------|-------------|----------------|
+| `ollama/codellama` | General coding, debugging | Good | Medium |
+| `ollama/deepseek-coder` | Complex code analysis, architecture | Excellent | High |
+| `ollama/mixtral` | Code reasoning, explanations | Very Good | High |
+| `ollama/llama2` | Simple scripts, learning | Fair | Low |
+| `ollama/phi` | Quick code snippets | Fair | Very Low |
+
+#### Performance Optimization for Code Tasks
+
+```python
+# Optimize for coding tasks
+agent = TinyCodeAgent(
+    model="ollama/codellama",
+    model_kwargs={
+        "num_ctx": 8192,      # Larger context for code files
+        "temperature": 0.1,    # Deterministic for code generation
+        "top_k": 10,          # Focused token selection
+        "top_p": 0.8,         # Conservative sampling
+        "repeat_penalty": 1.1, # Avoid repetitive code
+        "num_thread": 8,      # Use available CPU cores
+        "num_gpu": 1 if "cuda" else 0  # GPU acceleration if available
+    },
+    
+    # Optimize for local execution
+    provider="seatbelt",
+    truncation_config={
+        "max_tokens": 8000,   # Handle longer code outputs
+        "max_lines": 500,
+        "enabled": True
+    }
+)
+```
+
+#### Code-Specific Examples
+
+```python
+# Code analysis and refactoring
+result = await agent.run("""
+Use the file tools to analyze this codebase:
+1. Find all Python files with glob
+2. Search for TODO comments with grep
+3. Read the main module files
+4. Suggest refactoring improvements
+5. Create implementation plan with todos
+""")
+
+# Algorithm implementation
+result = await agent.run("""
+Implement and test these algorithms:
+1. Quicksort with visualization
+2. Dijkstra's shortest path
+3. Binary search with edge cases
+4. Create performance benchmarks
+""")
+
+# Full-stack development
+result = await agent.run("""
+Create a simple web API:
+1. Design FastAPI application structure
+2. Implement database models with SQLAlchemy
+3. Create REST endpoints with validation
+4. Add unit tests and documentation
+5. Use file tools to organize the code properly
+""")
+```
+
 ### With Custom Tools
 
 ```python
