@@ -114,6 +114,68 @@ class CodeExecutionProvider(ABC):
         """
         pass
     
+    def should_use_shell_execution(self, command: List[str]) -> bool:
+        """
+        Determine if command truly needs shell interpretation.
+        
+        Key insight: Most glob patterns should be handled by the target command,
+        not expanded by the shell prematurely.
+        
+        Args:
+            command: List of command parts
+            
+        Returns:
+            True if command needs shell interpretation, False if it can run directly
+        """
+        if not command or not isinstance(command, list) or len(command) == 0:
+            return False
+        
+        command_str = " ".join(command)
+        
+        # ONLY use shell for actual shell features that require interpretation
+        # Notably: '*', '?', '[', ']' are NOT included here because they should
+        # typically be handled by the target command (find, grep, etc.)
+        genuine_shell_features = [
+            "|", "&&", "||", ";",      # Pipes and operators  
+            ">", ">>", "<", "<<",      # Redirections
+            "$", "`", "$(", ")",       # Variable/command substitution
+            "~",                       # Home directory expansion (shell-specific)
+        ]
+        
+        # Check for genuine shell features that need bash -c
+        for feature in genuine_shell_features:
+            if feature in command_str:
+                return True
+        
+        # Shell built-ins that must use shell
+        shell_builtins = [
+            "cd", "export", "source", ".", "alias", "unalias", "set", "unset",
+            "echo", "printf", "test", "[", "[[", "declare", "local", "readonly",
+            "typeset", "eval", "exec", "exit", "return", "break", "continue",
+            "shift", "getopts", "read", "wait", "jobs", "fg", "bg", "disown",
+            "kill", "trap", "ulimit", "umask", "type", "command", "builtin",
+            "enable", "help", "history", "fc", "dirs", "pushd", "popd",
+            "suspend", "times", "caller", "complete", "compgen", "shopt"
+        ]
+        
+        if command[0] in shell_builtins:
+            return True
+        
+        # Complex shell patterns that need interpretation
+        if (
+            # Variable assignment (VAR=value cmd)
+            any("=" in arg and not arg.startswith("-") and i == 0 for i, arg in enumerate(command)) or
+            # Command substitution patterns
+            "$((" in command_str or "))" in command_str or
+            # Brace expansion (but not JSON-like braces in single arguments)
+            (("{" in command_str and "}" in command_str) and 
+             not any("{" in arg and "}" in arg and arg.count("{") + arg.count("}") > 2 for arg in command))
+        ):
+            return True
+        
+        # Default: use direct execution to preserve literal arguments
+        return False
+
     def is_safe_command(self, command: List[str]) -> Dict[str, Any]:
         """
         Check if a shell command is safe to execute.

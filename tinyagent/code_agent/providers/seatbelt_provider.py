@@ -8,6 +8,7 @@ import cloudpickle
 import json
 import re
 import shutil
+import shlex
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -730,60 +731,24 @@ print(json.dumps(cleaned_result))
                 print(error_text)
             print("#########################</traceback>#########################")
     
-    def _needs_shell_wrapper(self, command: List[str]) -> bool:
+    
+    def _quote_command_for_shell(self, command: List[str]) -> str:
         """
-        Determine if a command needs bash -c wrapper based on shell features.
+        Properly quote command parts to prevent premature shell expansion of glob patterns.
         
         Args:
             command: List of command parts
             
         Returns:
-            True if command needs bash -c wrapper, False if it can run directly
+            Properly quoted command string for shell execution
         """
-        if not command:
-            return False
+        quoted_parts = []
+        for part in command:
+            # Use shlex.quote to properly escape all parts, which will prevent
+            # shell expansion of glob patterns until they reach the intended command
+            quoted_parts.append(shlex.quote(part))
         
-        command_str = " ".join(command)
-        
-        # Shell metacharacters that require bash -c
-        shell_metacharacters = [
-            "|", "&", ";", "(", ")", "{", "}", "[", "]", 
-            "&&", "||", ">>", "<<", "<", ">", "<<<",
-            "$", "`", "~", "*", "?", "!", "^"
-        ]
-        
-        # Check for shell metacharacters
-        for char in shell_metacharacters:
-            if char in command_str:
-                return True
-        
-        # Shell built-ins that require bash -c
-        shell_builtins = [
-            "cd", "export", "source", ".", "alias", "unalias", "set", "unset",
-            "echo", "printf", "test", "[", "[[", "declare", "local", "readonly",
-            "typeset", "eval", "exec", "exit", "return", "break", "continue",
-            "shift", "getopts", "read", "wait", "jobs", "fg", "bg", "disown",
-            "kill", "trap", "ulimit", "umask", "type", "command", "builtin",
-            "enable", "help", "history", "fc", "dirs", "pushd", "popd",
-            "suspend", "times", "caller", "complete", "compgen", "shopt"
-        ]
-        
-        # Check if first command is a shell built-in
-        if command[0] in shell_builtins:
-            return True
-        
-        # Special cases that need shell interpretation
-        if (
-            # Variable assignment (VAR=value)
-            any("=" in arg and not arg.startswith("-") for arg in command) or
-            # Command substitution patterns
-            "$((" in command_str or "))" in command_str or
-            # Brace expansion
-            "{" in command_str and "}" in command_str
-        ):
-            return True
-        
-        return False
+        return ' '.join(quoted_parts)
     
     async def _prepare_git_sandbox_command(self, command: List[str]) -> List[str]:
         """
@@ -1009,13 +974,14 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
                 ])
                 temp_dir = None
             
-            # Determine if command needs shell wrapper
-            elif self._needs_shell_wrapper(command):
-                # Commands that need shell interpretation
+            # Use the improved logic from base class
+            elif self.should_use_shell_execution(command):
+                # Commands that truly need shell interpretation
+                quoted_command = self._quote_command_for_shell(command)
                 sandbox_cmd = [
                     "sandbox-exec", 
                     "-f", self.seatbelt_profile_path,
-                    "bash", "-c", " ".join(command)
+                    "bash", "-c", quoted_command
                 ]
                 temp_dir = None
             else:

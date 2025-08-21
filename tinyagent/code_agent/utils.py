@@ -770,9 +770,23 @@ def generate_dynamic_bash_description(capabilities: Optional[Dict[str, Any]] = N
     modern_tools = capabilities['modern_tools']
     
     # Base description with clear tool hierarchy
-    description = """Execute shell commands safely in provider sandbox.
+    description = """Execute external programs and use shell features safely in provider sandbox.
 
-🚨 CRITICAL: USE SPECIALIZED TOOLS FIRST (they handle cross-platform issues automatically):
+🎯 BASH TOOL PURPOSE:
+• External programs: Run npm, git, python, cargo, docker, etc.
+• Shell features: Pipes, redirections, variables, conditionals
+
+📝 SHORT EXAMPLES:
+External program: bash(command="npm test", timeout=120)
+Shell feature: bash(command="ps aux | grep python")
+
+⏰ CRITICAL: ALWAYS SET TIMEOUT FOR EXTERNAL PROGRAMS:
+• Test suites: timeout=120 (2 minutes) or timeout=300 (5 minutes)
+• Build processes: timeout=600 (10 minutes)
+• Server commands: timeout=30 (30 seconds) for quick checks
+• System commands: timeout=10 (default) for ls, ps, git status
+
+🚨 USE SPECIALIZED TOOLS FIRST (they handle cross-platform issues automatically):
 • File operations: read_file(), write_file(), update_file() instead of cat/echo/>
 • File discovery: glob_tool(pattern="**/*.py") instead of find commands  
 • Content search: grep_tool(pattern="...", output_mode="content") instead of grep/rg
@@ -834,25 +848,63 @@ RECOMMENDED APPROACH:
                 description += f"• {tool}: {info.get('purpose', '')} at {info['path']}\n"
         description += "\n"
     
-    # Tier-based command safety guide
-    description += """🎯 BASH COMMAND SAFETY GUIDE:
+    # Shell Features and Syntax Control
+    description += """🔧 USE BASH FOR SHELL FEATURES:
+• Pipes: bash(command="ps aux | grep python")
+• Conditionals: bash(command="npm test && git commit || echo 'Failed'", timeout=180)  
+• Variables: bash(command="echo $USER $HOME")
+• Redirections: bash(command="npm run build > build.log 2>&1", timeout=600)
+• Command substitution: bash(command="kill $(pgrep node)")
 
-TIER 1 - SAFE EVERYWHERE (use these freely):
-• Build: npm run build, pytest, cargo test, make install
-• Git: git status, git add, git commit, git log --oneline -10
-• System: ps aux, df -h, uname -a, whoami, which command
-• Directories: mkdir -p path/to/dir, ls -la
+💡 SHELL SYNTAX CONTROL:
+Simple external programs: bash(command="npm test", timeout=120)
+Complex shell features: bash(command="bash -c 'export VAR=value && npm run $VAR'", timeout=300)
 
-TIER 2 - PLATFORM DIFFERENCES (check examples above):
-• find (BSD vs GNU differences)
-• ls with flags (--color works on Linux, -G on macOS)
-• sed -i (syntax varies)
+Use bash -c when you need:
+• Multiple commands with variables
+• Complex shell scripting  
+• Environment variable control
 
-TIER 3 - AVOID IN BASH (use specialized tools):
-❌ Reading files: cat, head, tail, less, more
-❌ Writing files: echo >, cat >, tee
-❌ Searching: grep -r, find -name, locate
-❌ File operations: cp, mv, rm (for code files)
+🏗️ DEVELOPMENT WORKFLOWS:
+
+BUILD & TEST (always set timeout!):
+bash(command="npm run build", timeout=600)
+bash(command="python -m pytest tests/ -v", timeout=300)
+bash(command="cargo test --release", timeout=480)
+
+VERSION CONTROL:
+bash(command="git status && git add . && git commit -m 'Update'", timeout=60)
+bash(command="git log --oneline -10")
+
+SYSTEM MONITORING:
+bash(command="ps aux | head -10")
+bash(command="df -h")
+bash(command="netstat -tulpn | grep :3000")
+
+PROCESS MANAGEMENT:
+bash(command="kill -9 $(pgrep python)")
+bash(command="nohup python server.py &", timeout=5)
+
+🚫 DON'T USE BASH FOR FILE OPERATIONS:
+
+❌ bash(command="find . -name '*.py'") 
+✅ glob_tool(pattern="**/*.py", absolute_path="/path/to/search")
+
+❌ bash(command="grep -r 'pattern' .")
+✅ grep_tool(pattern="pattern", absolute_path="/path", output_mode="content")
+
+❌ bash(command="cat file.txt")
+✅ read_file(file_path="/path/to/file.txt")
+
+❌ bash(command="echo 'content' > file.txt")
+✅ write_file(file_path="/path/to/file.txt", content="content")
+
+❌ bash(command="sed -i 's/old/new/' file.txt")
+✅ update_file(file_path="/path/to/file.txt", old_content="old", new_content="new")
+
+🤔 DECISION FRAMEWORK:
+✅ Use BASH for: External programs, shell features, build/test/deploy, system admin
+✅ Use OTHER TOOLS for: File operations, file discovery, content search
 
 """
     
@@ -868,25 +920,26 @@ TIER 3 - AVOID IN BASH (use specialized tools):
     
     description += """
 
-📋 COMMON WORKFLOWS:
+⏰ TIMEOUT EXAMPLES BY TASK:
 
-Check project status:
-bash(command="git status && ls -la")
+Quick checks (timeout=10 default):
+bash(command="git status")
 bash(command="which node python pip")
+bash(command="ps aux | head -10")
 
-Run tests and builds:  
-bash(command="npm test")
-bash(command="python -m pytest tests/ -v")
-bash(command="cargo build --release")
+Medium tasks (timeout=60-180):
+bash(command="npm install", timeout=180)
+bash(command="git clone https://github.com/user/repo.git", timeout=120)
 
-Process management:
-bash(command="ps aux | grep python")
-bash(command="kill -9 $(pgrep -f 'process_name')")
+Long-running tasks (timeout=300-600):
+bash(command="npm test", timeout=300)
+bash(command="python -m pytest tests/ -v", timeout=240)
+bash(command="npm run build", timeout=600)
+bash(command="docker build -t myapp .", timeout=900)
 
-System diagnostics:
-bash(command="df -h")  # Disk space
-bash(command="free -h")  # Memory (Linux)
-bash(command="top -l 1 -s 0 | head -10")  # Processes snapshot
+Background processes (timeout=5-30):
+bash(command="nohup python server.py &", timeout=5)
+bash(command="python -m http.server 8000 &", timeout=10)
 
 Arguments:
 • command (string): Shell command to execute
