@@ -12,7 +12,7 @@ from ..subagent import create_research_subagent, SubagentConfig
 research_agent = create_research_subagent(
     name="research_agent",
     description="Specialized research assistant for comprehensive information gathering and analysis",
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     max_turns=20,
     temperature=0.1
 )
@@ -22,7 +22,7 @@ research_agent = create_research_subagent(
 quick_research_agent = create_research_subagent(
     name="quick_research",
     description="Fast research assistant for basic information gathering",
-    model="gpt-4.1-mini", 
+    model="gpt-5-mini", 
     max_turns=10,
     temperature=0.0
 )
@@ -32,7 +32,7 @@ quick_research_agent = create_research_subagent(
 deep_research_agent = create_research_subagent(
     name="deep_research",
     description="Thorough research specialist for comprehensive analysis and synthesis",
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     max_turns=30,
     temperature=0.05,
     system_prompt=(

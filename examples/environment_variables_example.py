@@ -56,7 +56,7 @@ async def main():
     logger.info("=== TinyAgent with Environment Variables ===")
     
     agent = TinyAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         api_key=api_key,
         logger=logger
     )
@@ -116,7 +116,7 @@ async def main():
     logger.info("\n=== TinyCodeAgent with Environment Variables ===")
     
     code_agent = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         api_key=api_key,
         provider="modal",
         local_execution=False,
@@ -191,7 +191,7 @@ async def main():
     logger.info("\n=== Environment Variables with Tool Filtering ===")
     
     filter_agent = TinyAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         api_key=api_key,
         logger=logger
     )

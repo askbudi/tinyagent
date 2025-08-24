@@ -541,7 +541,7 @@ async def run_example():
     
     # Create main agent with token tracking
     main_agent = TinyAgent(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         api_key=os.environ.get("OPENAI_API_KEY"),
         logger=log_manager.get_logger('main_agent')
     )

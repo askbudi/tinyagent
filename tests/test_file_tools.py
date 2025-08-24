@@ -34,7 +34,7 @@ async def test_file_tools():
             
             # Create TinyCodeAgent with file tools enabled
             agent = TinyCodeAgent(
-                model="gpt-4o-mini",
+                model="gpt-5-mini",
                 provider="modal",
                 local_execution=True,
                 enable_file_tools=True,

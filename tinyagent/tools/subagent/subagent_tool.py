@@ -16,7 +16,7 @@ Examples:
     # Basic usage with automatic agent creation
     tool = create_subagent_tool(
         name="helper",
-        config=SubagentConfig(model="gpt-4o-mini")
+        config=SubagentConfig(model="gpt-5-mini")
     )
     
     # With parent agent inheritance
@@ -202,7 +202,7 @@ def create_subagent_tool(
         
     Examples:
         # Basic usage with automatic configuration
-        config = SubagentConfig(model="gpt-4o-mini", max_turns=15)
+        config = SubagentConfig(model="gpt-5-mini", max_turns=15)
         tool = create_subagent_tool("helper", config)
         main_agent.add_tool(tool)
         
@@ -474,7 +474,7 @@ def create_task_tool(*args, **kwargs):
 # Default general-purpose subagent
 def create_general_subagent(
     name: str = "subagent",
-    model: str = "gpt-4.1-mini",
+    model: str = "gpt-5-mini",
     max_turns: int = 15,
     enable_python: bool = True,
     enable_shell: bool = True,

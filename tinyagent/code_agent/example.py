@@ -43,7 +43,7 @@ async def run_example():
     ui_logger.info("--- Starting TinyCodeAgent Example ---")
     
     # --- Configuration ---
-    model = "gpt-4.1-mini"
+    model = "gpt-5-mini"
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         ui_logger.error("OPENAI_API_KEY environment variable not set.")
@@ -150,7 +150,7 @@ def simple_example():
         
         # Initialize TinyCodeAgent
         agent = TinyCodeAgent(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             api_key=api_key,
             tools=[get_weather, get_traffic]
         )

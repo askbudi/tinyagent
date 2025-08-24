@@ -389,7 +389,7 @@ async def run_example():
         return
     
     # Initialize the agent with our logger
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
+    agent = TinyAgent(model="gpt-5-mini", api_key=api_key, logger=agent_logger)
     
     # Connect to MCP servers as required
     await agent.connect_to_server("npx", ["-y", "@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])

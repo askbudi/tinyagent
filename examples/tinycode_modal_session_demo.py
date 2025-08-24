@@ -97,7 +97,7 @@ session.run_stateful("for _ in range(3): inc()")
 # 4) TinyCodeAgent running inside the same sandbox
 # ---------------------------------------------------------------------------
 
-agent = TinyCodeAgent(model="gpt-4.1-mini", local_execution=True)
+agent = TinyCodeAgent(model="gpt-5-mini", local_execution=True)
 
 async def _run():
     prompt = "Calculate the sum of the numbers 1..10 in Python and show the result."
@@ -110,7 +110,7 @@ code_to_run = dedent(
     import asyncio
     from tinyagent.code_agent import TinyCodeAgent
 
-    agent = TinyCodeAgent(model='gpt-4.1-mini', local_execution=True)
+    agent = TinyCodeAgent(model='gpt-5-mini', local_execution=True)
     result = asyncio.run(agent.run('Calculate the sum of numbers 1..5', max_turns=3))
     print(result)
     """

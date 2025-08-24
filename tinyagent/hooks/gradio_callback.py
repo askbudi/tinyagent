@@ -1142,7 +1142,7 @@ async def run_example():
     ui_logger.debug(f"Using event loop: {loop}")
 
     # Initialize the agent
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
+    agent = TinyAgent(model="gpt-5-mini", api_key=api_key, logger=agent_logger)
 
     agent.add_tool(get_weather)
 

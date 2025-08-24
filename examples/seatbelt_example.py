@@ -108,7 +108,7 @@ async def main():
         
         # Create the TinyCodeAgent with seatbelt provider using the profile string
         agent = TinyCodeAgent(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             code_tools=[data_processor],
             user_variables={
                 "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
@@ -146,7 +146,7 @@ async def main():
         
         # Create the TinyCodeAgent with seatbelt provider using the profile file
         agent = TinyCodeAgent(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             code_tools=[data_processor],
             user_variables={
                 "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]

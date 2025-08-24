@@ -15,7 +15,7 @@ Example Usage:
     # Create a coding subagent
     coding_tool = create_coding_subagent(
         name="code_helper",
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         max_turns=20
     )
     

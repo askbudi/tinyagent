@@ -543,7 +543,7 @@ async def run_example():
         return
     
     # Initialize the agent with our logger
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key, logger=agent_logger)
+    agent = TinyAgent(model="gpt-5-mini", api_key=api_key, logger=agent_logger)
     
     # Add the Rich UI callback with our logger
     rich_ui = RichUICallback(

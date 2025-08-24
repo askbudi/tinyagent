@@ -19,7 +19,7 @@ async def run_example():
     
     # Create TinyCodeAgent with auto_git_checkpoint enabled
     agent = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         auto_git_checkpoint=True,  # Enable automatic git checkpoints
         local_execution=True,      # Use local execution for this example
         default_workdir=os.getcwd()  # Use current directory as working directory

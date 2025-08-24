@@ -1442,7 +1442,7 @@ async def run_example():
         return
     
     # Initialize the agent
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key)
+    agent = TinyAgent(model="gpt-5-mini", api_key=api_key)
     
     # Add the Jupyter Notebook callback
     jupyter_ui = JupyterNotebookCallback()
@@ -1469,7 +1469,7 @@ async def run_optimized_example():
         return
     
     # Initialize the agent
-    agent = TinyAgent(model="gpt-4.1-mini", api_key=api_key)
+    agent = TinyAgent(model="gpt-5-mini", api_key=api_key)
     
     # Add the OPTIMIZED Jupyter Notebook callback for better performance
     jupyter_ui = OptimizedJupyterNotebookCallback(

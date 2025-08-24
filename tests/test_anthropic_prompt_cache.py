@@ -81,7 +81,7 @@ def test_model_detection():
         # Test unsupported models
         unsupported_tests = [
             "gpt-4o",
-            "gpt-4o-mini", 
+            "gpt-5-mini", 
             "gpt-3.5-turbo",
             "gemini-pro",
             "llama-2-70b",

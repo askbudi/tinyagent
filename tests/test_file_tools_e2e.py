@@ -51,7 +51,7 @@ class TestFileToolsE2E(unittest.TestCase):
         
         # Create agent
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -89,7 +89,7 @@ class TestFileToolsE2E(unittest.TestCase):
     async def test_agent_write_file(self):
         """Test writing file through TinyCodeAgent."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini", 
+            model="gpt-5-mini", 
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -128,7 +128,7 @@ class TestFileToolsE2E(unittest.TestCase):
             f.write(self.test_content)
             
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal", 
             local_execution=True,
             enable_file_tools=True,
@@ -172,7 +172,7 @@ class TestFileToolsE2E(unittest.TestCase):
             f.write("print('Hello')\nDEBUG = True")
             
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True, 
             enable_file_tools=True,
@@ -206,7 +206,7 @@ class TestFileToolsE2E(unittest.TestCase):
     async def test_agent_multiple_file_operations(self):
         """Test multiple file operations in sequence."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -270,7 +270,7 @@ class TestFileToolsE2E(unittest.TestCase):
     async def test_agent_file_tools_disabled(self):
         """Test that file tools are not available when disabled."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=False,  # Disabled
@@ -293,7 +293,7 @@ class TestFileToolsE2E(unittest.TestCase):
     async def test_agent_file_tools_enabled_by_default(self):
         """Test that file tools are available by default."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             # enable_file_tools defaults to True

@@ -15,7 +15,7 @@ Examples:
     # Create configuration from parent agent
     config = SubagentConfig.from_parent_agent(
         parent_agent=main_agent,
-        model="gpt-4o-mini",  # Override specific parameters
+        model="gpt-5-mini",  # Override specific parameters
         max_turns=15,
         enable_python_tool=True
     )
@@ -65,7 +65,7 @@ class SubagentConfig:
     
     Attributes:
         # Core Agent Parameters (passed directly to TinyAgent/TinyCodeAgent)
-        model: Model identifier (e.g., "gpt-4o-mini", "claude-3-sonnet")
+        model: Model identifier (e.g., "gpt-5-mini", "claude-3-sonnet")
         api_key: API key for the model provider
         temperature: Model temperature (0.0-2.0)
         log_manager: LoggingManager instance for centralized logging
@@ -99,7 +99,7 @@ class SubagentConfig:
         # Inherit from parent with overrides
         config = SubagentConfig.from_parent_agent(
             parent_agent=main_agent,
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             max_turns=20,
             enable_python_tool=True
         )
@@ -123,8 +123,8 @@ class SubagentConfig:
     # Core Agent Parameters (TinyAgent/TinyCodeAgent constructor parameters)
     # ============================================================================
     
-    model: str = "gpt-4.1-mini"
-    """Model identifier for the subagent (e.g., 'gpt-4o-mini', 'claude-3-sonnet')."""
+    model: str = "gpt-5-mini"
+    """Model identifier for the subagent (e.g., 'gpt-5-mini', 'claude-3-sonnet')."""
     
     api_key: Optional[str] = None
     """API key for the model provider. Auto-detected from environment if None."""
@@ -369,7 +369,7 @@ class SubagentConfig:
             # Basic inheritance with model override
             config = SubagentConfig.from_parent_agent(
                 parent_agent=main_agent,
-                model="gpt-4o-mini"
+                model="gpt-5-mini"
             )
             
             # Inherit everything, override specific settings
@@ -630,7 +630,7 @@ class SubagentConfig:
     def for_research(cls, **kwargs) -> 'SubagentConfig':
         """Create a configuration optimized for research tasks."""
         defaults = {
-            'model': 'gpt-4.1-mini',
+            'model': 'gpt-5-mini',
             'max_turns': 15,
             'enable_python_tool': False,
             'enable_shell_tool': False,
@@ -648,7 +648,7 @@ class SubagentConfig:
     def for_coding(cls, **kwargs) -> 'SubagentConfig':
         """Create a configuration optimized for coding tasks."""
         defaults = {
-            'model': 'gpt-4.1-mini',
+            'model': 'gpt-5-mini',
             'max_turns': 20,
             'enable_python_tool': True,
             'enable_shell_tool': True,
@@ -667,7 +667,7 @@ class SubagentConfig:
     def for_analysis(cls, **kwargs) -> 'SubagentConfig':
         """Create a configuration optimized for data analysis tasks."""
         defaults = {
-            'model': 'gpt-4.1-mini',
+            'model': 'gpt-5-mini',
             'max_turns': 25,
             'enable_python_tool': True,
             'enable_shell_tool': False,
@@ -686,7 +686,7 @@ class SubagentConfig:
     def for_writing(cls, **kwargs) -> 'SubagentConfig':
         """Create a configuration optimized for writing and content creation tasks."""
         defaults = {
-            'model': 'gpt-4.1-mini',
+            'model': 'gpt-5-mini',
             'max_turns': 10,
             'enable_python_tool': False,
             'enable_shell_tool': False,
@@ -704,7 +704,7 @@ class SubagentConfig:
     def for_planning(cls, **kwargs) -> 'SubagentConfig':
         """Create a configuration optimized for planning and strategy tasks."""
         defaults = {
-            'model': 'gpt-4.1-mini',
+            'model': 'gpt-5-mini',
             'max_turns': 12,
             'enable_python_tool': False,
             'enable_shell_tool': False,
