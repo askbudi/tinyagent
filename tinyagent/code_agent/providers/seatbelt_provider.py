@@ -651,7 +651,7 @@ print(json.dumps(cleaned_result))
                         "error_traceback": f"Failed to parse result as JSON: {stderr_str}"
                     }
                 
-                # Load updated state
+                # Load updated state before cleanup
                 try:
                     # Check if state file exists before trying to load it
                     if os.path.exists(state_file_path):
@@ -664,13 +664,13 @@ print(json.dumps(cleaned_result))
                         self.update_user_variables_from_globals(self._globals_dict)
                         self.update_user_variables_from_globals(self._locals_dict)
                     else:
+                        # State file doesn't exist - this is normal for simple operations
                         if self.logger:
-                            self.logger.warning(f"State file does not exist: {state_file_path}")
-                        print(f"Warning: State file was not created by sandbox execution: {state_file_path}")
+                            self.logger.debug(f"State file not found (normal for simple operations): {state_file_path}")
                 except Exception as e:
                     if self.logger:
-                        self.logger.error(f"Error loading state from {state_file_path}: {str(e)}")
-                    print(f"Warning: Failed to update globals/locals after execution: {str(e)}")
+                        self.logger.warning(f"Failed to load state from {state_file_path}: {str(e)}")
+                    # Don't print warning for file operations as it's not critical
                 
                 if process.returncode != 0:
                     result["error"] = f"Process exited with code {process.returncode}"
@@ -702,8 +702,14 @@ print(json.dumps(cleaned_result))
         finally:
             # Clean up the temporary files
             try:
-                os.unlink(code_file_path)
-                os.unlink(state_file_path)
+                if os.path.exists(code_file_path):
+                    os.unlink(code_file_path)
+            except Exception:
+                pass
+            
+            try:
+                if os.path.exists(state_file_path):
+                    os.unlink(state_file_path)
             except Exception:
                 pass
     

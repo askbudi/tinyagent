@@ -466,6 +466,17 @@ class CodeExecutionProvider(ABC):
         
         try:
             response = await self.execute_python([code])
+            
+            # Check if there was an execution error first
+            if response.get("error_traceback"):
+                return {
+                    "success": False,
+                    "error": f"Execution error: {response.get('error_traceback', 'Unknown error')}",
+                    "path": file_path,
+                    "size": 0,
+                    "content": None
+                }
+            
             result = self._parse_file_operation_result(response, "FILE_READ_RESULT")
             return self._standardize_read_response(result, file_path)
         except Exception as e:
@@ -500,6 +511,17 @@ class CodeExecutionProvider(ABC):
         
         try:
             response = await self.execute_python([code])
+            
+            # Check if there was an execution error first
+            if response.get("error_traceback"):
+                return {
+                    "success": False,
+                    "error": f"Execution error: {response.get('error_traceback', 'Unknown error')}",
+                    "path": file_path,
+                    "bytes_written": 0,
+                    "operation": "write"
+                }
+            
             result = self._parse_file_operation_result(response, "FILE_WRITE_RESULT")
             return self._standardize_write_response(result, file_path)
         except Exception as e:
@@ -536,6 +558,19 @@ class CodeExecutionProvider(ABC):
         
         try:
             response = await self.execute_python([code])
+            
+            # Check if there was an execution error first
+            if response.get("error_traceback"):
+                return {
+                    "success": False,
+                    "error": f"Execution error: {response.get('error_traceback', 'Unknown error')}",
+                    "path": file_path,
+                    "changes_made": False,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "bytes_written": 0
+                }
+            
             result = self._parse_file_operation_result(response, "FILE_UPDATE_RESULT")
             return self._standardize_update_response(result, file_path, old_content, new_content)
         except Exception as e:
@@ -573,6 +608,12 @@ class CodeExecutionProvider(ABC):
 import os
 import mimetypes
 from pathlib import Path
+
+def count_tokens_for_claude_sonnet(text):
+    \"\"\"Count tokens for Claude Sonnet 4 with character-based fallback.\"\"\"
+    # Use character-based estimation: approximately 4 characters per token
+    # This is a reasonable approximation for most text content
+    return len(text) // 4
 
 def read_file_impl(file_path, start_line=1, max_lines=None, encoding='utf-8'):
     try:
@@ -639,6 +680,18 @@ def read_file_impl(file_path, start_line=1, max_lines=None, encoding='utf-8'):
                         break
                 
                 content = '\\n'.join(lines)
+                
+                # Check token count before returning
+                token_count = count_tokens_for_claude_sonnet(content)
+                if token_count > 20000:
+                    file_name = os.path.basename(file_path)
+                    return {{
+                        "success": False,
+                        "error": f"ERROR: {{file_name}} has {{token_count:,}} tokens, this tool returns up to 20,000 tokens, use grep or glob to search in the file, or request a limited number of lines.",
+                        "path": file_path,
+                        "size": file_size,
+                        "content": None
+                    }}
                 
                 return {{
                     "success": True,

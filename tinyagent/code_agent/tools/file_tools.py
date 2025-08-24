@@ -13,11 +13,34 @@ import fnmatch
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from tinyagent import tool
+import tiktoken
 
 
 def sanitize_path(file_path: str) -> str:
     """Normalize a file path to absolute form."""
     return os.path.abspath(file_path)
+
+
+def count_tokens_for_claude_sonnet(text: str) -> int:
+    """
+    Count tokens in text using tiktoken for Claude Sonnet 4.
+    Uses cl100k_base encoding as approximation for Claude tokenization.
+    
+    Args:
+        text: Text content to count tokens for
+        
+    Returns:
+        Number of tokens in the text
+    """
+    try:
+        # Use cl100k_base encoding which is closest to Claude's tokenization
+        encoding = tiktoken.get_encoding("cl100k_base")
+        tokens = encoding.encode(text)
+        return len(tokens)
+    except Exception:
+        # Fallback to rough estimation if tiktoken fails or is not available
+        # Approximate 4 characters per token
+        return len(text) // 4
 
 
 def _get_current_agent():
@@ -196,6 +219,13 @@ async def read_file(
 
         if resp.get("success"):
             content = resp.get("content", "")
+            
+            # Check token count before processing
+            token_count = count_tokens_for_claude_sonnet(content)
+            if token_count > 20000:
+                file_name = os.path.basename(file_path)
+                return f"ERROR: {file_name} has {token_count:,} tokens, this tool returns up to 20,000 tokens, use grep or glob to search in the file, or request a limited number of lines."
+            
             if show_line_numbers:
                 try:
                     lines = content.splitlines()
@@ -210,7 +240,7 @@ async def read_file(
                     if logger:
                         logger.debug(f"Line numbering failed: {_e}")
             if logger:
-                logger.debug(f"read_file success: Read {len(content)} characters from '{file_path}'")
+                logger.debug(f"read_file success: Read {len(content)} characters ({token_count:,} tokens) from '{file_path}'")
             return content
         else:
             error_msg = resp.get("error") or "Unknown error"
