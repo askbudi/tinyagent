@@ -14,7 +14,7 @@ coding_agent = create_coding_subagent(
     description="Full-featured coding assistant for software development tasks",
     model="gpt-5-mini",
     max_turns=25,
-    temperature=0.0
+    temperature=1.0
 )
 
 
@@ -24,7 +24,7 @@ python_specialist = create_coding_subagent(
     description="Python programming specialist for scripts, analysis, and applications",
     model="gpt-5-mini",
     max_turns=20,
-    temperature=0.0,
+    temperature=1.0,
     system_prompt=(
         "You are a Python programming expert specializing in writing clean, efficient, "
         "and well-documented Python code. You excel at data analysis, web development, "
@@ -41,7 +41,7 @@ code_reviewer = create_coding_subagent(
     description="Code review specialist for analyzing and improving code quality", 
     model="gpt-5-mini",
     max_turns=15,
-    temperature=0.0,
+    temperature=1.0,
     enable_shell_tool=False,  # Focus on analysis, not execution
     system_prompt=(
         "You are a senior code reviewer with expertise across multiple programming languages. "
@@ -60,7 +60,7 @@ debug_specialist = create_coding_subagent(
     description="Debugging expert for identifying and fixing code issues",
     model="gpt-5-mini", 
     max_turns=20,
-    temperature=0.0,
+    temperature=1.0,
     system_prompt=(
         "You are a debugging expert skilled at identifying, analyzing, and fixing code issues. "
         "When presented with buggy code or error messages, systematically analyze the problem, "
@@ -77,7 +77,7 @@ quick_coder = create_coding_subagent(
     description="Fast coding assistant for simple programming tasks",
     model="gpt-5-mini",
     max_turns=10,
-    temperature=0.0,
+    temperature=1.0,
     system_prompt=(
         "You are a fast and efficient coding assistant for quick programming tasks. "
         "Focus on delivering working solutions quickly while maintaining code quality. "

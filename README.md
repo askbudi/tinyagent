@@ -107,27 +107,30 @@ import asyncio
 import os
 from tinyagent import TinyAgent
 from tinyagent.tools.subagent import create_general_subagent
-from tinyagent.tools.todo_write import enable_todo_write_tool
 
 async def create_enhanced_tinyagent():
     """Create a TinyAgent with all new tools and capabilities."""
     
-    # Initialize TinyAgent
+    # Initialize TinyAgent (TodoWrite is enabled by default)
     agent = TinyAgent(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
-        enable_todo_write=True  # Enable TodoWrite tool by default
+        enable_todo_write=True  # Enable TodoWrite tool (True by default)
     )
     
     # Add a general-purpose subagent for parallel tasks
     helper_subagent = create_general_subagent(
         name="helper",
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         max_turns=20,
         enable_python=True,
         enable_shell=True
     )
     agent.add_tool(helper_subagent)
+    
+    # Check available tools
+    available_tools = list(agent.custom_tool_handlers.keys())
+    print(f"Available tools: {available_tools}")  # ['TodoWrite', 'helper']
     
     # Connect to MCP servers for extended functionality
     await agent.connect_to_server("npx", ["@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
@@ -170,7 +173,7 @@ async def create_enhanced_code_agent():
     
     # Option 1: Using Seatbelt Provider (macOS sandbox)
     seatbelt_agent = TinyCodeAgent(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         provider="seatbelt",
         provider_config={
@@ -184,6 +187,8 @@ async def create_enhanced_code_agent():
         enable_shell_tool=True, 
         enable_file_tools=True,
         enable_todo_write=True,
+        # REQUIRED: Local execution for Seatbelt provider
+        local_execution=True,
         # Working directory for operations
         default_workdir="/Users/username/projects",
         # Auto git checkpoints after shell commands
@@ -198,12 +203,11 @@ async def create_modal_code_agent():
     """Create TinyCodeAgent with Modal.com provider."""
     
     modal_agent = TinyCodeAgent(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         provider="modal",
         provider_config={
-            "pip_packages": ["requests", "pandas", "matplotlib", "seaborn"],
-            "bypass_shell_safety": False  # More restrictive for cloud execution
+            "pip_packages": ["requests", "pandas", "matplotlib", "seaborn"]
         },
         authorized_imports=["requests", "pandas", "matplotlib", "seaborn", "numpy"],
         enable_python_tool=True,
@@ -226,6 +230,10 @@ async def demonstrate_file_tools():
     agent = await create_enhanced_code_agent()
     
     try:
+        # Check available tools
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
         result = await agent.run("""
         I need to analyze a Python project structure:
         
@@ -261,12 +269,17 @@ async def file_tools_examples():
     """Examples of using the new sandboxed file tools."""
     
     agent = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         provider="seatbelt",  # or "modal"
-        enable_file_tools=True
+        enable_file_tools=True,
+        local_execution=True  # Required for Seatbelt provider
     )
     
     try:
+        # Check available tools
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available file tools: {available_tools}")
+        
         # Example 1: Project structure analysis
         await agent.run("""
         Use glob to find all Python files in this project:
@@ -345,11 +358,15 @@ async def todo_workflow_example():
     """Example of using TodoWrite for task management."""
     
     agent = TinyAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         enable_todo_write=True  # Enabled by default
     )
     
     try:
+        # Check that TodoWrite tool is available
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")  # Should include 'TodoWrite'
+        
         # The agent can automatically use TodoWrite during complex tasks
         result = await agent.run("""
         I need to build a web scraping system:
@@ -409,7 +426,7 @@ async def controlled_agent_example():
     """Example of agent with file operation controls."""
     
     agent = TinyCodeAgent(
-        model="gpt-4.1-mini", 
+        model="gpt-5-mini", 
         provider="seatbelt",
         enable_file_tools=True
     )
@@ -616,12 +633,13 @@ async def persistent_agent_example():
     
     # Create agent with persistent storage
     # If session_id exists, it will resume the previous conversation
-    agent = await TinyAgent.create(
-        model="gpt-4.1-mini",
+    agent = TinyAgent(
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         session_id="user-123-chat",  # Unique session identifier
         user_id="user-123",  # Optional user identifier
         storage=storage,  # Enable persistent storage
+        temperature=1.0,
         metadata={
             "user_name": "Alice",
             "application": "customer-support",
@@ -670,13 +688,16 @@ async def resume_session_example():
     storage = SqliteStorage(db_path="./agent_sessions.db")
     
     # Resume existing session
-    agent = await TinyAgent.create(
-        model="gpt-4.1-mini",
+    agent = TinyAgent(
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         session_id="user-123-chat",  # Same session ID as before
         user_id="user-123",
         storage=storage
     )
+    
+    # Load the existing session
+    await agent.init_async()
     
     try:
         # This will continue from where the previous conversation left off
@@ -706,22 +727,24 @@ async def multi_user_example():
     storage = SqliteStorage(db_path="./multi_user_sessions.db")
     
     # User 1 session
-    agent1 = await TinyAgent.create(
-        model="gpt-4.1-mini",
+    agent1 = TinyAgent(
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         session_id="chat-session-1",
         user_id="user-alice",
         storage=storage,
+        temperature=1.0,
         metadata={"user_name": "Alice", "role": "developer"}
     )
     
     # User 2 session  
-    agent2 = await TinyAgent.create(
-        model="gpt-4.1-mini",
+    agent2 = TinyAgent(
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"), 
         session_id="chat-session-2",
         user_id="user-bob",
         storage=storage,
+        temperature=1.0,
         metadata={"user_name": "Bob", "role": "manager"}
     )
     
@@ -758,8 +781,8 @@ async def advanced_storage_example():
     )
     
     # Create agent with comprehensive configuration
-    agent = await TinyAgent.create(
-        model="gpt-4.1-mini",
+    agent = TinyAgent(
+        model="gpt-5-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
         session_id="advanced-session",
         user_id="power-user",
@@ -778,7 +801,7 @@ async def advanced_storage_example():
         
         # Add conversation summarization for long sessions
         summary_config={
-            "model": "gpt-4.1-mini",
+            "model": "gpt-5-mini",
             "max_messages": 50,  # Summarize when over 50 messages
             "system_prompt": "Provide a concise summary of this conversation."
         }
@@ -859,7 +882,7 @@ from textwrap import dedent
 import asyncio
 import os
 
-async def test_agent(task, model="o4-mini", api_key=None):
+async def test_agent(task, model="gpt-5-mini", api_key=None):
     # Initialize the agent with model and API key
     agent = TinyAgent(
         model=model,  # Or any model supported by LiteLLM
@@ -883,7 +906,7 @@ async def test_agent(task, model="o4-mini", api_key=None):
 task = dedent("""
 I need accommodation in Toronto between 15th to 20th of May. Give me 5 options for 2 adults.
 """)
-await test_agent(task, model="gpt-4.1-mini")
+await test_agent(task, model="gpt-5-mini")
 ```
 
 ## TinyCodeAgent - Advanced Code Execution with File Tools
@@ -909,7 +932,7 @@ from tinyagent import TinyCodeAgent
 async def main():
     # Initialize with all new features enabled
     agent = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         api_key="your-openai-api-key",
         provider="seatbelt",  # or "modal" for cloud execution
         
@@ -1009,7 +1032,7 @@ My Product is **Wedding Invitation Set of 3, in sage green color, with a gold fo
 """),max_turns=20)
 
 print(response)
-# LLM is not good at this task, counting characters, avoid duplicates, but with the power of code, tiny model like gpt-4.1-mini can do it without any problem.
+# LLM is not good at this task, counting characters, avoid duplicates, but with the power of code, tiny model like gpt-5-mini can do it without any problem.
 ```
 
 
@@ -1022,7 +1045,7 @@ from tinyagent.code_agent.tools.file_tools import ProductionApprovalHook
 # Complete configuration example with all new features
 agent = TinyCodeAgent(
     # Core configuration
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     api_key="your-api-key",
     
     # Provider selection and config
@@ -1074,7 +1097,7 @@ agent = TinyCodeAgent(
     # Memory management
     summary_config={
         "max_messages": 50,
-        "summary_model": "gpt-4.1-mini"
+        "summary_model": "gpt-5-mini"
     }
 )
 
@@ -1120,7 +1143,7 @@ TinyCodeAgent can automatically create Git checkpoints after each successful she
 ```python
 # Enable automatic Git checkpoints during initialization
 agent = TinyCodeAgent(
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     auto_git_checkpoint=True  # Enable automatic Git checkpoints
 )
 
@@ -1153,14 +1176,14 @@ from tinyagent.tools.subagent import create_general_subagent, create_coding_suba
 async def main():
     # Create main agent
     main_agent = TinyAgent(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         api_key="your-api-key"
     )
     
     # Add a general-purpose subagent
     helper = create_general_subagent(
         name="helper",
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         max_turns=15,
         enable_python=True,
         enable_shell=True
@@ -1170,10 +1193,14 @@ async def main():
     # Add a specialized coding subagent  
     coder = create_coding_subagent(
         name="coder",
-        model="claude-3-sonnet",
+        model="gpt-5-mini",
         max_turns=25
     )
     main_agent.add_tool(coder)
+    
+    # Check available tools (subagents appear as tools)
+    available_tools = list(main_agent.custom_tool_handlers.keys())
+    print(f"Available tools: {available_tools}")  # ['TodoWrite', 'helper', 'coder']
     
     # Use subagents in parallel
     result = await main_agent.run("""
@@ -1206,7 +1233,7 @@ from tinyagent.tools.subagent import (
 # Research subagent - optimized for information gathering
 researcher = create_research_subagent(
     name="researcher",
-    model="gpt-4o",
+    model="gpt-5",
     max_turns=20
 )
 
@@ -1221,7 +1248,7 @@ coder = create_coding_subagent(
 # Analysis subagent - for data analysis tasks
 analyst = create_analysis_subagent(
     name="analyst",
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     enable_python_tool=True
 )
 
@@ -1235,7 +1262,7 @@ writer = create_writing_subagent(
 # Planning subagent - for strategy and planning
 planner = create_planning_subagent(
     name="planner",
-    model="gpt-4o",
+    model="gpt-5",
     max_turns=15
 )
 
@@ -1253,7 +1280,7 @@ from tinyagent.tools.subagent import SubagentConfig, create_subagent_tool
 
 # Create main agent with callbacks and configuration
 main_agent = TinyAgent(
-    model="gpt-4o-mini",
+    model="gpt-5-mini",
     api_key="your-key",
     log_manager=my_log_manager,
     session_id="main-session"
@@ -1301,7 +1328,7 @@ def my_custom_factory(**kwargs):
 
 # Create subagent with custom factory
 config = SubagentConfig(
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     max_turns=15,
     timeout=600
 )
@@ -1589,7 +1616,7 @@ from tinyagent import TinyAgent
 from tinyagent.hooks.gradio_callback import GradioCallback
 async def main():
     # 1. Initialize your agent
-    agent = TinyAgent(model="gpt-4.1-mini", api_key="YOUR_API_KEY")
+    agent = TinyAgent(model="gpt-5-mini", api_key="YOUR_API_KEY")
     # 2. (Optional) Add tools or connect to MCP servers
     # await agent.connect_to_server("npx", ["-y","@openbnb/mcp-server-airbnb","--ignore-robots-txt"])
     # 3. Instantiate the Gradio UI callback
@@ -1626,7 +1653,7 @@ You can chat with TinyAgent and build your own TinyAgent for your use case.
 - Place new hooks in the `tinyagent/hooks/` directory.
 - **Use the new hook interface** for maximum compatibility (see hook guidelines above).
 - Add an example usage as `async def run_example()` in the same file.
-- Use `"gpt-4.1-mini"` as the default model in examples.
+- Use `"gpt-5-mini"` as the default model in examples.
 - Include proper error handling and compatibility for both new and legacy interfaces.
 - Test your hook with the compatibility test framework in `test_all_hooks_compatibility.py`.
 

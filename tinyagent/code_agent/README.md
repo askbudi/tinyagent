@@ -22,11 +22,17 @@ from tinyagent import TinyCodeAgent
 async def main():
     # Initialize with minimal configuration
     agent = TinyCodeAgent(
-        model="gpt-4.1-mini",
-        api_key="your-openai-api-key"
+        model="gpt-5-mini",
+        api_key="your-openai-api-key",
+        provider="seatbelt",  # Default provider
+        local_execution=True  # Required for Seatbelt provider
     )
     
     try:
+        # Check available tools
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
         result = await agent.run("Calculate the factorial of 10 using Python")
         print(result)
     finally:
@@ -62,6 +68,7 @@ async def main():
         model="ollama/codellama",  # Code-optimized model
         api_key=None,  # No API key needed
         provider="seatbelt",  # Local sandbox execution
+        local_execution=True,  # Required for Seatbelt provider
         enable_python_tool=True,
         enable_shell_tool=True,
         enable_file_tools=True
@@ -93,6 +100,7 @@ async def main():
         
         # Provider configuration for local execution
         provider="seatbelt",
+        local_execution=True,  # Required for Seatbelt provider
         provider_config={
             "python_env_path": "/usr/local/bin/python3",
             "additional_read_dirs": ["/path/to/your/project"],
@@ -132,6 +140,10 @@ async def main():
     agent.add_callback(ui_callback)
     
     try:
+        # Check available tools
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
         result = await agent.run("""
         Analyze this Python project structure:
         1. Use glob to find all Python files
@@ -222,7 +234,7 @@ from tinyagent import TinyCodeAgent
 from tinyagent.code_agent.tools import get_weather, get_traffic
 
 agent = TinyCodeAgent(
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     api_key="your-api-key",
     tools=[get_weather, get_traffic]
 )
@@ -298,7 +310,7 @@ class DockerProvider(CodeExecutionProvider):
 
 ```python
 agent = TinyCodeAgent(
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     api_key="your-api-key",
     provider="modal",
     tools=[],
@@ -406,7 +418,7 @@ For legitimate use cases, you can disable this check:
 ```python
 # Create agent with string obfuscation detection disabled
 agent = TinyCodeAgent(
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     check_string_obfuscation=False  # Allow base64 encoding/decoding
 )
 
@@ -424,7 +436,7 @@ TinyCodeAgent can automatically create Git checkpoints after each successful she
 ```python
 # Enable during initialization
 agent = TinyCodeAgent(
-    model="gpt-4.1-mini",
+    model="gpt-5-mini",
     auto_git_checkpoint=True  # Enable automatic Git checkpoints
 )
 
@@ -460,7 +472,7 @@ from tinyagent.hooks.rich_ui_callback import RichUICallback
 from tinyagent.hooks.message_cleanup import MessageCleanupHook
 
 # Create agent
-agent = TinyCodeAgent(model="gpt-4.1-mini")
+agent = TinyCodeAgent(model="gpt-4o-mini")
 
 # Add token tracking
 tracker = TokenTracker(name="code_agent")
@@ -517,7 +529,7 @@ python -m tinyagent.code_agent.example
 ### Contributing
 - Follow the coding criteria in the cursor_rules
 - Add examples to new features
-- Use "gpt-4.1-mini" as default model in examples
+- Use "gpt-5-mini" as default model in examples
 - Include proper error handling and logging
 
 ## Requirements

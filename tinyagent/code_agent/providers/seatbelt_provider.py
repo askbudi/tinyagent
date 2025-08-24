@@ -161,6 +161,28 @@ class SeatbeltProvider(CodeExecutionProvider):
                 env_keys = list(self.environment_variables.keys())
                 self.logger.info("Environment variables: %s", ", ".join(env_keys))
     
+    def _ensure_sandbox_tmp_dir(self):
+        """
+        Ensure that the sandbox temporary directory exists.
+        
+        This method checks if self.sandbox_tmp_dir exists and recreates it if missing.
+        Includes error handling with fallback to current directory.
+        """
+        try:
+            if not os.path.exists(self.sandbox_tmp_dir):
+                os.makedirs(self.sandbox_tmp_dir, exist_ok=True)
+                if self.logger:
+                    self.logger.info("Created sandbox temp directory: %s", self.sandbox_tmp_dir)
+        except Exception as e:
+            # Fallback to current working directory if creation fails
+            old_sandbox_tmp_dir = self.sandbox_tmp_dir
+            self.sandbox_tmp_dir = os.getcwd()
+            if self.logger:
+                self.logger.warning(
+                    "Failed to ensure sandbox temp dir '%s', falling back to CWD '%s': %s", 
+                    old_sandbox_tmp_dir, self.sandbox_tmp_dir, str(e)
+                )
+    
     def set_environment_variables(self, env_vars: Dict[str, str]):
         """
         Set environment variables for the sandbox.
@@ -381,6 +403,9 @@ class SeatbeltProvider(CodeExecutionProvider):
         else:
             complete_code = "\n".join(self.code_tools_definitions) + "\n\n" + "\n".join(self.default_python_codes) + "\n\n" + full_code
             self.executed_default_codes = True
+        
+        # Ensure sandbox temp directory exists before creating state files
+        self._ensure_sandbox_tmp_dir()
         
         # Create a temporary file for the Python state and code
         with tempfile.NamedTemporaryFile(suffix='_state.pkl', prefix='tinyagent_', delete=False, mode='wb', dir=self.sandbox_tmp_dir) as state_file:

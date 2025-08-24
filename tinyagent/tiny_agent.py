@@ -372,7 +372,7 @@ class TinyAgent:
 
     def __init__(
         self,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         api_key: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
@@ -686,7 +686,7 @@ class TinyAgent:
         state_blob = data.get("session_state", {})
 
         # core config
-        model       = metadata.get("model", "gpt-4.1-mini")
+        model       = metadata.get("model", "gpt-5-mini")
         temperature = metadata.get("temperature", 0.0)
         # everything else except model/temperature/usage → model_kwargs
         model_kwargs = {k:v for k,v in metadata.items() if k not in ("model","temperature","usage")}
@@ -772,6 +772,10 @@ class TinyAgent:
                     hasattr(callback, '__self__') and 
                     isinstance(callback.__self__, TinyAgent) and
                     callback.__name__.startswith('_on_')
+                ) or (
+                    # Also include storage _auto_save callbacks
+                    hasattr(callback, '__name__') and 
+                    callback.__name__ == '_auto_save'
                 )
                 
                 if is_builtin_callback:
@@ -1626,10 +1630,10 @@ class TinyAgent:
     @classmethod
     async def create(
         cls,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         api_key: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
+        temperature: float = 1.0, # Changed from 0.0 to 1.0 to support GPT-5, O3, O4-mini out of the box
         logger: Optional[logging.Logger] = None,
         model_kwargs: Optional[Dict[str, Any]] = {},
         *,

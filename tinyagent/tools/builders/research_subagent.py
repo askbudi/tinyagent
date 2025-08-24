@@ -14,7 +14,7 @@ research_agent = create_research_subagent(
     description="Specialized research assistant for comprehensive information gathering and analysis",
     model="gpt-5-mini",
     max_turns=20,
-    temperature=0.1
+    temperature=1.0
 )
 
 
@@ -24,7 +24,7 @@ quick_research_agent = create_research_subagent(
     description="Fast research assistant for basic information gathering",
     model="gpt-5-mini", 
     max_turns=10,
-    temperature=0.0
+    temperature=1.0
 )
 
 
@@ -34,7 +34,7 @@ deep_research_agent = create_research_subagent(
     description="Thorough research specialist for comprehensive analysis and synthesis",
     model="gpt-5-mini",
     max_turns=30,
-    temperature=0.05,
+    temperature=1.0,
     system_prompt=(
         "You are an expert research analyst with deep expertise in information gathering, "
         "critical analysis, and synthesis. Your task is to conduct comprehensive research "

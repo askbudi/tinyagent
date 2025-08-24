@@ -46,7 +46,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_file_operation_approval_hook_allow(self):
         """Test FileOperationApprovalHook allowing operations."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -85,7 +85,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_file_operation_approval_hook_deny(self):
         """Test FileOperationApprovalHook denying operations."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -125,7 +125,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_development_hook_logs_operations(self):
         """Test DevelopmentHook logging file operations."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -162,7 +162,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_hook_before_tool_execution(self):
         """Test before_tool_execution hook."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -208,7 +208,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_hook_after_tool_execution(self):
         """Test after_tool_execution hook."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -255,7 +255,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_error_handling_invalid_json_args(self):
         """Test error handling for invalid JSON arguments."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -286,7 +286,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_error_handling_missing_required_args(self):
         """Test error handling for missing required arguments."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,
@@ -320,7 +320,7 @@ class TestFileToolsHooks(unittest.TestCase):
     async def test_multiple_hooks_execution_order(self):
         """Test that multiple hooks execute in the correct order."""
         agent = TinyCodeAgent(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             provider="modal",
             local_execution=True,
             enable_file_tools=True,

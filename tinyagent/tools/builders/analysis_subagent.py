@@ -14,7 +14,7 @@ data_analyst = create_analysis_subagent(
     description="Comprehensive data analysis specialist for statistical analysis and insights",
     model="gpt-5-mini",
     max_turns=25,
-    temperature=0.0
+    temperature=1.0
 )
 
 
@@ -24,7 +24,7 @@ stats_specialist = create_analysis_subagent(
     description="Statistical analysis expert for hypothesis testing and statistical modeling",
     model="gpt-5-mini",
     max_turns=20,
-    temperature=0.0,
+    temperature=1.0,
     system_prompt=(
         "You are a statistical analysis expert with deep knowledge of statistical methods, "
         "hypothesis testing, and data modeling. Your role is to apply appropriate statistical "
@@ -41,7 +41,7 @@ viz_specialist = create_analysis_subagent(
     description="Data visualization expert for creating insightful charts and graphs",
     model="gpt-5-mini",
     max_turns=15,
-    temperature=0.0,
+    temperature=1.0,
     system_prompt=(
         "You are a data visualization specialist expert in creating clear, insightful, "
         "and visually appealing charts and graphs. Your role is to transform data into "
@@ -59,7 +59,7 @@ bi_analyst = create_analysis_subagent(
     description="Business intelligence specialist for strategic data analysis",
     model="gpt-5-mini",
     max_turns=20,
-    temperature=0.1,
+    temperature=1.0,
     system_prompt=(
         "You are a business intelligence analyst focused on transforming data into "
         "actionable business insights. Your expertise includes trend analysis, performance "
@@ -76,7 +76,7 @@ quick_analyzer = create_analysis_subagent(
     description="Fast analysis assistant for basic data exploration and insights",
     model="gpt-5-mini",
     max_turns=10, 
-    temperature=0.0,
+    temperature=1.0,
     system_prompt=(
         "You are a quick analysis assistant for fast data exploration and basic insights. "
         "Focus on providing rapid analysis with key findings and initial observations. "

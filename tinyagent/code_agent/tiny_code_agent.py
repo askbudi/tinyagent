@@ -53,7 +53,7 @@ class TinyCodeAgent(TinyAgent):
     
     def __init__(
         self,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         api_key: Optional[str] = None,
         log_manager: Optional[LoggingManager] = None,
         provider: str = "modal",
@@ -1247,7 +1247,7 @@ async def run_example():
     print("🚀 Testing TinyCodeAgent with REMOTE execution (Modal)")
     # Create TinyCodeAgent with remote execution (default)
     agent_remote = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         tools=[search_web],  # LLM tools
         code_tools=[data_processor],  # Code tools
         user_variables={
@@ -1288,7 +1288,7 @@ async def run_example():
     # Now test with local execution
     print("🏠 Testing TinyCodeAgent with LOCAL execution")
     agent_local = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         tools=[search_web],  # LLM tools
         code_tools=[data_processor],  # Code tools
         user_variables={
@@ -1519,7 +1519,7 @@ async def run_example():
         
         # Create TinyCodeAgent with seatbelt provider
         agent_seatbelt = TinyCodeAgent(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             tools=[search_web],  # LLM tools
             code_tools=[data_processor],  # Code tools
             user_variables={
@@ -1570,7 +1570,7 @@ async def run_example():
         
         # Create a simple Modal agent to demonstrate environment variable usage
         agent_modal = TinyCodeAgent(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             tools=[search_web],
             code_tools=[data_processor],
             provider="modal",
@@ -1708,7 +1708,7 @@ async def run_example():
     # Create an agent with only Python tool enabled (no shell tool)
     print("Creating agent with only Python tool enabled...")
     agent_python_only = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         tools=[search_web],
         code_tools=[data_processor],
         user_variables={"test_data": [1, 2, 3, 4, 5]},
@@ -1754,7 +1754,7 @@ async def run_example():
     # Create an agent with only shell tool enabled (no Python tool)
     print("\nCreating agent with only shell tool enabled...")
     agent_shell_only = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         tools=[search_web],
         code_tools=[data_processor],
         user_variables={"test_data": [1, 2, 3, 4, 5]},
@@ -1800,7 +1800,7 @@ async def run_example():
     # Create an agent with both tools disabled
     print("\nCreating agent with both tools disabled...")
     agent_no_tools = TinyCodeAgent(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         tools=[search_web],
         code_tools=[data_processor],
         user_variables={"test_data": [1, 2, 3, 4, 5]},
