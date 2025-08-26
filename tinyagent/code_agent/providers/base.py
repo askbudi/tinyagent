@@ -687,7 +687,7 @@ def read_file_impl(file_path, start_line=1, max_lines=None, encoding='utf-8'):
                     file_name = os.path.basename(file_path)
                     return {{
                         "success": False,
-                        "error": f"ERROR: {{file_name}} has {{token_count:,}} tokens, this tool returns up to 20,000 tokens, use grep or glob to search in the file, or request a limited number of lines.",
+                        "error": f"ERROR: {{file_name}} has {{token_count:,}} tokens, exceeds 20,000 token limit. Use grep to search within the file, glob to find specific files, or request a limited number of lines (e.g., max_lines=100).",
                         "path": file_path,
                         "size": file_size,
                         "content": None

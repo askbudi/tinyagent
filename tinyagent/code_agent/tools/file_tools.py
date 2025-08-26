@@ -224,7 +224,7 @@ async def read_file(
             token_count = count_tokens_for_claude_sonnet(content)
             if token_count > 20000:
                 file_name = os.path.basename(file_path)
-                return f"ERROR: {file_name} has {token_count:,} tokens, this tool returns up to 20,000 tokens, use grep or glob to search in the file, or request a limited number of lines."
+                return f"ERROR: {file_name} has {token_count:,} tokens, exceeds 20,000 token limit. Use grep to search within the file, glob to find specific files, or request a limited number of lines (e.g., max_lines=100)."
             
             if show_line_numbers:
                 try:
@@ -605,7 +605,14 @@ Raw Provider Response: {resp}"""
             abs_paths = [os.path.abspath(path) for path in file_paths]
             abs_paths.sort()
             
-            return "\n".join(abs_paths)
+            result_text = "\n".join(abs_paths)
+            
+            # Check token count before returning
+            token_count = count_tokens_for_claude_sonnet(result_text)
+            if token_count > 20000:
+                return f"ERROR: Glob results contain {token_count:,} tokens, exceeds 20,000 token limit. Use a more specific pattern (e.g., '*.py' instead of '**/*') or search in a smaller directory to reduce results."
+            
+            return result_text
             
         except Exception as e:
             return f"Error executing find command: {str(e)}"
@@ -759,7 +766,12 @@ Raw Provider Response: {resp}"""
             
             if output_mode == "files_with_matches":
                 # grep -l returns just filenames
-                return "\n".join(sorted(output_lines))
+                result_text = "\n".join(sorted(output_lines))
+                # Check token count
+                token_count = count_tokens_for_claude_sonnet(result_text)
+                if token_count > 20000:
+                    return f"ERROR: Grep results contain {token_count:,} tokens, exceeds 20,000 token limit. Use a more specific pattern or search in a smaller directory to reduce results."
+                return result_text
             elif output_mode == "count":
                 # grep -c returns filename:count format, sum all counts
                 total_count = 0
@@ -770,10 +782,20 @@ Raw Provider Response: {resp}"""
                             total_count += count
                         except ValueError:
                             pass
-                return str(total_count)
+                result_text = str(total_count)
+                # Count mode typically returns small results, but check anyway
+                token_count = count_tokens_for_claude_sonnet(result_text)
+                if token_count > 20000:
+                    return f"ERROR: Grep count results contain {token_count:,} tokens, exceeds 20,000 token limit. Use a more specific pattern to reduce results."
+                return result_text
             else:  # content mode
                 # grep -n -H returns filename:line:content format
-                return "\n".join(output_lines)
+                result_text = "\n".join(output_lines)
+                # Check token count - content mode is most likely to exceed limits
+                token_count = count_tokens_for_claude_sonnet(result_text)
+                if token_count > 20000:
+                    return f"ERROR: Grep content results contain {token_count:,} tokens, exceeds 20,000 token limit. Use a more specific pattern, search in smaller files, or use 'files_with_matches' mode instead."
+                return result_text
             
         except Exception as e:
             return f"Error executing grep command: {str(e)}"
