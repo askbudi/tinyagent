@@ -12,8 +12,8 @@ tinyagent = ["prompts/*.yaml"]
 
 [project]
 name = "tinyagent-py"
-version = "0.1.13"
-description = "TinyAgent with MCP Client, CodeAgent (Thinking, Planning, Interactive Python and Shell with high variaety of sandboxing(seatbelt, Modal, E2B, docker, etc) ), and Extendable Hooks, Tiny but powerful"
+version = "0.1.14"
+description = "TinyAgent with MCP Client, CodeAgent (Thinking, Planning, Interactive Python and Shell with high variaety of sandboxing(Seatbelt, Modal, E2B, docker, etc) ), and Extendable Hooks, Tiny but powerful"
 readme = "README.md"
 authors = [
   {name="Mahdi Golchin", email="golchin@askdev.ai"}

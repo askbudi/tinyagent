@@ -1,6 +1,7 @@
 from .tiny_agent import TinyAgent,tool
 from .mcp_client import MCPClient
 from .code_agent import TinyCodeAgent
+from .core import CustomInstructionLoader
 
 # Import subagent tools for easy access
 from .tools import (
@@ -24,6 +25,7 @@ __all__ = [
     "MCPClient",
     "tool", 
     "TinyCodeAgent",
+    "CustomInstructionLoader",
     
     # Pre-built subagents
     "research_agent",

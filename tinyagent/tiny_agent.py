@@ -14,6 +14,7 @@ import traceback
 import time  # Add time import for Unix timestamps
 from pathlib import Path
 import random  # Add random for jitter in retry backoff
+from .custom_instructions import CustomInstructionLoader, CustomInstructionError
 
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
@@ -388,6 +389,10 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
+        # Custom instruction parameters
+        custom_instructions: Optional[Union[str, Path]] = None,
+        enable_custom_instructions: bool = True,
+        custom_instruction_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the Tiny Agent.
@@ -419,9 +424,23 @@ class TinyAgent:
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is True.
             enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
+            custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
+            enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
+            custom_instruction_config: Configuration for custom instruction loader. Supports:
+                - auto_detect_agents_md: Auto-detect AGENTS.md files (default: True)
+                - custom_filename: Custom filename to search for (default: "AGENTS.md")
+                - inherit_to_subagents: Whether subagents inherit instructions (default: True)
+                - execution_directory: Directory to search for files (default: current working directory)
                     """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
+        
+        # Set up custom instruction loader
+        custom_instruction_config = custom_instruction_config or {}
+        self.custom_instruction_loader = CustomInstructionLoader(
+            enabled=enable_custom_instructions,
+            **custom_instruction_config
+        )
         
         # Instead of a single MCPClient, keep multiple:
         self.mcp_clients: List[MCPClient] = []
@@ -456,10 +475,39 @@ class TinyAgent:
         # Set parallel tool calls preference
         self.parallel_tool_calls = parallel_tool_calls
             
+        # Load and apply custom instructions to system prompt
+        try:
+            # Load custom instructions
+            self.custom_instruction_loader.load_instructions(custom_instructions)
+            
+            # Apply to system prompt
+            base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+            final_system_prompt = self.custom_instruction_loader.apply_to_system_prompt(
+                base_system_prompt
+            )
+            
+            # Log custom instruction status
+            if self.custom_instruction_loader.is_enabled():
+                instructions = self.custom_instruction_loader.get_instructions()
+                source = self.custom_instruction_loader.get_instruction_source()
+                if instructions:
+                    self.logger.info(f"Custom instructions applied from {source}")
+                else:
+                    self.logger.debug("Custom instruction loader enabled but no instructions found")
+            else:
+                self.logger.debug("Custom instructions disabled")
+                
+        except CustomInstructionError as e:
+            self.logger.error(f"Failed to load custom instructions: {e}")
+            final_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        except Exception as e:
+            self.logger.error(f"Unexpected error processing custom instructions: {e}")
+            final_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+            
         # Conversation state
         self.messages = [{
             "role": "system",
-            "content": system_prompt or DEFAULT_SYSTEM_PROMPT
+            "content": final_system_prompt
         }]
         
         self.summary_config = summary_config or {}
@@ -1645,6 +1693,10 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
+        # Custom instruction parameters
+        custom_instructions: Optional[Union[str, Path]] = None,
+        enable_custom_instructions: bool = True,
+        custom_instruction_config: Optional[Dict[str, Any]] = None,
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
@@ -1676,6 +1728,9 @@ class TinyAgent:
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is None (disabled).
             enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
+            custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
+            enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
+            custom_instruction_config: Configuration for custom instruction loader.
         """
         agent = cls(
             model=model,
@@ -1691,7 +1746,10 @@ class TinyAgent:
             persist_tool_configs=persist_tool_configs,
             retry_config=retry_config,
             parallel_tool_calls=parallel_tool_calls,
-            enable_todo_write=enable_todo_write
+            enable_todo_write=enable_todo_write,
+            custom_instructions=custom_instructions,
+            enable_custom_instructions=enable_custom_instructions,
+            custom_instruction_config=custom_instruction_config
         )
         if agent._needs_session_load:
             await agent.init_async()

@@ -3,7 +3,7 @@ import os
 import json
 import shlex
 from textwrap import dedent
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 from tinyagent import TinyAgent, tool
 from tinyagent.hooks.logging_manager import LoggingManager
@@ -76,6 +76,10 @@ class TinyCodeAgent(TinyAgent):
         enable_shell_tool: bool = True,
         enable_file_tools: bool = True,
         enable_todo_write: bool = True,
+        # Custom instruction parameters
+        custom_instructions: Optional[Union[str, Path]] = None,
+        enable_custom_instructions: bool = True,
+        custom_instruction_config: Optional[Dict[str, Any]] = None,
         **agent_kwargs
     ):
         """
@@ -106,6 +110,9 @@ class TinyCodeAgent(TinyAgent):
             enable_shell_tool: If True (default), enable the bash tool for shell command execution
             enable_file_tools: If True (default), enable sandbox-constrained file tools (read_file, write_file, update_file, glob_tool, grep_tool)
             enable_todo_write: If True (default), enable the TodoWrite tool for task management
+            custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
+            enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
+            custom_instruction_config: Configuration for custom instruction loader.
             **agent_kwargs: Additional arguments passed to TinyAgent
             
         Provider Config Options:
@@ -147,6 +154,11 @@ class TinyCodeAgent(TinyAgent):
         self.default_workdir = default_workdir or os.getcwd()  # Default to current working directory if not specified
         self.auto_git_checkpoint = auto_git_checkpoint  # Enable/disable automatic git checkpoints
         
+        # Store custom instruction parameters
+        self.custom_instructions = custom_instructions
+        self.enable_custom_instructions = enable_custom_instructions
+        self.custom_instruction_config = custom_instruction_config or {}
+        
         # Store tool enablement flags
         self._python_tool_enabled = enable_python_tool
         self._shell_tool_enabled = enable_shell_tool
@@ -184,6 +196,7 @@ class TinyCodeAgent(TinyAgent):
         self.summary_config = summary_config or {}
 
         # Initialize the parent TinyAgent with the built system prompt
+        # Note: We handle custom instructions in _build_system_prompt, so disable them in parent
         super().__init__(
             model=model,
             api_key=api_key,
@@ -191,6 +204,7 @@ class TinyCodeAgent(TinyAgent):
             logger=log_manager.get_logger('tinyagent.tiny_agent') if log_manager else None,
             summary_config=summary_config,
             enable_todo_write=enable_todo_write,
+            enable_custom_instructions=False,  # We handle custom instructions in _build_system_prompt
             **agent_kwargs
         )
         
@@ -371,6 +385,34 @@ class TinyCodeAgent(TinyAgent):
         if self._shell_tool_enabled:
             env_info = self._build_env_prompt()
             base_prompt += "\n\n" + env_info
+        
+        # Apply custom instructions if enabled
+        if self.enable_custom_instructions:
+            try:
+                from tinyagent.custom_instructions import CustomInstructionLoader
+                
+                # Create loader with configuration
+                loader = CustomInstructionLoader(
+                    enabled=self.enable_custom_instructions,
+                    **self.custom_instruction_config
+                )
+                
+                # Load custom instructions
+                loader.load_instructions(self.custom_instructions)
+                
+                # Apply to system prompt
+                base_prompt = loader.apply_to_system_prompt(base_prompt)
+                
+                # Log status
+                if loader.get_instructions():
+                    if self.log_manager:
+                        logger = self.log_manager.get_logger(__name__)
+                        logger.info(f"Custom instructions applied from {loader.get_instruction_source()}")
+                
+            except Exception as e:
+                if self.log_manager:
+                    logger = self.log_manager.get_logger(__name__)
+                    logger.error(f"Failed to apply custom instructions: {e}")
         
         return base_prompt
     

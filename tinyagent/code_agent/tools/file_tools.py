@@ -521,28 +521,19 @@ async def glob_tool(
             return f"Error: Directory '{directory}' does not exist."
         
         # Use find command to list files and apply glob pattern
-        # On macOS and other platforms, patterns with wildcards need to be quoted to prevent shell expansion
-        
-        # For shell safety, always quote patterns that contain shell metacharacters
-        def quote_pattern_if_needed(pattern_str):
-            # Quote the pattern if it contains shell metacharacters
-            if any(char in pattern_str for char in ['*', '?', '[', ']', '{', '}', ' ']):
-                return f'"{pattern_str}"'
-            return pattern_str
+        # Note: When using subprocess with command lists, do NOT quote patterns manually
+        # as subprocess handles argument separation automatically
         
         if pattern.startswith('**/'):
             # Recursive glob pattern like **/*.py
             file_pattern = pattern[3:]  # Remove **/ prefix
-            quoted_pattern = quote_pattern_if_needed(file_pattern)
-            find_command = ["find", directory, "-type", "f", "-name", quoted_pattern]
+            find_command = ["find", directory, "-type", "f", "-name", file_pattern]
         elif '*' in pattern or '?' in pattern:
             # Simple glob pattern like *.py or README*
-            quoted_pattern = quote_pattern_if_needed(pattern)
-            find_command = ["find", directory, "-maxdepth", "1", "-type", "f", "-name", quoted_pattern]
+            find_command = ["find", directory, "-maxdepth", "1", "-type", "f", "-name", pattern]
         else:
-            # Exact filename - still quote to be safe
-            quoted_pattern = quote_pattern_if_needed(pattern)
-            find_command = ["find", directory, "-maxdepth", "1", "-type", "f", "-name", quoted_pattern]
+            # Exact filename
+            find_command = ["find", directory, "-maxdepth", "1", "-type", "f", "-name", pattern]
 
         try:
             resp = await agent.code_provider.execute_shell(

@@ -658,7 +658,7 @@ class SubagentConfig:
                 "You have access to Python execution and shell commands to test and validate your solutions. "
                 "Write clean, efficient, and well-documented code. Test your implementations thoroughly."
             ),
-            'temperature': 0.0,
+            'temperature': 1.0,
         }
         defaults.update(kwargs)
         return cls(**defaults)
@@ -677,7 +677,7 @@ class SubagentConfig:
                 "Use Python tools to perform calculations, create visualizations, and conduct statistical analysis. "
                 "Provide clear explanations of your analytical approach and findings."
             ),
-            'temperature': 0.0,
+            'temperature': 1.0,
         }
         defaults.update(kwargs)
         return cls(**defaults)
@@ -695,7 +695,7 @@ class SubagentConfig:
                 "clear, engaging, and well-structured written content across various formats and styles. "
                 "Focus on clarity, coherence, and meeting the specific requirements of the writing task."
             ),
-            'temperature': 0.3,
+            'temperature': 1.0,
         }
         defaults.update(kwargs)
         return cls(**defaults)
@@ -713,7 +713,7 @@ class SubagentConfig:
                 "into actionable plans. Create detailed, step-by-step approaches with clear timelines, "
                 "dependencies, and success criteria. Consider risks, resources, and alternative approaches."
             ),
-            'temperature': 0.2,
+            'temperature': 1.0,
         }
         defaults.update(kwargs)
         return cls(**defaults)

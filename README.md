@@ -598,6 +598,334 @@ agent.add_callback(ui)
    )
    ```
 
+## Custom Instructions System 📝
+
+TinyAgent supports a flexible custom instruction system that allows you to append project-specific, domain-specific, or context-specific instructions to your agent's system prompt. This feature is perfect for customizing agent behavior, adding specialized knowledge, or maintaining consistent behavior across your project.
+
+### Key Features
+
+- **🎯 Flexible Input**: Support for both string input and file paths
+- **📁 Automatic AGENTS.md Loading**: Auto-detects project instructions
+- **🔧 Enable/Disable Control**: Runtime configuration with proper logging
+- **🏷️ Placeholder Support**: Smart insertion at specific locations in system prompts
+- **🎛️ Configurable Paths**: Custom filenames and locations
+- **🔗 Subagent Integration**: Control inheritance for specialized workers
+
+### Quick Start
+
+#### Basic Usage with String Instructions
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+
+async def main():
+    # Add custom instructions directly as a string
+    custom_instructions = """
+    You are working on a Python web application project.
+    Always consider:
+    - Security best practices
+    - Performance implications
+    - Code maintainability
+    - Follow PEP 8 style guidelines
+    """
+    
+    agent = TinyAgent(
+        model="gpt-5-mini",
+        api_key="your-api-key",
+        custom_instruction=custom_instructions,
+        enable_custom_instruction=True
+    )
+    
+    result = await agent.run("Help me refactor this Django view function")
+    print(result)
+
+asyncio.run(main())
+```
+
+#### Automatic AGENTS.md Loading
+
+Create an `AGENTS.md` file in your project directory:
+
+```markdown
+# Project Instructions for AI Agents
+
+You are assisting with the TinyAgent Python framework project.
+
+## Context
+- This is an AI agent framework focused on modularity and extensibility
+- Code should follow Python best practices and be well-documented
+- Always consider backward compatibility when making changes
+
+## Coding Standards
+- Use type hints consistently
+- Write comprehensive docstrings
+- Add appropriate error handling
+- Follow the existing project structure
+
+## Testing Requirements
+- Write unit tests for new functionality
+- Use pytest for testing
+- Maintain test coverage above 80%
+```
+
+Then initialize your agent with automatic loading:
+
+```python
+from tinyagent import TinyAgent
+
+# Will automatically load AGENTS.md if present in current directory
+agent = TinyAgent(
+    model="gpt-5-mini",
+    api_key="your-api-key",
+    enable_custom_instruction=True,  # Enable auto-loading (default: True)
+    custom_instruction_file="AGENTS.md"  # Default filename
+)
+```
+
+#### Custom File Locations
+
+```python
+from tinyagent import TinyCodeAgent
+
+# Use custom instruction file from different location
+agent = TinyCodeAgent(
+    model="gpt-5-mini",
+    provider="seatbelt",
+    enable_custom_instruction=True,
+    custom_instruction_file="config/my_agent_instructions.md",
+    custom_instruction_directory="/path/to/project"
+)
+```
+
+### Advanced Configuration
+
+#### Custom Placeholder Support
+
+If your system prompt contains the placeholder `<user_specified_instruction></user_specified_instruction>`, custom instructions will be inserted there. Otherwise, they're appended to the end.
+
+```python
+# Custom system prompt with placeholder
+custom_prompt = """
+You are a helpful AI assistant.
+
+<user_specified_instruction></user_specified_instruction>
+
+Always be concise and helpful.
+"""
+
+agent = TinyAgent(
+    model="gpt-5-mini",
+    system_prompt=custom_prompt,
+    custom_instruction="Focus on Python development best practices.",
+    enable_custom_instruction=True
+)
+```
+
+#### Runtime Configuration
+
+```python
+from tinyagent import TinyAgent
+
+agent = TinyAgent(
+    model="gpt-5-mini",
+    # Custom instruction configuration
+    enable_custom_instruction=True,
+    custom_instruction="Initial instructions here",
+    custom_instruction_file="AGENTS.md",
+    custom_instruction_directory="./config",
+    custom_instruction_placeholder="<custom_guidance></custom_guidance>",
+    custom_instruction_subagent_inheritance=True
+)
+
+# Update instructions at runtime
+agent.set_custom_instruction("Updated project guidelines")
+
+# Reload from file
+agent.reload_custom_instruction()
+
+# Disable/enable dynamically
+agent.enable_custom_instruction(False)  # Disable
+agent.enable_custom_instruction(True)   # Re-enable
+```
+
+### TinyCodeAgent Integration
+
+TinyCodeAgent fully supports custom instructions with specialized integration:
+
+```python
+from tinyagent import TinyCodeAgent
+
+# Project-specific coding instructions
+coding_instructions = """
+## Code Execution Guidelines
+- Always validate input parameters
+- Use secure coding practices
+- Implement proper error handling
+- Write self-documenting code with clear variable names
+
+## Project Context
+- Working with financial data - be extra careful with calculations
+- All monetary values should use Decimal type
+- Log all significant operations for audit trail
+"""
+
+agent = TinyCodeAgent(
+    model="gpt-5-mini",
+    provider="modal",
+    custom_instruction=coding_instructions,
+    enable_custom_instruction=True,
+    enable_python_tool=True,
+    enable_shell_tool=True
+)
+```
+
+### Subagent Inheritance Control
+
+Control whether subagents inherit custom instructions:
+
+```python
+from tinyagent import TinyAgent
+from tinyagent.tools.subagent import create_general_subagent
+
+# Main agent with project instructions
+main_agent = TinyAgent(
+    model="gpt-5-mini",
+    custom_instruction="Main project guidelines",
+    enable_custom_instruction=True,
+    custom_instruction_subagent_inheritance=True  # Subagents will inherit
+)
+
+# Create subagent - will automatically inherit custom instructions
+helper = create_general_subagent(
+    name="helper",
+    model="gpt-5-mini",
+    max_turns=15
+)
+main_agent.add_tool(helper)
+
+# For selective inheritance control
+specific_agent = TinyAgent(
+    model="gpt-5-mini",
+    custom_instruction="Specialized guidelines for this agent only",
+    custom_instruction_subagent_inheritance=False  # Don't pass to subagents
+)
+```
+
+### File Format Support
+
+Custom instruction files support multiple formats:
+
+#### Markdown Format (Recommended)
+```markdown
+# Agent Instructions
+
+## Project Context
+Brief description of the project and its goals.
+
+## Guidelines
+- Specific behaviors and preferences
+- Technical requirements
+- Quality standards
+
+## Examples
+Code examples or usage patterns to follow.
+```
+
+#### Plain Text Format
+```text
+Project: E-commerce Platform Development
+
+Guidelines:
+- Follow REST API best practices
+- Use proper HTTP status codes
+- Implement comprehensive error handling
+- Write OpenAPI documentation for all endpoints
+
+Security Requirements:
+- Always validate and sanitize input
+- Implement proper authentication checks
+- Use parameterized queries for database access
+```
+
+### Logging and Warnings
+
+The custom instruction system provides comprehensive logging:
+
+```python
+import logging
+from tinyagent import TinyAgent
+
+# Enable debug logging to see custom instruction loading
+logging.basicConfig(level=logging.DEBUG)
+
+agent = TinyAgent(
+    model="gpt-5-mini",
+    enable_custom_instruction=True,
+    custom_instruction_file="AGENTS.md"
+)
+
+# Log messages you'll see:
+# INFO: Custom instruction loaded from AGENTS.md (1234 characters)
+# WARNING: Custom instruction is enabled but AGENTS.md file not found
+# INFO: Custom instruction disabled, ignoring AGENTS.md file
+```
+
+### Configuration Options Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `custom_instruction` | `str \| None` | `None` | Direct instruction string or file path |
+| `enable_custom_instruction` | `bool` | `True` | Enable/disable custom instruction system |
+| `custom_instruction_file` | `str` | `"AGENTS.md"` | Default filename to search for |
+| `custom_instruction_directory` | `str` | `"."` | Directory to search for instruction files |
+| `custom_instruction_placeholder` | `str` | `"<user_specified_instruction></user_specified_instruction>"` | Placeholder for instruction insertion |
+| `custom_instruction_subagent_inheritance` | `bool` | `True` | Whether subagents inherit instructions |
+
+### Best Practices
+
+1. **📁 Use AGENTS.md**: Keep project instructions in a standard `AGENTS.md` file at your project root
+2. **📝 Be Specific**: Write clear, actionable instructions rather than vague guidance
+3. **🔄 Version Control**: Include instruction files in version control for team consistency
+4. **🎯 Context Matters**: Tailor instructions to your specific use case and domain
+5. **🧪 Test Changes**: Test how instruction changes affect agent behavior
+6. **📊 Monitor Logs**: Use logging to verify instructions are loaded correctly
+
+### Common Use Cases
+
+- **🏢 Enterprise Compliance**: Add company-specific guidelines and policies
+- **🔧 Development Standards**: Enforce coding standards and best practices
+- **📚 Domain Knowledge**: Include specialized knowledge for specific fields
+- **🎨 Style Guidelines**: Maintain consistent output formatting and tone
+- **🔐 Security Requirements**: Emphasize security practices and requirements
+- **📖 Documentation Standards**: Specify documentation formats and requirements
+
+### Error Handling
+
+The system gracefully handles various error conditions:
+
+```python
+# File not found - logs warning and continues
+agent = TinyAgent(
+    model="gpt-5-mini",
+    enable_custom_instruction=True,
+    custom_instruction_file="missing_file.md"
+)
+# WARNING: Custom instruction file not found: missing_file.md
+
+# Invalid file path - falls back to string interpretation
+agent = TinyAgent(
+    model="gpt-5-mini", 
+    custom_instruction="/invalid/path/instructions.md"
+)
+# INFO: Treating custom_instruction as direct string content
+
+# Empty or malformed files - logs warning
+# WARNING: Custom instruction file is empty or unreadable
+```
+
+The custom instruction system is designed to be robust and fail gracefully, ensuring your agents continue to work even when instruction files have issues.
+
 ## Session Persistence with Storage
 
 TinyAgent supports persistent sessions across runs using various storage backends. This allows you to resume conversations, maintain conversation history, and preserve agent state between application restarts.
