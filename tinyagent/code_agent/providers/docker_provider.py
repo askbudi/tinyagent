@@ -18,6 +18,7 @@ from pathlib import Path
 from tinyagent.hooks.logging_manager import LoggingManager
 from .base import CodeExecutionProvider
 from ..utils import clean_response, make_session_blob
+from .docker_image_builder import DockerImageBuilder, DockerConfigBuilder
 
 # Define colors for output formatting
 COLOR = {
@@ -575,6 +576,24 @@ CMD ["/bin/bash"]
         else:
             complete_code = "\n".join(self.code_tools_definitions) + "\n\n" + "\n".join(self.default_python_codes) + "\n\n" + full_code
             self.executed_default_codes = True
+        
+        # Inject container system context at the beginning of code execution
+        container_context_code = f"""
+# Auto-injected container system context
+import os, platform
+print(f"🐳 Container Environment: {{os.getcwd()}}")
+print(f"🖥️  Platform: {{platform.system()}} {{platform.machine()}}")
+print(f"🐍 Python: {{platform.python_version()}}")
+print(f"👤 User: {{os.environ.get('USER', 'unknown')}}")
+
+# Set working directory context for user code
+import sys
+sys.path.insert(0, '{self.volume_mount_path}')
+os.chdir('{self.volume_mount_path}')
+"""
+        
+        # Add the context code at the beginning
+        complete_code = container_context_code + "\n" + complete_code
         
         # Create state file for persistence
         state_file_path = os.path.join(self.state_dir, 'python_state.pkl')
@@ -1159,6 +1178,317 @@ exec {' '.join(shlex.quote(arg) for arg in command)}
         except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError):
             return False
     
+    async def _get_container_system_info(self) -> Dict[str, Any]:
+        """
+        Get system information from inside a container.
+        
+        Returns:
+            Dictionary containing container system information
+        """
+        if self.container_system_info is not None:
+            return self.container_system_info
+        
+        info_script = '''
+import os, platform, subprocess, pwd, sys
+import json
+
+info = {
+    "cwd": os.getcwd(),
+    "platform": platform.system(),
+    "architecture": platform.machine(),
+    "python_version": platform.python_version(),
+    "user": pwd.getpwuid(os.getuid()).pw_name,
+    "home": os.path.expanduser("~"),
+    "shell": os.environ.get("SHELL", "/bin/bash"),
+    "available_commands": []
+}
+
+# Check available commands
+commands_to_check = ["git", "curl", "wget", "vim", "nano", "htop", "jq", "node", "npm"]
+for cmd in commands_to_check:
+    try:
+        result = subprocess.run(["which", cmd], check=True, capture_output=True, text=True)
+        if result.returncode == 0:
+            info["available_commands"].append(cmd)
+    except:
+        pass
+
+print("SYSTEM_INFO_JSON:" + json.dumps(info))
+'''
+        
+        try:
+            # Generate temporary container to gather system info
+            container_name = f"{self.container_name_prefix}_sysinfo_{uuid.uuid4().hex[:8]}"
+            
+            # Build Docker command for system info gathering
+            docker_cmd = [
+                'docker', 'run', '--rm',
+                '--name', container_name,
+                '--user', '1000:1000',
+                '--workdir', self.volume_mount_path,
+                '--network', 'none' if not self.enable_network else 'bridge',
+                self.docker_image,
+                'python3', '-c', info_script
+            ]
+            
+            # Execute the command
+            process = await asyncio.create_subprocess_exec(
+                *docker_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+            stdout_text = stdout.decode('utf-8', errors='replace')
+            
+            # Parse system info from output
+            for line in stdout_text.split('\n'):
+                if line.startswith('SYSTEM_INFO_JSON:'):
+                    info_json = line[17:]  # Remove prefix
+                    self.container_system_info = json.loads(info_json)
+                    break
+            else:
+                # Fallback system info if parsing fails
+                self.container_system_info = {
+                    "cwd": self.volume_mount_path,
+                    "platform": "Linux",
+                    "architecture": "x86_64",
+                    "python_version": "3.11",
+                    "user": "tinyagent",
+                    "home": "/home/tinyagent",
+                    "shell": "/bin/bash",
+                    "available_commands": ["python3", "pip"]
+                }
+            
+            if self.logger:
+                self.logger.debug("Container system info: %s", self.container_system_info)
+                
+        except Exception as e:
+            if self.logger:
+                self.logger.warning("Failed to get container system info: %s", str(e))
+            # Provide fallback system info
+            self.container_system_info = {
+                "cwd": self.volume_mount_path,
+                "platform": "Linux",
+                "architecture": "x86_64", 
+                "python_version": "3.11",
+                "user": "tinyagent",
+                "home": "/home/tinyagent",
+                "shell": "/bin/bash",
+                "available_commands": ["python3", "pip"]
+            }
+        
+        return self.container_system_info
+    
+    async def get_dynamic_system_prompt(self) -> str:
+        """
+        Get a dynamic system prompt that reflects the actual container environment.
+        
+        Returns:
+            System prompt string with container-specific information
+        """
+        if self.dynamic_system_prompt_cache is not None:
+            return self.dynamic_system_prompt_cache
+        
+        # Ensure Docker image is available
+        if self.auto_pull_image:
+            await self._ensure_docker_image()
+        
+        # Get container system information
+        container_info = await self._get_container_system_info()
+        
+        # Build dynamic system prompt
+        available_tools_str = ", ".join(container_info.get("available_commands", []))
+        
+        system_prompt = f"""You are executing code in a secure Docker container environment.
+
+CONTAINER ENVIRONMENT:
+- Working directory: {container_info.get('cwd', self.volume_mount_path)}
+- Platform: {container_info.get('platform', 'Linux')} {container_info.get('architecture', 'x86_64')}
+- Python version: {container_info.get('python_version', '3.11')}
+- User: {container_info.get('user', 'tinyagent')}
+- Available shell: {container_info.get('shell', '/bin/bash')}
+- Available tools: {available_tools_str}
+
+WORKING DIRECTORY MAPPING:
+- Host directory: {self.working_directory}
+- Container directory: {self.volume_mount_path}
+- All file operations are relative to the container working directory
+- You have read/write access to the mounted working directory
+
+SECURITY CONTEXT:
+- Running in isolated Docker container
+- Network access: {'enabled' if self.enable_network else 'disabled'}
+- Resource limits: Memory {self.memory_limit}, CPU {self.cpu_limit}
+- Non-root user execution for security
+
+Use this environment information for accurate file operations and system commands.
+"""
+        
+        self.dynamic_system_prompt_cache = system_prompt
+        return system_prompt
+    
+    def _resolve_file_path(self, file_path: str) -> str:
+        """
+        Resolve host file path to container path for unified API.
+        
+        Args:
+            file_path: File path that could be relative or absolute
+            
+        Returns:
+            Container path for the file
+            
+        Raises:
+            ValueError: If the path is outside the allowed working directory
+        """
+        if os.path.isabs(file_path):
+            # Absolute path - check if it's within working directory
+            if file_path.startswith(self.working_directory):
+                # Path is within working directory, map to container
+                relative_path = os.path.relpath(file_path, self.working_directory)
+                return os.path.join(self.volume_mount_path, relative_path)
+            elif file_path.startswith(self.volume_mount_path):
+                # Already a container path
+                return file_path
+            else:
+                # Check if it's in additional allowed directories
+                for allowed_dir in self.additional_read_dirs + self.additional_write_dirs:
+                    if file_path.startswith(allowed_dir):
+                        # Map to container path (this is a simplified mapping)
+                        relative_path = os.path.relpath(file_path, allowed_dir)
+                        return os.path.join(self.volume_mount_path, 'additional', os.path.basename(allowed_dir), relative_path)
+                
+                raise ValueError(f"File path {file_path} is outside allowed directories")
+        else:
+            # Relative path - always relative to container working directory
+            return os.path.join(self.volume_mount_path, file_path)
+    
+    async def read_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
+        """
+        Read file with automatic path resolution for unified API.
+        
+        Args:
+            file_path: File path to read (can be host or container path)
+            **kwargs: Additional arguments passed to base class
+            
+        Returns:
+            Dictionary containing file read results
+        """
+        try:
+            container_path = self._resolve_file_path(file_path)
+            return await super().read_file(container_path, **kwargs)
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "path": file_path,
+                "size": 0,
+                "content": None
+            }
+    
+    async def write_file(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
+        """
+        Write file with automatic path resolution for unified API.
+        
+        Args:
+            file_path: File path to write (can be host or container path)
+            content: Content to write
+            **kwargs: Additional arguments passed to base class
+            
+        Returns:
+            Dictionary containing file write results
+        """
+        try:
+            container_path = self._resolve_file_path(file_path)
+            return await super().write_file(container_path, content, **kwargs)
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "path": file_path,
+                "bytes_written": 0,
+                "operation": "write"
+            }
+    
+    async def update_file(self, file_path: str, old_content: str, new_content: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update file with automatic path resolution for unified API.
+        
+        Args:
+            file_path: File path to update (can be host or container path)
+            old_content: Content to replace
+            new_content: Replacement content
+            **kwargs: Additional arguments passed to base class
+            
+        Returns:
+            Dictionary containing file update results
+        """
+        try:
+            container_path = self._resolve_file_path(file_path)
+            return await super().update_file(container_path, old_content, new_content, **kwargs)
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "path": file_path,
+                "changes_made": False,
+                "old_content": old_content,
+                "new_content": new_content,
+                "bytes_written": 0
+            }
+
+    @classmethod 
+    def create_with_config(cls, config_builder: DockerConfigBuilder, **kwargs) -> 'DockerProvider':
+        """
+        Create DockerProvider instance using configuration builder.
+        
+        Args:
+            config_builder: Pre-configured DockerConfigBuilder instance
+            **kwargs: Additional configuration to override
+            
+        Returns:
+            DockerProvider instance
+        """
+        config = config_builder.build_config()
+        config.update(kwargs)
+        return cls(**config)
+    
+    @classmethod
+    def for_data_science(cls, working_directory: str = None, **kwargs) -> 'DockerProvider':
+        """
+        Create DockerProvider optimized for data science workloads.
+        
+        Args:
+            working_directory: Working directory path
+            **kwargs: Additional configuration
+            
+        Returns:
+            DockerProvider instance
+        """
+        builder = DockerConfigBuilder().for_data_science()
+        if working_directory:
+            builder.with_working_directory(working_directory)
+        
+        return cls.create_with_config(builder, **kwargs)
+    
+    @classmethod 
+    def for_web_development(cls, working_directory: str = None, **kwargs) -> 'DockerProvider':
+        """
+        Create DockerProvider optimized for web development workloads.
+        
+        Args:
+            working_directory: Working directory path
+            **kwargs: Additional configuration
+            
+        Returns:
+            DockerProvider instance
+        """
+        builder = DockerConfigBuilder().for_web_development()
+        if working_directory:
+            builder.with_working_directory(working_directory)
+        
+        return cls.create_with_config(builder, **kwargs)
+
     async def cleanup(self):
         """Clean up any resources used by the provider."""
         # Reset state
