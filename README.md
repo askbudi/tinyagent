@@ -269,10 +269,9 @@ async def file_tools_examples():
     """Examples of using the new sandboxed file tools."""
     
     agent = TinyCodeAgent(
-        model="gpt-5-mini",
-        provider="seatbelt",  # or "modal"
-        enable_file_tools=True,
-        local_execution=True  # Required for Seatbelt provider
+        model="gpt-4o-mini",
+        local_execution=True,  # Auto-selects best provider
+        enable_file_tools=True
     )
     
     try:
@@ -1237,14 +1236,467 @@ I need accommodation in Toronto between 15th to 20th of May. Give me 5 options f
 await test_agent(task, model="gpt-5-mini")
 ```
 
+## 🔒 Cross-Platform Sandboxing & Security
+
+TinyAgent provides comprehensive cross-platform sandboxing with multiple provider options for secure code execution. Choose the best sandbox for your platform and requirements:
+
+### 🌍 Universal Provider Support
+
+| Provider | Platform | Security Model | Best For |
+|----------|----------|----------------|----------|
+| **🍎 SeatbeltProvider** | macOS | Native seatbelt sandbox | macOS development, local execution |
+| **🐧 BubblewrapProvider** | Linux | Bubblewrap namespaces | Linux servers, CI/CD pipelines |
+| **🐳 DockerProvider** | All (Windows/macOS/Linux) | Container isolation | Universal compatibility, Windows |
+| **☁️ ModalProvider** | All | Cloud isolation | Production workloads, scaling |
+
+### 🚀 Quick Setup Examples
+
+#### Zero Configuration (Recommended)
+```python
+from tinyagent import TinyCodeAgent
+
+# Automatically selects best provider for your platform
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    local_execution=True  # Auto: macOS→Seatbelt, Linux→Bubblewrap, Windows→Docker
+)
+
+result = await agent.execute_python(["print('Hello from secure sandbox!')"])
+```
+
+#### Explicit Provider Selection
+```python
+# Force Docker (works everywhere)
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="docker",
+    provider_config={
+        "memory_limit": "1g",
+        "enable_network": False,
+        "environment_variables": {"PROJECT_ROOT": "/workspace"}
+    }
+)
+
+# Platform-specific with fallback
+agent = TinyCodeAgent(
+    model="gpt-4o-mini", 
+    provider="bubblewrap",  # Try Linux native first
+    provider_fallback=True,  # Fall back to docker if unavailable
+    local_execution=True
+)
+```
+
+## 📋 Platform-Specific Setup Instructions
+
+### 🍎 macOS - SeatbeltProvider (Native)
+
+**Requirements:**
+- macOS 10.14 or later
+- No additional installation needed (uses built-in `sandbox-exec`)
+
+**Setup:**
+```python
+from tinyagent import TinyCodeAgent
+
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="seatbelt",
+    provider_config={
+        "python_env_path": "/usr/local/bin/python3",
+        "additional_read_dirs": ["/Users/username/projects"],
+        "additional_write_dirs": ["/Users/username/projects/output"],
+        "environment_variables": {
+            "PROJECT_ROOT": "/Users/username/projects",
+            "GITHUB_TOKEN": "your-token"  # For git operations
+        },
+        "bypass_shell_safety": True  # Enable shell commands
+    },
+    local_execution=True  # Required for seatbelt
+)
+```
+
+**Security Features:**
+- ✅ Process isolation with seatbelt profiles
+- ✅ Filesystem access control (read-only system directories)
+- ✅ Network isolation (configurable)
+- ✅ Git operations with credential management
+- ✅ Environment variable isolation
+
+**Testing:**
+```bash
+# Verify seatbelt is available
+which sandbox-exec
+# Should return: /usr/bin/sandbox-exec
+
+# Test basic sandboxing
+sandbox-exec -f /usr/share/sandbox/pure.sb echo "Hello Sandbox"
+```
+
+### 🐧 Linux - BubblewrapProvider (Native)
+
+**Requirements:**
+- Linux kernel 3.8+ with user namespaces enabled
+- Bubblewrap package installed
+
+**Installation:**
+```bash
+# Ubuntu/Debian
+sudo apt update && sudo apt install bubblewrap
+
+# CentOS/RHEL/Fedora
+sudo dnf install bubblewrap
+# or: sudo yum install bubblewrap
+
+# Alpine Linux
+sudo apk add bubblewrap
+
+# Arch Linux
+sudo pacman -S bubblewrap
+```
+
+**Setup:**
+```python
+from tinyagent import TinyCodeAgent
+
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="bubblewrap",
+    provider_config={
+        "additional_read_dirs": ["/home/user/projects"],
+        "additional_write_dirs": ["/home/user/projects/output"],
+        "environment_variables": {
+            "PROJECT_ROOT": "/home/user/projects",
+            "GITHUB_USERNAME": "username",
+            "GITHUB_TOKEN": "your-token"
+        },
+        "bypass_shell_safety": False  # Enable security checks
+    },
+    local_execution=True  # Required for bubblewrap
+)
+```
+
+**Security Features:**
+- ✅ Namespace isolation (PID, user, IPC, UTS, network)
+- ✅ Filesystem isolation with bind mounts
+- ✅ Process privilege dropping
+- ✅ Resource limits and controls
+- ✅ No root privileges required
+
+**Testing:**
+```bash
+# Verify bubblewrap installation
+bwrap --version
+# Should show version info
+
+# Test basic sandboxing
+bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp echo "Hello Bubblewrap"
+
+# Verify user namespaces are enabled
+cat /proc/sys/kernel/unprivileged_userns_clone
+# Should return: 1
+```
+
+**Docker Testing Environment:**
+```bash
+# Use our pre-built Docker testing infrastructure
+cd /path/to/tinyagent
+git clone <repo-url> && cd tinyagent/docker-testing
+
+# Test on specific distribution
+./scripts/build-test-single.sh ubuntu-22-04
+
+# Test across all Linux distributions
+./scripts/run-all-tests.sh
+```
+
+### 🐳 Universal - DockerProvider (Cross-Platform)
+
+**Requirements:**
+- Docker Desktop (Windows/macOS) or Docker Engine (Linux)
+- Python packages: `docker`, `cloudpickle`
+
+**Installation:**
+
+**Windows:**
+```powershell
+# Install Docker Desktop
+winget install Docker.DockerDesktop
+# Or download from: https://docker.com/products/docker-desktop
+
+# Install Python dependencies
+pip install docker cloudpickle
+```
+
+**macOS:**
+```bash
+# Install Docker Desktop
+brew install --cask docker
+# Or download from: https://docker.com/products/docker-desktop
+
+# Install Python dependencies
+pip install docker cloudpickle
+```
+
+**Linux:**
+```bash
+# Install Docker Engine
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Add user to docker group (avoid sudo)
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Install Python dependencies
+pip install docker cloudpickle
+```
+
+**Setup:**
+```python
+from tinyagent import TinyCodeAgent
+
+# Basic Docker setup (works on all platforms)
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="docker",
+    provider_config={
+        "docker_image": "tinyagent-runtime:latest",  # Auto-built if missing
+        "memory_limit": "1g",        # Resource limits
+        "cpu_limit": "2.0",           # CPU cores
+        "timeout": 300,               # 5 minute timeout
+        "enable_network": False,      # Network isolation
+        "environment_variables": {
+            "PROJECT_ROOT": "/workspace",
+            "CUSTOM_VAR": "value"
+        },
+        "additional_read_dirs": ["/host/data"],
+        "additional_write_dirs": ["/host/output"]
+    }
+)
+
+# Advanced Docker configuration
+advanced_agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="docker",
+    provider_config={
+        "docker_image": "python:3.11-slim",  # Custom base image
+        "auto_pull_image": True,             # Auto-pull if missing
+        "container_name_prefix": "myapp",    # Custom naming
+        "working_directory": "/app",         # Container working dir
+        "volumes": {                          # Custom volume mounts
+            "/host/data": "/container/data",
+            "/host/config": "/container/config"
+        },
+        "docker_args": {                      # Additional Docker options
+            "user": "1000:1000",               # Run as specific user
+            "security_opt": ["no-new-privileges:true"],
+            "cap_drop": ["ALL"],              # Drop all capabilities
+            "read_only": True                 # Read-only filesystem
+        }
+    }
+)
+```
+
+**Security Features:**
+- ✅ Container isolation (process, filesystem, network)
+- ✅ Non-root execution (UID 1000)
+- ✅ Capability dropping and security hardening
+- ✅ Resource limits (memory, CPU, processes)
+- ✅ Read-only filesystem with controlled mounts
+- ✅ Configurable network access
+
+**Testing:**
+```bash
+# Verify Docker installation
+docker --version
+docker info
+
+# Test basic container
+docker run --rm hello-world
+
+# Test Python environment
+docker run --rm python:3.11-slim python -c "print('Docker works!')"
+```
+
+### ☁️ Cloud - ModalProvider (Production)
+
+**Requirements:**
+- Modal account and API key
+- Internet connection
+
+**Setup:**
+```bash
+# Install Modal
+pip install modal
+
+# Authenticate
+modal token new
+```
+
+```python
+from tinyagent import TinyCodeAgent
+
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="modal",
+    provider_config={
+        "pip_packages": ["requests", "pandas", "matplotlib", "seaborn"],
+        "timeout": 300,
+        "cpu_count": 2,
+        "memory_mb": 2048
+    },
+    local_execution=False  # Uses Modal cloud
+)
+```
+
+## 🔧 Advanced Provider Configuration
+
+### Environment Variables
+```python
+# Set environment variables for all providers
+common_env = {
+    "PROJECT_ROOT": "/workspace",
+    "API_KEY": "your-secret-key",
+    "GITHUB_TOKEN": "ghp_xxxx",  # For git operations
+    "CUSTOM_CONFIG": "production"
+}
+
+agent = TinyCodeAgent(
+    provider="auto",  # Auto-select best provider
+    provider_config={
+        "environment_variables": common_env,
+        "additional_read_dirs": ["/data"],
+        "additional_write_dirs": ["/output"]
+    }
+)
+```
+
+### Git Operations Support
+```python
+# Configure git operations across all providers
+git_config = {
+    "environment_variables": {
+        "GIT_AUTHOR_NAME": "TinyAgent",
+        "GIT_AUTHOR_EMAIL": "agent@example.com",
+        "GITHUB_USERNAME": "your-username",
+        "GITHUB_TOKEN": "your-token"
+    }
+}
+
+agent = TinyCodeAgent(
+    provider="auto",
+    provider_config=git_config
+)
+
+# Git operations work across all providers
+result = await agent.execute_shell(["git", "clone", "https://github.com/user/repo.git"])
+```
+
+### Security Best Practices
+
+#### 1. Principle of Least Privilege
+```python
+# Only grant necessary directory access
+secure_config = {
+    "additional_read_dirs": ["/app/data"],        # Only data directory
+    "additional_write_dirs": ["/app/output"],     # Only output directory
+    "bypass_shell_safety": False,                # Enable command filtering
+    "enable_network": False                      # Disable network access
+}
+```
+
+#### 2. Environment Isolation
+```python
+# Clean environment with only necessary variables
+clean_env = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "PYTHONPATH": "/app",
+    "PROJECT_ENV": "sandbox"
+    # Don't include sensitive host environment
+}
+```
+
+#### 3. Resource Limits
+```python
+# Prevent resource exhaustion
+resource_limits = {
+    "memory_limit": "512m",     # Limit memory usage
+    "cpu_limit": "1.0",        # Limit CPU usage
+    "timeout": 180,            # 3 minute timeout
+    "max_processes": 10        # Process limit (Docker)
+}
+```
+
+## 🧪 Testing Your Sandbox Setup
+
+### Automated Testing
+```python
+import asyncio
+from tinyagent import TinyCodeAgent
+
+async def test_sandbox():
+    """Test sandbox functionality across providers."""
+    
+    providers = ["auto", "seatbelt", "bubblewrap", "docker", "modal"]
+    
+    for provider in providers:
+        try:
+            agent = TinyCodeAgent(
+                model="gpt-4o-mini",
+                provider=provider,
+                provider_fallback=True  # Allow fallback
+            )
+            
+            # Test Python execution
+            result = await agent.execute_python([
+                "import platform",
+                "print(f'Running on: {platform.system()}')",
+                "print('Sandbox test successful!')"
+            ])
+            
+            print(f"✅ {provider}: {result['printed_output'].strip()}")
+            
+        except Exception as e:
+            print(f"❌ {provider}: {str(e)}")
+        
+        finally:
+            if 'agent' in locals():
+                await agent.cleanup()
+
+# Run the test
+asyncio.run(test_sandbox())
+```
+
+### Manual Testing
+```python
+# Test filesystem isolation
+result = await agent.execute_python([
+    "import os",
+    "print('Current directory:', os.getcwd())",
+    "print('Can access /etc/passwd:', os.path.exists('/etc/passwd'))",
+    "print('Can write to /tmp:', os.access('/tmp', os.W_OK))"
+])
+
+# Test network isolation (should fail if disabled)
+result = await agent.execute_python([
+    "import requests",
+    "response = requests.get('https://httpbin.org/ip', timeout=5)",
+    "print('Network access:', response.status_code)"
+])
+
+# Test shell command filtering
+result = await agent.execute_shell(["rm", "-rf", "/"])  # Should be blocked
+result = await agent.execute_shell(["ls", "-la"])       # Should work
+```
+
 ## TinyCodeAgent - Advanced Code Execution with File Tools
 
 TinyCodeAgent is a specialized agent for secure code execution with comprehensive file operations, multiple provider backends, and advanced tooling.
 
 ### Key New Features
 
-- **🔒 Sandboxed File Operations**: Native `read_file`, `write_file`, `update_file`, `glob`, `grep` tools
-- **🛠️ Provider System**: Switch between Modal.com (cloud) and Seatbelt (local sandbox) execution
+- **🔒 Cross-Platform Sandboxing**: Native sandbox providers for macOS (Seatbelt), Linux (Bubblewrap), and universal Docker support
+- **🛠️ Intelligent Provider Selection**: Automatic platform detection with graceful fallbacks
 - **📋 Built-in Task Management**: Integrated TodoWrite tool for tracking complex workflows  
 - **🔧 Enhanced Shell Tool**: Improved `bash` tool with validation and platform-specific guidance
 - **🎯 Universal Tool Hooks**: Control and audit any tool execution with callback system
@@ -1258,23 +1710,16 @@ import asyncio
 from tinyagent import TinyCodeAgent
 
 async def main():
-    # Initialize with all new features enabled
+    # Zero-configuration setup (recommended)
     agent = TinyCodeAgent(
-        model="gpt-5-mini",
+        model="gpt-4o-mini",
         api_key="your-openai-api-key",
-        provider="seatbelt",  # or "modal" for cloud execution
+        local_execution=True,  # Auto-selects best provider for your platform
         
         # Enable all new tools
         enable_file_tools=True,      # read_file, write_file, update_file, glob, grep
         enable_shell_tool=True,      # Enhanced bash tool
         enable_todo_write=True,      # Task management
-        
-        # Provider-specific config
-        provider_config={
-            "additional_read_dirs": ["/path/to/your/project"],
-            "additional_write_dirs": ["/path/to/output"],
-            "python_env_path": "/usr/local/bin/python3"
-        },
         
         # Auto git checkpoints
         auto_git_checkpoint=True,
@@ -1284,7 +1729,7 @@ async def main():
     )
     
     try:
-        # Complex task with file operations and task tracking
+        # Complex cross-platform task with file operations
         result = await agent.run("""
         I need to analyze and refactor a Python project:
         
@@ -1296,6 +1741,7 @@ async def main():
         6. Run tests to verify changes
         
         Use the todo system to track progress throughout.
+        This will work on macOS (seatbelt), Linux (bubblewrap), or Windows (docker)!
         """)
         
         print(result)
@@ -1303,6 +1749,71 @@ async def main():
         await agent.close()
 
 asyncio.run(main())
+```
+
+### Platform-Specific Examples
+
+#### macOS Development Setup
+```python
+# Optimized for macOS development with Seatbelt sandbox
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="seatbelt",
+    provider_config={
+        "additional_read_dirs": ["/Users/username/projects"],
+        "additional_write_dirs": ["/Users/username/projects/output"],
+        "environment_variables": {
+            "GITHUB_TOKEN": "your-token",
+            "PROJECT_ROOT": "/Users/username/projects"
+        },
+        "bypass_shell_safety": True  # Enable shell commands for development
+    },
+    local_execution=True,
+    enable_file_tools=True,
+    ui="rich"
+)
+```
+
+#### Linux Server Setup
+```python
+# Optimized for Linux servers with Bubblewrap isolation
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="bubblewrap",
+    provider_config={
+        "additional_read_dirs": ["/home/user/projects"],
+        "additional_write_dirs": ["/home/user/output"],
+        "environment_variables": {
+            "GITHUB_USERNAME": "username",
+            "GITHUB_TOKEN": "token"
+        },
+        "bypass_shell_safety": False  # Security-first for servers
+    },
+    local_execution=True,
+    enable_file_tools=True
+)
+```
+
+#### Windows/Universal Setup
+```python
+# Universal setup using Docker (works on Windows, macOS, Linux)
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="docker",
+    provider_config={
+        "memory_limit": "1g",
+        "cpu_limit": "2.0",
+        "enable_network": True,  # Enable for git operations
+        "environment_variables": {
+            "GITHUB_TOKEN": "your-token",
+            "PROJECT_ROOT": "/workspace"
+        },
+        "additional_read_dirs": ["/host/data"],
+        "additional_write_dirs": ["/host/output"]
+    },
+    enable_file_tools=True,
+    ui="rich"
+)
 ```
 
 ### TinyCodeAgent with Gradio UI
@@ -1326,18 +1837,35 @@ asyncio.run(run_example())
 - **🛠️ Custom Tools**: Add your own tools and functions easily
 - **📊 Session Persistence**: Code state persists across executions
 
-### Provider System
+### Cross-Platform Provider System
 
-TinyCodeAgent uses a pluggable provider system - change execution backends with minimal code changes:
+TinyCodeAgent uses an intelligent provider system that automatically selects the best execution backend for your platform:
 
 ```python
-# Use Modal (default) - great for production
-agent = TinyCodeAgent(provider="modal")
+# Automatic provider selection (recommended)
+agent = TinyCodeAgent(local_execution=True)  
+# Auto-selects: macOS→Seatbelt, Linux→Bubblewrap, Windows→Docker
 
-# Future providers (coming soon)
-# agent = TinyCodeAgent(provider="docker")
-# agent = TinyCodeAgent(provider="local") 
-# agent = TinyCodeAgent(provider="lambda")
+# Explicit provider selection
+agent = TinyCodeAgent(provider="seatbelt")    # macOS native sandbox
+agent = TinyCodeAgent(provider="bubblewrap")  # Linux native sandbox
+agent = TinyCodeAgent(provider="docker")     # Universal container-based
+agent = TinyCodeAgent(provider="modal")      # Cloud execution
+
+# Provider with fallback
+agent = TinyCodeAgent(
+    provider="bubblewrap",      # Try Linux native first
+    provider_fallback=True,     # Fall back to docker if unavailable
+    local_execution=True
+)
+
+# Check available providers
+from tinyagent import TinyCodeAgent
+available = TinyCodeAgent.get_available_providers()
+print(f"Available: {available}")  # ['seatbelt', 'docker', 'modal']
+
+best_local = TinyCodeAgent.get_best_local_provider()
+print(f"Best local: {best_local}")  # 'seatbelt' on macOS, 'bubblewrap' on Linux
 ```
 
 ### Example Use Cases
@@ -1370,28 +1898,35 @@ print(response)
 from tinyagent import TinyCodeAgent
 from tinyagent.code_agent.tools.file_tools import ProductionApprovalHook
 
-# Complete configuration example with all new features
+# Complete cross-platform configuration example
 agent = TinyCodeAgent(
     # Core configuration
-    model="gpt-5-mini",
+    model="gpt-4o-mini",
     api_key="your-api-key",
     
-    # Provider selection and config
-    provider="seatbelt",  # "modal", "seatbelt", or "local"
+    # Cross-platform provider selection
+    provider="auto",              # Auto-select best provider
+    provider_fallback=True,       # Enable fallback chain
+    local_execution=True,         # Prefer local over cloud
+    
+    # Universal provider configuration
     provider_config={
-        # Seatbelt-specific options
-        "python_env_path": "/usr/local/bin/python3",
-        "additional_read_dirs": ["/Users/username/projects", "/Users/username/data"],
-        "additional_write_dirs": ["/Users/username/projects/output"],
+        # Common options (work across all providers)
+        "additional_read_dirs": ["/path/to/data", "/path/to/config"],
+        "additional_write_dirs": ["/path/to/output"],
         "environment_variables": {
-            "PROJECT_ROOT": "/Users/username/projects",
-            "DATA_PATH": "/Users/username/data"
+            "PROJECT_ROOT": "/workspace",
+            "GITHUB_TOKEN": "your-token",
+            "API_KEY": "your-api-key"
         },
-        "bypass_shell_safety": True,  # More permissive for local development
+        "bypass_shell_safety": True,  # Enable shell commands
         
-        # Modal-specific options (if using provider="modal")
-        # "pip_packages": ["requests", "pandas", "matplotlib"],
-        # "bypass_shell_safety": False,  # More restrictive for cloud
+        # Platform-specific options (automatically filtered)
+        "python_env_path": "/usr/local/bin/python3",  # Seatbelt/Bubblewrap
+        "memory_limit": "1g",                          # Docker/Modal
+        "cpu_limit": "2.0",                           # Docker/Modal
+        "timeout": 300,                               # All providers
+        "pip_packages": ["requests", "pandas"],       # Modal/Docker
     },
     
     # Tool enablement (all True by default)
@@ -1402,10 +1937,10 @@ agent = TinyCodeAgent(
     
     # Python environment setup
     authorized_imports=["requests", "pandas", "numpy", "matplotlib", "seaborn"],
-    pip_packages=["requests", "pandas", "matplotlib"],  # For Modal provider
+    pip_packages=["requests", "pandas", "matplotlib"],  # For cloud providers
     
     # File and shell operations
-    default_workdir="/Users/username/projects",
+    default_workdir="/workspace",
     auto_git_checkpoint=True,        # Auto git commits after shell commands
     
     # Output control
@@ -1425,7 +1960,7 @@ agent = TinyCodeAgent(
     # Memory management
     summary_config={
         "max_messages": 50,
-        "summary_model": "gpt-5-mini"
+        "summary_model": "gpt-4o-mini"
     }
 )
 
@@ -1436,31 +1971,84 @@ agent.add_callback(file_hook)
 
 ### Provider-Specific Configuration
 
-#### Seatbelt Provider (Local macOS Sandbox)
+#### macOS - Seatbelt Provider Configuration
 ```python
 seatbelt_config = {
     "python_env_path": "/usr/local/bin/python3",
-    "additional_read_dirs": ["/path/to/read/access"],
-    "additional_write_dirs": ["/path/to/write/access"], 
-    "environment_variables": {"VAR": "value"},
-    "bypass_shell_safety": True  # More permissive for local dev
+    "additional_read_dirs": ["/Users/username/projects"],
+    "additional_write_dirs": ["/Users/username/output"],
+    "environment_variables": {
+        "GITHUB_TOKEN": "your-token",
+        "PROJECT_ROOT": "/Users/username/projects"
+    },
+    "bypass_shell_safety": True  # More permissive for local development
 }
 
-agent = TinyCodeAgent(provider="seatbelt", provider_config=seatbelt_config)
+agent = TinyCodeAgent(
+    provider="seatbelt", 
+    provider_config=seatbelt_config,
+    local_execution=True  # Required for seatbelt
+)
 ```
 
-#### Modal Provider (Cloud Execution)
+#### Linux - Bubblewrap Provider Configuration
+```python
+bubblewrap_config = {
+    "additional_read_dirs": ["/home/user/projects"],
+    "additional_write_dirs": ["/home/user/output"],
+    "environment_variables": {
+        "GITHUB_USERNAME": "username",
+        "GITHUB_TOKEN": "your-token",
+        "PROJECT_ROOT": "/home/user/projects"
+    },
+    "bypass_shell_safety": False  # More restrictive for servers
+}
+
+agent = TinyCodeAgent(
+    provider="bubblewrap",
+    provider_config=bubblewrap_config,
+    local_execution=True  # Required for bubblewrap
+)
+```
+
+#### Universal - Docker Provider Configuration
+```python
+docker_config = {
+    "docker_image": "tinyagent-runtime:latest",  # Auto-built if missing
+    "memory_limit": "1g",                      # Resource limits
+    "cpu_limit": "2.0",
+    "timeout": 300,                            # 5 minute timeout
+    "enable_network": True,                    # Enable for git operations
+    "environment_variables": {
+        "GITHUB_TOKEN": "your-token",
+        "PROJECT_ROOT": "/workspace"
+    },
+    "additional_read_dirs": ["/host/data"],
+    "additional_write_dirs": ["/host/output"]
+}
+
+agent = TinyCodeAgent(
+    provider="docker",
+    provider_config=docker_config
+    # Works on Windows, macOS, and Linux
+)
+```
+
+#### Cloud - Modal Provider Configuration
 ```python
 modal_config = {
     "pip_packages": ["requests", "pandas", "matplotlib"],
+    "timeout": 300,
+    "cpu_count": 2,
+    "memory_mb": 2048,
     "bypass_shell_safety": False,  # More restrictive for cloud
-    "additional_safe_shell_commands": ["custom_cmd"],
+    "additional_safe_shell_commands": ["custom_cmd"]
 }
 
 agent = TinyCodeAgent(
     provider="modal", 
     provider_config=modal_config,
-    local_execution=False  # Use Modal cloud (default)
+    local_execution=False  # Use Modal cloud
 )
 ```
 
@@ -1487,6 +2075,51 @@ Each checkpoint includes:
 - Descriptive commit message with the command description
 - Timestamp of when the command was executed
 - The actual command that was run
+
+## 🛡️ Security Model Comparison
+
+| Security Feature | Seatbelt (macOS) | Bubblewrap (Linux) | Docker (Universal) | Modal (Cloud) |
+|------------------|------------------|--------------------|--------------------|---------------|
+| **Process Isolation** | ✅ Seatbelt profiles | ✅ PID namespaces | ✅ Container isolation | ✅ Cloud isolation |
+| **Filesystem Control** | ✅ Read-only binds | ✅ Bind mounts | ✅ Volume mounts | ✅ Serverless isolation |
+| **Network Isolation** | ✅ Configurable | ✅ Network namespaces | ✅ Network modes | ✅ Cloud network |
+| **Privilege Dropping** | ✅ Sandbox profiles | ✅ User namespaces | ✅ Non-root user | ✅ Serverless |
+| **Resource Limits** | ⚠️ Basic | ✅ cgroups | ✅ Docker limits | ✅ Cloud limits |
+| **Git Operations** | ✅ Full support | ✅ Full support | ✅ Full support | ✅ Full support |
+| **State Persistence** | ✅ CloudPickle | ✅ CloudPickle | ✅ Volume mounts | ✅ Modal storage |
+| **Setup Complexity** | 🟢 Zero setup | 🟡 Package install | 🟡 Docker required | 🟢 API key only |
+
+## 🎯 Provider Selection Guide
+
+**Choose Seatbelt if:**
+- ✅ Developing on macOS
+- ✅ Need fastest execution (native)
+- ✅ Want zero additional setup
+- ✅ Prefer Apple's security model
+
+**Choose Bubblewrap if:**
+- ✅ Running on Linux servers
+- ✅ Need strong isolation without containers
+- ✅ Want lightweight sandboxing
+- ✅ CI/CD pipelines on Linux
+
+**Choose Docker if:**
+- ✅ Need universal compatibility (Windows/macOS/Linux)
+- ✅ Want consistent environment across platforms
+- ✅ Already using Docker in your workflow
+- ✅ Need reproducible execution environment
+
+**Choose Modal if:**
+- ✅ Need cloud-scale execution
+- ✅ Want serverless code execution
+- ✅ Have variable computational needs
+- ✅ Prefer managed infrastructure
+
+**Use Auto-Selection if:**
+- ✅ Building cross-platform applications
+- ✅ Want optimal performance per platform
+- ✅ Need graceful fallbacks
+- ✅ Prefer zero-configuration setup
 
 For detailed documentation, see the [TinyCodeAgent README](tinyagent/code_agent/README.md).
 

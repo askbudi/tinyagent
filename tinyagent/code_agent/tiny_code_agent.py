@@ -19,11 +19,128 @@ except ImportError:
 from .providers.base import CodeExecutionProvider
 from .providers.modal_provider import ModalProvider
 from .providers.seatbelt_provider import SeatbeltProvider
+from .providers.bubblewrap_provider import BubblewrapProvider
+from .providers.docker_provider import DockerProvider
 from .helper import translate_tool_for_code_agent, load_template, render_system_prompt, prompt_code_example, prompt_qwen_helper
 from .utils import truncate_output, format_truncation_message, get_system_info, get_helpful_error_tip, detect_system_capabilities, generate_dynamic_bash_description
 from .tools.file_tools import read_file, write_file, update_file, glob_tool, grep_tool
 from .shell_validator import SimpleShellValidator, create_validator_from_provider_config
 import datetime
+
+
+def detect_best_provider(local_execution: bool = False) -> str:
+    """
+    Automatically detect the best available provider for the current platform.
+    
+    Args:
+        local_execution: If True, only consider local providers (seatbelt/bubblewrap/docker)
+        
+    Returns:
+        String name of the best available provider
+        
+    Raises:
+        RuntimeError: If no suitable provider is available
+    """
+    if local_execution:
+        # For local execution, check for platform-specific sandboxing providers first
+        if SeatbeltProvider.is_supported():
+            return "seatbelt"
+        elif BubblewrapProvider.is_supported():
+            return "bubblewrap"
+        elif DockerProvider.is_supported():
+            return "docker"
+        else:
+            raise RuntimeError("No local provider available. Install Docker or platform-specific sandbox (macOS: sandbox-exec, Linux: bubblewrap).")
+    else:
+        # For remote execution, Modal is the primary option, but Docker can be a fallback
+        if DockerProvider.is_supported():
+            # For non-local execution, we can still use Docker as it's universal
+            return "docker"
+        else:
+            return "modal"
+
+
+def auto_select_provider(
+    provider: Optional[str] = None, 
+    local_execution: bool = False,
+    allow_fallback: bool = True
+) -> str:
+    """
+    Auto-select provider with fallback logic.
+    
+    Args:
+        provider: Explicitly requested provider name, or None for auto-detection
+        local_execution: Whether local execution is required
+        allow_fallback: Whether to allow fallback to other providers
+        
+    Returns:
+        String name of the selected provider
+        
+    Raises:
+        RuntimeError: If the requested provider is not available and no fallback is possible
+    """
+    # If a specific provider is requested, try to use it
+    if provider:
+        provider = provider.lower()
+        
+        # Validate the requested provider
+        if provider == "seatbelt":
+            if SeatbeltProvider.is_supported():
+                return provider
+            elif allow_fallback:
+                if local_execution and BubblewrapProvider.is_supported():
+                    return "bubblewrap"
+                elif local_execution and DockerProvider.is_supported():
+                    return "docker"
+                elif not local_execution and DockerProvider.is_supported():
+                    return "docker"
+                elif not local_execution:
+                    return "modal"
+                else:
+                    raise RuntimeError("Seatbelt provider requested but not available. No suitable fallback found.")
+            else:
+                raise RuntimeError("Seatbelt provider is not supported on this system. It requires macOS with sandbox-exec.")
+        
+        elif provider == "bubblewrap":
+            if BubblewrapProvider.is_supported():
+                return provider
+            elif allow_fallback:
+                if local_execution and SeatbeltProvider.is_supported():
+                    return "seatbelt"
+                elif local_execution and DockerProvider.is_supported():
+                    return "docker"
+                elif not local_execution and DockerProvider.is_supported():
+                    return "docker"
+                elif not local_execution:
+                    return "modal"
+                else:
+                    raise RuntimeError("Bubblewrap provider requested but not available. No suitable fallback found.")
+            else:
+                raise RuntimeError("Bubblewrap provider is not supported on this system. It requires Linux with bubblewrap.")
+        
+        elif provider == "docker":
+            if DockerProvider.is_supported():
+                return provider
+            elif allow_fallback:
+                if local_execution and SeatbeltProvider.is_supported():
+                    return "seatbelt"
+                elif local_execution and BubblewrapProvider.is_supported():
+                    return "bubblewrap"
+                elif not local_execution:
+                    return "modal"
+                else:
+                    raise RuntimeError("Docker provider requested but not available. No suitable fallback found.")
+            else:
+                raise RuntimeError("Docker provider is not supported on this system. Docker must be installed and running.")
+        
+        elif provider == "modal":
+            return provider  # Modal doesn't have platform requirements
+        
+        else:
+            raise ValueError(f"Unknown provider: {provider}. Supported providers are: modal, seatbelt, bubblewrap, docker")
+    
+    # No specific provider requested, use auto-detection
+    return detect_best_provider(local_execution)
 
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
@@ -36,19 +153,24 @@ DEFAULT_SUMMARY_SYSTEM_PROMPT = (
 
 class TinyCodeAgent(TinyAgent):
     """
-    A TinyAgent specialized for code execution tasks.
+    A TinyAgent specialized for code execution tasks with cross-platform provider support.
     
     This class provides a high-level interface for creating agents that can execute
-    Python code using various providers (Modal, SeatbeltProvider for macOS sandboxing, etc.).
+    Python code using various providers with automatic platform detection:
+    - Modal: Remote execution in cloud environments (platform-agnostic)
+    - SeatbeltProvider: Local sandboxed execution on macOS using sandbox-exec
+    - BubblewrapProvider: Local sandboxed execution on Linux using bubblewrap
     
     Features include:
+    - Cross-platform automatic provider selection
     - Code execution in sandboxed environments
     - Shell command execution with safety checks
-    - Environment variable management (SeatbeltProvider)
+    - Environment variable management (SeatbeltProvider/BubblewrapProvider)
     - File system access controls
     - Memory management and conversation summarization
     - Git checkpoint automation
     - Output truncation controls
+    - Graceful fallback between providers
     """
     
     def __init__(
@@ -56,7 +178,9 @@ class TinyCodeAgent(TinyAgent):
         model: str = "gpt-5-mini",
         api_key: Optional[str] = None,
         log_manager: Optional[LoggingManager] = None,
-        provider: str = "modal",
+        provider: Optional[str] = None,
+        auto_provider_selection: bool = True,
+        provider_fallback: bool = True,
         tools: Optional[List[Any]] = None,
         code_tools: Optional[List[Any]] = None,
         authorized_imports: Optional[List[str]] = None,
@@ -80,6 +204,10 @@ class TinyCodeAgent(TinyAgent):
         custom_instructions: Optional[Union[str, Path]] = None,
         enable_custom_instructions: bool = True,
         custom_instruction_config: Optional[Dict[str, Any]] = None,
+        custom_instruction_file: str = "AGENTS.md",
+        custom_instruction_directory: str = ".",
+        custom_instruction_placeholder: str = "<user_specified_instruction></user_specified_instruction>",
+        custom_instruction_subagent_inheritance: bool = True,
         **agent_kwargs
     ):
         """
@@ -89,7 +217,9 @@ class TinyCodeAgent(TinyAgent):
             model: The language model to use
             api_key: API key for the model
             log_manager: Optional logging manager
-            provider: Code execution provider ("modal", "local", etc.)
+            provider: Code execution provider ("modal", "seatbelt", "bubblewrap", or None for auto-detection)
+            auto_provider_selection: If True, automatically select the best available provider when provider is None
+            provider_fallback: If True, allow fallback to other providers if the requested one is not available
             tools: List of tools available to the LLM (regular tools)
             code_tools: List of tools available in the Python execution environment
             authorized_imports: List of authorized Python imports
@@ -113,6 +243,10 @@ class TinyCodeAgent(TinyAgent):
             custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
             enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
             custom_instruction_config: Configuration for custom instruction loader.
+            custom_instruction_file: Custom filename to search for (default: "AGENTS.md").
+            custom_instruction_directory: Directory to search for files (default: current working directory).
+            custom_instruction_placeholder: Placeholder text to replace in system prompt (default: "<user_specified_instruction></user_specified_instruction>").
+            custom_instruction_subagent_inheritance: Whether subagents inherit instructions (default: True).
             **agent_kwargs: Additional arguments passed to TinyAgent
             
         Provider Config Options:
@@ -121,6 +255,17 @@ class TinyCodeAgent(TinyAgent):
                 - seatbelt_profile_path: Path to a file containing seatbelt profile rules
                 - python_env_path: Path to the Python environment to use
                 - bypass_shell_safety: If True, bypass shell command safety checks (default: True for seatbelt)
+                - additional_safe_shell_commands: Additional shell commands to consider safe
+                - additional_safe_control_operators: Additional shell control operators to consider safe
+                - additional_read_dirs: List of additional directories to allow read access to
+                - additional_write_dirs: List of additional directories to allow write access to
+                - environment_variables: Dictionary of environment variables to make available in the sandbox
+            
+            For BubblewrapProvider:
+                - bubblewrap_profile: String containing bubblewrap profile rules (unused, kept for compatibility)
+                - bubblewrap_profile_path: Path to a file containing bubblewrap profile rules (unused, kept for compatibility)
+                - python_env_path: Path to the Python environment to use
+                - bypass_shell_safety: If True, bypass shell command safety checks (default: True for bubblewrap)
                 - additional_safe_shell_commands: Additional shell commands to consider safe
                 - additional_safe_control_operators: Additional shell control operators to consider safe
                 - additional_read_dirs: List of additional directories to allow read access to
@@ -149,7 +294,25 @@ class TinyCodeAgent(TinyAgent):
         self.user_variables = user_variables or {}
         self.pip_packages = pip_packages or []
         self.local_execution = local_execution
-        self.provider = provider  # Store provider type for reuse
+        self.auto_provider_selection = auto_provider_selection
+        self.provider_fallback = provider_fallback
+        
+        # Auto-select provider if enabled
+        if auto_provider_selection and provider is None:
+            self.provider = auto_select_provider(
+                provider=None,
+                local_execution=local_execution,
+                allow_fallback=provider_fallback
+            )
+        elif provider is not None:
+            self.provider = auto_select_provider(
+                provider=provider,
+                local_execution=local_execution,
+                allow_fallback=provider_fallback
+            )
+        else:
+            # Fallback to modal if auto-selection is disabled and no provider specified
+            self.provider = "modal"
         self.check_string_obfuscation = check_string_obfuscation
         self.default_workdir = default_workdir or os.getcwd()  # Default to current working directory if not specified
         self.auto_git_checkpoint = auto_git_checkpoint  # Enable/disable automatic git checkpoints
@@ -157,7 +320,21 @@ class TinyCodeAgent(TinyAgent):
         # Store custom instruction parameters
         self.custom_instructions = custom_instructions
         self.enable_custom_instructions = enable_custom_instructions
+        
+        # Build custom instruction config from individual parameters
         self.custom_instruction_config = custom_instruction_config or {}
+        self.custom_instruction_config.update({
+            "auto_detect_agents_md": True,  # Enable auto-detection
+            "custom_filename": custom_instruction_file,
+            "execution_directory": custom_instruction_directory,
+            "inherit_to_subagents": custom_instruction_subagent_inheritance
+        })
+        
+        # Store individual parameters for access
+        self.custom_instruction_file = custom_instruction_file
+        self.custom_instruction_directory = custom_instruction_directory
+        self.custom_instruction_placeholder = custom_instruction_placeholder
+        self.custom_instruction_subagent_inheritance = custom_instruction_subagent_inheritance
         
         # Store tool enablement flags
         self._python_tool_enabled = enable_python_tool
@@ -174,11 +351,11 @@ class TinyCodeAgent(TinyAgent):
         self.truncation_config = {**default_truncation, **(truncation_config or {})}
         
         # Create the code execution provider
-        self.code_provider = self._create_provider(provider, self.provider_config)
+        self.code_provider = self._create_provider(self.provider, self.provider_config)
         
         # Create shell validator with provider-specific configuration
         provider_config_with_type = self.provider_config.copy()
-        provider_config_with_type['provider_type'] = provider
+        provider_config_with_type['provider_type'] = self.provider
         self.shell_validator = create_validator_from_provider_config(provider_config_with_type)
         
         # Detect system capabilities for enhanced bash tool functionality
@@ -204,7 +381,7 @@ class TinyCodeAgent(TinyAgent):
             logger=log_manager.get_logger('tinyagent.tiny_agent') if log_manager else None,
             summary_config=summary_config,
             enable_todo_write=enable_todo_write,
-            enable_custom_instructions=False,  # We handle custom instructions in _build_system_prompt
+            enable_custom_instruction=False,  # We handle custom instructions in _build_system_prompt
             **agent_kwargs
         )
         
@@ -342,39 +519,228 @@ class TinyCodeAgent(TinyAgent):
                 environment_variables=environment_variables,
                 **filtered_config
             )
+        elif provider_type.lower() == "bubblewrap":
+            # Check if bubblewrap is supported on this system
+            if not BubblewrapProvider.is_supported():
+                raise ValueError("Bubblewrap provider is not supported on this system. It requires Linux with bubblewrap.")
+            
+            # Bubblewrap only works with local execution
+            if not self.local_execution:
+                raise ValueError("Bubblewrap provider requires local execution mode. Please set local_execution=True.")
+            
+            # Create a copy of the config without the parameters we'll pass directly
+            filtered_config = config.copy()
+            for key in ['bubblewrap_profile', 'bubblewrap_profile_path', 'python_env_path', 
+                        'bypass_shell_safety', 'additional_safe_shell_commands', 
+                        'additional_safe_control_operators', 'additional_read_dirs',
+                        'additional_write_dirs', 'environment_variables']:
+                if key in filtered_config:
+                    filtered_config.pop(key)
+            
+            # Get bubblewrap profile configuration
+            bubblewrap_profile = config.get("bubblewrap_profile", None)
+            bubblewrap_profile_path = config.get("bubblewrap_profile_path", None)
+            python_env_path = config.get("python_env_path", None)
+            
+            # Shell safety configuration (default to True for Bubblewrap)
+            bypass_shell_safety = config.get("bypass_shell_safety", True)
+            additional_safe_shell_commands = config.get("additional_safe_shell_commands", None)
+            additional_safe_control_operators = config.get("additional_safe_control_operators", None)
+            
+            # Additional directory access configuration
+            additional_read_dirs = config.get("additional_read_dirs", None)
+            additional_write_dirs = config.get("additional_write_dirs", None)
+            
+            # Environment variables to make available in the sandbox
+            environment_variables = config.get("environment_variables", {})
+            
+            # Merge authorized_imports from both sources and add file operations if file tools are enabled
+            config_authorized_imports = config.get("authorized_imports", [])
+            final_authorized_imports = list(set(config_authorized_imports))
+            
+            # Add file operation imports if file tools are enabled
+            if self._file_tools_enabled:
+                file_imports = ["os", "pathlib", "Path", "mimetypes", "re", "glob"]
+                final_authorized_imports.extend(file_imports)
+                final_authorized_imports = list(set(final_authorized_imports))  # Remove duplicates
+            
+            # Update filtered_config with authorized_imports
+            filtered_config["authorized_imports"] = final_authorized_imports
+            
+            # Merge authorized_functions from both sources and add file operations if file tools are enabled
+            config_authorized_functions = config.get("authorized_functions", [])
+            final_authorized_functions = list(set(config_authorized_functions))
+            
+            # Add file operation functions if file tools are enabled
+            if self._file_tools_enabled:
+                file_functions = ["open", "Path.mkdir", "Path.exists", "Path.parent", "os.path.exists", "os.path.join", "os.listdir", "os.walk"]
+                final_authorized_functions.extend(file_functions)
+                final_authorized_functions = list(set(final_authorized_functions))  # Remove duplicates
+            
+            # Update filtered_config with authorized_functions
+            filtered_config["authorized_functions"] = final_authorized_functions
+            
+            # Create the bubblewrap provider
+            return BubblewrapProvider(
+                log_manager=self.log_manager,
+                code_tools=self.code_tools,
+                bubblewrap_profile=bubblewrap_profile,
+                bubblewrap_profile_path=bubblewrap_profile_path,
+                python_env_path=python_env_path,
+                bypass_shell_safety=bypass_shell_safety,
+                additional_safe_shell_commands=additional_safe_shell_commands,
+                additional_safe_control_operators=additional_safe_control_operators,
+                additional_read_dirs=additional_read_dirs,
+                additional_write_dirs=additional_write_dirs,
+                environment_variables=environment_variables,
+                **filtered_config
+            )
+        elif provider_type.lower() == "docker":
+            # Check if Docker is supported on this system
+            if not DockerProvider.is_supported():
+                raise ValueError("Docker provider is not supported on this system. Docker must be installed and running.")
+            
+            # Create a copy of the config without the parameters we'll pass directly
+            filtered_config = config.copy()
+            for key in ['docker_image', 'python_env_path', 'bypass_shell_safety', 
+                        'additional_safe_shell_commands', 'additional_safe_control_operators', 
+                        'additional_read_dirs', 'additional_write_dirs', 'environment_variables',
+                        'container_name_prefix', 'enable_network', 'memory_limit', 'cpu_limit',
+                        'timeout', 'auto_pull_image', 'volume_mount_path']:
+                if key in filtered_config:
+                    filtered_config.pop(key)
+            
+            # Get Docker-specific configuration
+            docker_image = config.get("docker_image", "tinyagent-runtime:latest")
+            python_env_path = config.get("python_env_path", None)  # Not used in Docker, kept for compatibility
+            
+            # Shell safety configuration (default to True for Docker)
+            bypass_shell_safety = config.get("bypass_shell_safety", True)
+            additional_safe_shell_commands = config.get("additional_safe_shell_commands", None)
+            additional_safe_control_operators = config.get("additional_safe_control_operators", None)
+            
+            # Additional directory access configuration
+            additional_read_dirs = config.get("additional_read_dirs", None)
+            additional_write_dirs = config.get("additional_write_dirs", None)
+            
+            # Environment variables to make available in the container
+            environment_variables = config.get("environment_variables", {})
+            
+            # Docker-specific configuration
+            container_name_prefix = config.get("container_name_prefix", "tinyagent")
+            enable_network = config.get("enable_network", False)
+            memory_limit = config.get("memory_limit", "512m")
+            cpu_limit = config.get("cpu_limit", "1.0")
+            timeout = config.get("timeout", 300)
+            auto_pull_image = config.get("auto_pull_image", True)
+            volume_mount_path = config.get("volume_mount_path", "/workspace")
+            
+            # Merge authorized_imports from both sources and add file operations if file tools are enabled
+            config_authorized_imports = config.get("authorized_imports", [])
+            final_authorized_imports = list(set(config_authorized_imports))
+            
+            # Add file operation imports if file tools are enabled
+            if self._file_tools_enabled:
+                file_imports = ["os", "pathlib", "Path", "mimetypes", "re", "glob"]
+                final_authorized_imports.extend(file_imports)
+                final_authorized_imports = list(set(final_authorized_imports))  # Remove duplicates
+            
+            # Update filtered_config with authorized_imports
+            filtered_config["authorized_imports"] = final_authorized_imports
+            
+            # Merge authorized_functions from both sources and add file operations if file tools are enabled
+            config_authorized_functions = config.get("authorized_functions", [])
+            final_authorized_functions = list(set(config_authorized_functions))
+            
+            # Add file operation functions if file tools are enabled
+            if self._file_tools_enabled:
+                file_functions = ["open", "Path.mkdir", "Path.exists", "Path.parent", "os.path.exists", "os.path.join", "os.listdir", "os.walk"]
+                final_authorized_functions.extend(file_functions)
+                final_authorized_functions = list(set(final_authorized_functions))  # Remove duplicates
+            
+            # Update filtered_config with authorized_functions
+            filtered_config["authorized_functions"] = final_authorized_functions
+            
+            # Create the Docker provider
+            return DockerProvider(
+                log_manager=self.log_manager,
+                code_tools=self.code_tools,
+                docker_image=docker_image,
+                python_env_path=python_env_path,
+                bypass_shell_safety=bypass_shell_safety,
+                additional_safe_shell_commands=additional_safe_shell_commands,
+                additional_safe_control_operators=additional_safe_control_operators,
+                additional_read_dirs=additional_read_dirs,
+                additional_write_dirs=additional_write_dirs,
+                environment_variables=environment_variables,
+                container_name_prefix=container_name_prefix,
+                enable_network=enable_network,
+                memory_limit=memory_limit,
+                cpu_limit=cpu_limit,
+                timeout=timeout,
+                auto_pull_image=auto_pull_image,
+                volume_mount_path=volume_mount_path,
+                **filtered_config
+            )
         else:
-            raise ValueError(f"Unsupported provider type: {provider_type}")
+            raise ValueError(f"Unsupported provider type: {provider_type}")            
     
     def _build_system_prompt(self, template_path: Optional[str] = None) -> str:
         """Build the system prompt for the code agent."""
-        # Use default template if none provided
+        # Determine the base prompt
         if self.static_system_prompt is not None:
-            return self.static_system_prompt
-        elif template_path is None :
+            # Use the provided static system prompt as base
+            base_prompt = self.static_system_prompt
+        elif template_path is None:
+            # Use default template
             template_path = str(Path(__file__).parent.parent / "prompts" / "code_agent.yaml")
-        
-        # Translate code tools to code agent format
-        code_tools_metadata = {}
-        for tool in self.code_tools:
-            if hasattr(tool, '_tool_metadata'):
-                metadata = translate_tool_for_code_agent(tool)
-                code_tools_metadata[metadata["name"]] = metadata
-        
-        # Load and render template
-        try:
-            template_str = load_template(template_path)
-            system_prompt = render_system_prompt(
-                template_str, 
-                code_tools_metadata, 
-                {}, 
-                self.authorized_imports
-            )
-            base_prompt = system_prompt + prompt_code_example + prompt_qwen_helper
-        except Exception as e:
-            # Fallback to a basic prompt if template loading fails
-            traceback.print_exc()
-            print(f"Failed to load template from {template_path}: {e}")
-            base_prompt = self._get_fallback_prompt()
+            
+            # Translate code tools to code agent format
+            code_tools_metadata = {}
+            for tool in self.code_tools:
+                if hasattr(tool, '_tool_metadata'):
+                    metadata = translate_tool_for_code_agent(tool)
+                    code_tools_metadata[metadata["name"]] = metadata
+            
+            # Load and render template
+            try:
+                template_str = load_template(template_path)
+                system_prompt = render_system_prompt(
+                    template_str, 
+                    code_tools_metadata, 
+                    {}, 
+                    self.authorized_imports
+                )
+                base_prompt = system_prompt + prompt_code_example + prompt_qwen_helper
+            except Exception as e:
+                # Fallback to a basic prompt if template loading fails
+                traceback.print_exc()
+                print(f"Failed to load template from {template_path}: {e}")
+                base_prompt = self._get_fallback_prompt()
+        else:
+            # Use provided template path
+            # Translate code tools to code agent format
+            code_tools_metadata = {}
+            for tool in self.code_tools:
+                if hasattr(tool, '_tool_metadata'):
+                    metadata = translate_tool_for_code_agent(tool)
+                    code_tools_metadata[metadata["name"]] = metadata
+            
+            # Load and render template
+            try:
+                template_str = load_template(template_path)
+                system_prompt = render_system_prompt(
+                    template_str, 
+                    code_tools_metadata, 
+                    {}, 
+                    self.authorized_imports
+                )
+                base_prompt = system_prompt + prompt_code_example + prompt_qwen_helper
+            except Exception as e:
+                # Fallback to a basic prompt if template loading fails
+                traceback.print_exc()
+                print(f"Failed to load template from {template_path}: {e}")
+                base_prompt = self._get_fallback_prompt()
         
         # Add user variables information to the prompt
         if self.user_variables:
@@ -389,7 +755,7 @@ class TinyCodeAgent(TinyAgent):
         # Apply custom instructions if enabled
         if self.enable_custom_instructions:
             try:
-                from tinyagent.custom_instructions import CustomInstructionLoader
+                from tinyagent.core.custom_instructions import CustomInstructionLoader
                 
                 # Create loader with configuration
                 loader = CustomInstructionLoader(
@@ -400,8 +766,11 @@ class TinyCodeAgent(TinyAgent):
                 # Load custom instructions
                 loader.load_instructions(self.custom_instructions)
                 
-                # Apply to system prompt
-                base_prompt = loader.apply_to_system_prompt(base_prompt)
+                # Apply to system prompt with custom placeholder
+                base_prompt = loader.apply_to_system_prompt(
+                    base_prompt, 
+                    placeholder=self.custom_instruction_placeholder
+                )
                 
                 # Log status
                 if loader.get_instructions():
@@ -1002,6 +1371,50 @@ class TinyCodeAgent(TinyAgent):
         """
         from .providers.seatbelt_provider import SeatbeltProvider
         return SeatbeltProvider.is_supported()
+    
+    @classmethod
+    def is_bubblewrap_supported(cls) -> bool:
+        """
+        Check if the bubblewrap provider is supported on this system.
+        
+        Returns:
+            True if bubblewrap is supported (Linux with bubblewrap), False otherwise
+        """
+        from .providers.bubblewrap_provider import BubblewrapProvider
+        return BubblewrapProvider.is_supported()
+    
+    @classmethod
+    def get_available_providers(cls) -> List[str]:
+        """
+        Get a list of all available providers on the current system.
+        
+        Returns:
+            List of available provider names
+        """
+        providers = ["modal"]  # Modal is always available
+        
+        if cls.is_seatbelt_supported():
+            providers.append("seatbelt")
+        
+        if cls.is_bubblewrap_supported():
+            providers.append("bubblewrap")
+        
+        return providers
+    
+    @classmethod
+    def get_best_local_provider(cls) -> Optional[str]:
+        """
+        Get the best available local sandboxing provider for the current platform.
+        
+        Returns:
+            Provider name or None if no local provider is available
+        """
+        if cls.is_seatbelt_supported():
+            return "seatbelt"
+        elif cls.is_bubblewrap_supported():
+            return "bubblewrap"
+        else:
+            return None
     
     def remove_authorized_import(self, import_name: str):
         """

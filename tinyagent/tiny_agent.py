@@ -14,7 +14,7 @@ import traceback
 import time  # Add time import for Unix timestamps
 from pathlib import Path
 import random  # Add random for jitter in retry backoff
-from .custom_instructions import CustomInstructionLoader, CustomInstructionError
+from .core.custom_instructions import CustomInstructionLoader, CustomInstructionError
 
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
@@ -379,6 +379,13 @@ class TinyAgent:
         temperature: float = 0.0,
         logger: Optional[logging.Logger] = None,
         model_kwargs: Optional[Dict[str, Any]] = {},
+        # Custom instruction parameters (before * to allow positional usage)
+        custom_instruction: Optional[Union[str, Path]] = None,
+        enable_custom_instruction: bool = True,
+        custom_instruction_file: str = "AGENTS.md",
+        custom_instruction_directory: str = ".",
+        custom_instruction_placeholder: str = "<user_specified_instruction></user_specified_instruction>",
+        custom_instruction_subagent_inheritance: bool = True,
         *,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -389,10 +396,6 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
-        # Custom instruction parameters
-        custom_instructions: Optional[Union[str, Path]] = None,
-        enable_custom_instructions: bool = True,
-        custom_instruction_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the Tiny Agent.
@@ -424,22 +427,22 @@ class TinyAgent:
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is True.
             enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
-            custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
-            enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
-            custom_instruction_config: Configuration for custom instruction loader. Supports:
-                - auto_detect_agents_md: Auto-detect AGENTS.md files (default: True)
-                - custom_filename: Custom filename to search for (default: "AGENTS.md")
-                - inherit_to_subagents: Whether subagents inherit instructions (default: True)
-                - execution_directory: Directory to search for files (default: current working directory)
+            custom_instruction: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
+            enable_custom_instruction: Whether to enable custom instruction processing. Default is True.
+            custom_instruction_file: Custom filename to search for (default: "AGENTS.md").
+            custom_instruction_directory: Directory to search for files (default: current working directory).
+            custom_instruction_placeholder: Placeholder text to replace in system prompt (default: "<user_specified_instruction></user_specified_instruction>").
+            custom_instruction_subagent_inheritance: Whether subagents inherit instructions (default: True).
                     """
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
         
         # Set up custom instruction loader
-        custom_instruction_config = custom_instruction_config or {}
         self.custom_instruction_loader = CustomInstructionLoader(
-            enabled=enable_custom_instructions,
-            **custom_instruction_config
+            enabled=enable_custom_instruction,
+            custom_filename=custom_instruction_file,
+            execution_directory=custom_instruction_directory,
+            inherit_to_subagents=custom_instruction_subagent_inheritance
         )
         
         # Instead of a single MCPClient, keep multiple:
@@ -460,8 +463,8 @@ class TinyAgent:
         self.model = model
         self.api_key = api_key
         self.temperature = temperature
-        if model in ["o1", "o1-preview","o3","o4-mini"]:
-            self.temperature = 1
+        if any(model_name in model for model_name in ["o1", "o1-preview","o3","o4-mini","gpt-5","gpt-5-mini","gpt-5-nano"]):
+            self.temperature = 1.0
 
         
         self.model_kwargs = model_kwargs
@@ -478,12 +481,13 @@ class TinyAgent:
         # Load and apply custom instructions to system prompt
         try:
             # Load custom instructions
-            self.custom_instruction_loader.load_instructions(custom_instructions)
+            self.custom_instruction_loader.load_instructions(custom_instruction)
             
             # Apply to system prompt
             base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
             final_system_prompt = self.custom_instruction_loader.apply_to_system_prompt(
-                base_system_prompt
+                base_system_prompt,
+                placeholder=custom_instruction_placeholder
             )
             
             # Log custom instruction status
@@ -640,7 +644,7 @@ class TinyAgent:
         await self.storage.save_session(self.session_id, data, self.user_id)
         self.logger.info(f"Agent state saved for session={self.session_id}")
 
-    async def _on_llm_end(self, event_name: str, agent: "TinyAgent", **kwargs) -> None:
+    async def _on_llm_end(self, event_name: str, agent: "TinyAgent", *args, **kwargs) -> None:
         """
         Callback hook: after each LLM call, accumulate *all* fields from
         litellm's response.usage into our metadata.
@@ -648,7 +652,14 @@ class TinyAgent:
         if event_name != "llm_end":
             return
 
-        response = kwargs.get("response")
+        # Handle both new (kwargs_dict as positional arg) and old (**kwargs) interfaces
+        if args:
+            # New interface: args[0] is kwargs_dict
+            kwargs_dict = args[0] if isinstance(args[0], dict) else {}
+            response = kwargs_dict.get("response")
+        else:
+            # Old interface: response is in **kwargs
+            response = kwargs.get("response")
         if response and hasattr(response, "usage") and isinstance(response.usage, dict):
             usage = response.usage
             bucket = self.metadata.setdefault(
@@ -1684,6 +1695,13 @@ class TinyAgent:
         temperature: float = 1.0, # Changed from 0.0 to 1.0 to support GPT-5, O3, O4-mini out of the box
         logger: Optional[logging.Logger] = None,
         model_kwargs: Optional[Dict[str, Any]] = {},
+        # Custom instruction parameters (before * to allow positional usage)
+        custom_instruction: Optional[Union[str, Path]] = None,
+        enable_custom_instruction: bool = True,
+        custom_instruction_file: str = "AGENTS.md",
+        custom_instruction_directory: str = ".",
+        custom_instruction_placeholder: str = "<user_specified_instruction></user_specified_instruction>",
+        custom_instruction_subagent_inheritance: bool = True,
         *,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -1693,10 +1711,6 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
-        # Custom instruction parameters
-        custom_instructions: Optional[Union[str, Path]] = None,
-        enable_custom_instructions: bool = True,
-        custom_instruction_config: Optional[Dict[str, Any]] = None,
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
@@ -1728,9 +1742,12 @@ class TinyAgent:
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is None (disabled).
             enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
-            custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
-            enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
-            custom_instruction_config: Configuration for custom instruction loader.
+            custom_instruction: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
+            enable_custom_instruction: Whether to enable custom instruction processing. Default is True.
+            custom_instruction_file: Custom filename to search for (default: "AGENTS.md").
+            custom_instruction_directory: Directory to search for files (default: current working directory).
+            custom_instruction_placeholder: Placeholder text to replace in system prompt (default: "<user_specified_instruction></user_specified_instruction>").
+            custom_instruction_subagent_inheritance: Whether subagents inherit instructions (default: True).
         """
         agent = cls(
             model=model,
@@ -1747,9 +1764,12 @@ class TinyAgent:
             retry_config=retry_config,
             parallel_tool_calls=parallel_tool_calls,
             enable_todo_write=enable_todo_write,
-            custom_instructions=custom_instructions,
-            enable_custom_instructions=enable_custom_instructions,
-            custom_instruction_config=custom_instruction_config
+            custom_instruction=custom_instruction,
+            enable_custom_instruction=enable_custom_instruction,
+            custom_instruction_file=custom_instruction_file,
+            custom_instruction_directory=custom_instruction_directory,
+            custom_instruction_placeholder=custom_instruction_placeholder,
+            custom_instruction_subagent_inheritance=custom_instruction_subagent_inheritance
         )
         if agent._needs_session_load:
             await agent.init_async()
