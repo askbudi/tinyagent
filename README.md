@@ -1,5 +1,5 @@
 # TinyAgent
-Tiny Agent: 100 lines Agent with MCP and extendable hook system
+🛠️ **Build Your Own AI Coding Assistant** - Break free from vendor lock-in and create powerful agents with *any* AI model you choose
 
 [![AskDev.AI | Chat with TinyAgent](https://img.shields.io/badge/AskDev.AI-Chat_with_TinyAgent-blue?style=flat-square)](https://askdev.ai/github/askbudi/tinyagent)
 
@@ -28,13 +28,24 @@ Inspired by:
 ** Building something with TinyAgent? Let us know and I'll add it here!**
 
 
-## Overview
-This is a tiny agent framework that uses MCP and LiteLLM to interact with language models. You have full control over the agent, you can add any tools you like from MCP and extend the agent using its event system.
+## 🚀 The Vision: Your AI, Your Choice, Your Rules
 
-**Three Main Components:**
-- **TinyAgent**: Core agent with MCP tool integration and extensible hooks
-- **TinyCodeAgent**: Specialized agent for secure Python code execution with pluggable providers  
-- **Subagent Tools**: Revolutionary parallel task execution system with context isolation and specialized workers
+Tired of being locked into specific AI providers? Want the power of advanced coding assistants without the constraints? TinyAgent gives you **complete freedom** to build intelligent agents that work with *any* AI model - from OpenAI and Anthropic to your own local Ollama models.
+
+**This isn't just another AI wrapper.** It's your gateway to building the coding assistant of your dreams:
+
+### 🎯 Why TinyAgent Changes Everything
+
+- **🔓 Model Freedom**: Switch between GPT-5, Claude-4, Llama, or any 100+ models instantly
+- **🏠 Local Privacy**: Run everything locally with Ollama - your code never leaves your machine  
+- **🛡️ Production Security**: Enterprise-grade sandboxing across macOS, Linux, and Windows
+- **⚡ Parallel Intelligence**: Multiple specialized AI agents working together on complex tasks
+- **🔧 Complete Control**: Extend, customize, and hook into every aspect of agent behavior
+
+**Three Revolutionary Components:**
+- **TinyAgent**: Your universal AI interface - one API, infinite models
+- **TinyCodeAgent**: Secure code execution with cross-platform sandboxing
+- **Subagent Swarm**: Parallel specialized workers that collaborate intelligently
 
 ### What's new for developers
 
