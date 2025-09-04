@@ -450,6 +450,483 @@ async def controlled_agent_example():
 asyncio.run(controlled_agent_example())
 ```
 
+## 📚 Complete Examples Collection
+
+<details>
+<summary>Click to expand complete working examples for all TinyAgent features</summary>
+
+### 1. Basic TinyAgent Example
+
+```python
+import asyncio
+import os
+from tinyagent import TinyAgent
+
+async def example_1_basic_tinyagent():
+    """✅  Basic TinyAgent example."""
+    print("Example 1: Basic TinyAgent")
+    
+    agent = TinyAgent(
+        model="gpt-5-mini",
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        system_prompt="You are a helpful assistant."
+    )
+    
+    try:
+        # The TodoWrite tool is automatically enabled by default
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
+        # For actual use, you would call:
+        # result = await agent.run("Your task here")
+        # print(result)
+        
+        print("✅ Success: Basic TinyAgent initialized correctly")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_1_basic_tinyagent())
+```
+
+### 2. Enhanced TinyAgent with Subagents
+
+```python
+import asyncio
+import os
+from tinyagent import TinyAgent
+from tinyagent.tools.subagent import create_general_subagent, create_coding_subagent
+
+async def example_2_enhanced_tinyagent():
+    """✅  Enhanced TinyAgent with subagents."""
+    print("Example 2: Enhanced TinyAgent with Subagents")
+    
+    # Create agent with TodoWrite enabled by default
+    agent = TinyAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        enable_todo_write=True  # This is True by default
+    )
+    
+    # Add a general-purpose subagent
+    helper_subagent = create_general_subagent(
+        name="helper",
+        model="gpt-5-mini", 
+        max_turns=20,
+        enable_python=True,
+        enable_shell=True
+    )
+    agent.add_tool(helper_subagent)
+    
+    # Add a coding subagent
+    coder = create_coding_subagent(
+        name="coder",
+        model="gpt-5-mini",
+        max_turns=25
+    )
+    agent.add_tool(coder)
+    
+    try:
+        # Check available tools - they are in custom_tool_handlers
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
+        # For MCP server connections (if needed):
+        # await agent.connect_to_server("npx", ["@openbnb/mcp-server-airbnb", "--ignore-robots-txt"])
+        
+        print("✅ Success: Enhanced TinyAgent with subagents")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_2_enhanced_tinyagent())
+```
+
+### 3. Basic TinyCodeAgent Example
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+
+async def example_3_basic_tinycodeagent():
+    """✅  Basic TinyCodeAgent example."""
+    print("Example 3: Basic TinyCodeAgent")
+    
+    agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        provider="seatbelt",
+        enable_python_tool=True,
+        enable_shell_tool=True,
+        enable_file_tools=True,
+        enable_todo_write=True,
+        local_execution=True  # REQUIRED for Seatbelt provider
+    )
+    
+    try:
+        # Check available tools - they are in custom_tool_handlers
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
+        # For actual use:
+        # result = await agent.run("Write a Python function to calculate factorial")
+        # print(result)
+        
+        print("✅ Success: TinyCodeAgent initialized correctly")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_3_basic_tinycodeagent())
+```
+
+### 4. Enhanced TinyCodeAgent with Full Configuration
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+
+async def example_4_enhanced_tinycodeagent():
+    """✅  Enhanced TinyCodeAgent with all features."""
+    print("Example 4: Enhanced TinyCodeAgent")
+    
+    agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="seatbelt",
+        provider_config={
+            "python_env_path": "/usr/bin/python3",
+            "additional_read_dirs": ["/tmp"],
+            "additional_write_dirs": ["/tmp"],
+            "environment_variables": {"TEST_VAR": "test_value"}
+        },
+        enable_python_tool=True,
+        enable_shell_tool=True, 
+        enable_file_tools=True,
+        enable_todo_write=True,
+        local_execution=True,  # REQUIRED for Seatbelt
+        default_workdir="/tmp",
+        auto_git_checkpoint=False,  # Can be enabled if needed
+        ui=None  # Can use "rich" for enhanced UI
+    )
+    
+    try:
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
+        print("✅ Success: Enhanced TinyCodeAgent with all features")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_4_enhanced_tinycodeagent())
+```
+
+### 5. Modal Provider Example
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+
+async def example_5_modal_provider():
+    """✅  TinyCodeAgent with Modal provider."""
+    print("Example 5: TinyCodeAgent with Modal Provider")
+    
+    agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="modal",
+        provider_config={
+            "pip_packages": ["requests", "pandas"],
+        },
+        enable_python_tool=True,
+        enable_shell_tool=True,
+        enable_file_tools=True,
+        enable_todo_write=True,
+        local_execution=False  # Cloud execution for Modal
+    )
+    
+    try:
+        available_tools = list(agent.custom_tool_handlers.keys())
+        print(f"Available tools: {available_tools}")
+        
+        print("✅ Success: Modal provider configured")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_5_modal_provider())
+```
+
+### 6. Storage Persistence Example
+
+```python
+import asyncio
+import os
+import tempfile
+from tinyagent import TinyAgent
+from tinyagent.storage.sqlite_storage import SqliteStorage
+
+async def example_6_storage_persistence():
+    """✅  Storage persistence example."""
+    print("Example 6: Storage Persistence")
+    
+    temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    temp_db.close()
+    
+    try:
+        storage = SqliteStorage(db_path=temp_db.name)
+        
+        # Create agent with storage
+        agent = TinyAgent(
+            model="gpt-5-mini",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            session_id="test-session",
+            user_id="test-user",
+            storage=storage
+        )
+        
+        # Add a message
+        agent.messages.append({
+            "role": "user", 
+            "content": "Test message for persistence"
+        })
+        
+        # Save the session
+        await agent.save_agent()
+        original_count = len(agent.messages)
+        print(f"Saved {original_count} messages")
+        
+        await agent.close()
+        
+        # Create new agent with same session to test loading
+        agent2 = TinyAgent(
+            model="gpt-5-mini",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            session_id="test-session",
+            user_id="test-user", 
+            storage=storage
+        )
+        
+        # Load the session
+        await agent2.init_async()
+        loaded_count = len(agent2.messages)
+        
+        print(f"Loaded {loaded_count} messages")
+        
+        if loaded_count == original_count:
+            print("✅ Success: Session persistence working")
+        else:
+            print("❌ Failed: Session not properly loaded")
+            
+        await agent2.close()
+        
+    finally:
+        if os.path.exists(temp_db.name):
+            os.unlink(temp_db.name)
+
+asyncio.run(example_6_storage_persistence())
+```
+
+### 7. Hook System Example
+
+```python
+import asyncio
+import os
+from tinyagent import TinyAgent
+from tinyagent.hooks.token_tracker import TokenTracker
+from tinyagent.hooks import anthropic_prompt_cache
+
+async def example_7_hook_system():
+    """✅  Hook system example."""
+    print("Example 7: Hook System")
+    
+    agent = TinyAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+    
+    # Add various hooks
+    token_tracker = TokenTracker(name="test_tracker")
+    agent.add_callback(token_tracker)
+    
+    # Add Anthropic prompt caching for Claude models
+    # cache_callback = anthropic_prompt_cache()
+    # agent.add_callback(cache_callback)
+    
+    # Custom hook
+    def custom_hook(event_name, agent, **kwargs):
+        if event_name == "agent_start":
+            print(f"   Custom hook: Agent starting")
+    
+    agent.add_callback(custom_hook)
+    
+    try:
+        print(f"Callbacks added: {len(agent.callbacks)}")
+        print("✅ Success: Hook system working")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_7_hook_system())
+```
+
+### 8. Ollama Models Example
+
+```python
+import asyncio
+import os
+from tinyagent import TinyAgent, TinyCodeAgent
+
+async def example_8_ollama_models():
+    """✅  Ollama models example."""
+    print("Example 8: Ollama Models")
+    
+    # TinyAgent with Ollama
+    agent = TinyAgent(
+        model="ollama/llama2",
+        api_key=None,  # No API key needed for local models
+        temperature=0.7
+    )
+    
+    try:
+        print(f"Model: {agent.model}")
+        print(f"API Key: {agent.api_key}")
+        print("✅ Success: Ollama model configured")
+        
+    finally:
+        await agent.close()
+    
+    # TinyCodeAgent with Ollama
+    code_agent = TinyCodeAgent(
+        model="ollama/codellama",
+        api_key=None,
+        provider="seatbelt",
+        local_execution=True,
+        enable_python_tool=True,
+        enable_shell_tool=True,
+        enable_file_tools=True
+    )
+    
+    try:
+        available_tools = list(code_agent.custom_tool_handlers.keys())
+        print(f"CodeAgent tools: {available_tools}")
+        print("✅ Success: Ollama CodeAgent configured")
+        
+    finally:
+        await code_agent.close()
+
+asyncio.run(example_8_ollama_models())
+```
+
+### 9. File Tools Usage Example
+
+```python
+import asyncio
+import os
+import tempfile
+import shutil
+from tinyagent import TinyCodeAgent
+
+async def example_9_file_tools_usage():
+    """✅  File tools usage example."""
+    print("Example 9: File Tools Usage")
+    
+    temp_dir = tempfile.mkdtemp(prefix="tinyagent_test_")
+    
+    try:
+        agent = TinyCodeAgent(
+            model="gpt-5-mini",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            provider="seatbelt",
+            enable_file_tools=True,
+            provider_config={
+                "additional_read_dirs": [temp_dir],
+                "additional_write_dirs": [temp_dir]
+            },
+            local_execution=True
+        )
+        
+        # Check file tools are available
+        file_tools = ['read_file', 'write_file', 'update_file', 'glob', 'grep']
+        available_file_tools = [tool for tool in file_tools 
+                              if tool in agent.custom_tool_handlers]
+        
+        print(f"Available file tools: {available_file_tools}")
+        
+        if len(available_file_tools) == len(file_tools):
+            print("✅ Success: All file tools available")
+        else:
+            print("❌ Some file tools missing")
+        
+        await agent.close()
+        
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+asyncio.run(example_9_file_tools_usage())
+```
+
+### 10. Git Checkpoints Example
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+
+async def example_10_git_checkpoints():
+    """✅  Git checkpoints example."""
+    print("Example 10: Git Checkpoints")
+    
+    agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        auto_git_checkpoint=True  # Enable auto git checkpoints
+    )
+    
+    try:
+        # Test checkpoint controls
+        is_enabled = agent.get_auto_git_checkpoint_status()
+        print(f"Git checkpoints enabled: {is_enabled}")
+        
+        # Test toggle
+        agent.enable_auto_git_checkpoint(False)
+        is_disabled = agent.get_auto_git_checkpoint_status()
+        print(f"Git checkpoints after disable: {is_disabled}")
+        
+        agent.enable_auto_git_checkpoint(True)
+        is_reenabled = agent.get_auto_git_checkpoint_status()
+        print(f"Git checkpoints after re-enable: {is_reenabled}")
+        
+        print("✅ Success: Git checkpoint controls working")
+        
+    finally:
+        await agent.close()
+
+asyncio.run(example_10_git_checkpoints())
+```
+
+### Key Corrections Summary
+
+**Important Notes from Testing:**
+
+1. **Tools Access**: Tools are stored in `agent.custom_tool_handlers` (dict), not `agent.tools`
+2. **Seatbelt Provider**: TinyCodeAgent with Seatbelt provider REQUIRES `local_execution=True`
+3. **TodoWrite Tool**: Automatically added when `enable_todo_write=True` (default)
+4. **Storage Loading**: Use `agent.init_async()` to load existing sessions
+5. **Messages**: Access conversation via `agent.messages` (list)
+6. **File Tools**: Added as custom tools, not in mcp_client.tools
+7. **Subagents**: Added as custom tools with their names as keys
+8. **Modal Provider**: Works with `local_execution=False` (cloud execution)
+9. **Hooks**: Added to `agent.callbacks` list
+10. **Git Checkpoints**: Have dedicated control methods
+
+</details>
+
 ## Using Local Models with Ollama
 
 TinyAgent supports local models through Ollama via LiteLLM integration. This allows you to run models locally without requiring API keys or cloud services.
@@ -1409,7 +1886,7 @@ git clone <repo-url> && cd tinyagent/docker-testing
 ./scripts/run-all-tests.sh
 ```
 
-### 🐳 Universal - DockerProvider (Cross-Platform)
+### 🐳 Universal - DockerProvider (Cross-Platform) - **ENHANCED**
 
 **Requirements:**
 - Docker Desktop (Windows/macOS) or Docker Engine (Linux)
@@ -1451,72 +1928,166 @@ newgrp docker
 pip install docker cloudpickle
 ```
 
-**Setup:**
+**🆕 Enhanced Setup (Unified API):**
 ```python
 from tinyagent import TinyCodeAgent
 
-# Basic Docker setup (works on all platforms)
+# 🌟 Zero Configuration (Recommended)
+agent = TinyCodeAgent(
+    model="gpt-4o-mini",
+    provider="docker",
+    working_directory="/path/to/your/project"  # 🔄 Auto-mounted to /workspace
+)
+
+# ✨ Dynamic System Context: AI knows it's in container with correct info
+# 🗂️ Unified File Operations: Same API as native providers
+# 🔧 Automatic Volume Mounting: Based on working directory
+
+# 🏗️ Pre-configured Templates
+from tinyagent.code_agent.providers.docker_provider import DockerProvider
+
+# Data Science Optimized
+ds_agent = DockerProvider.for_data_science(
+    working_directory="/data/project",
+    environment_variables={"JUPYTER_ENABLE_LAB": "yes"}
+)
+
+# Web Development Optimized  
+web_agent = DockerProvider.for_web_development(
+    working_directory="/web/project",
+    environment_variables={"NODE_ENV": "development"}
+)
+```
+
+**🔧 Advanced Configuration:**
+```python
+from tinyagent.code_agent.providers.docker_image_builder import DockerImageBuilder
+
+# Custom Image Builder
+builder = DockerImageBuilder("python:3.11-slim")
+builder.add_system_packages("git", "curl", "nodejs")
+builder.add_python_packages("fastapi", "pandas", "matplotlib")
+builder.set_environment(API_URL="http://localhost:8000")
+
 agent = TinyCodeAgent(
     model="gpt-4o-mini",
     provider="docker",
     provider_config={
-        "docker_image": "tinyagent-runtime:latest",  # Auto-built if missing
-        "memory_limit": "1g",        # Resource limits
-        "cpu_limit": "2.0",           # CPU cores
-        "timeout": 300,               # 5 minute timeout
-        "enable_network": False,      # Network isolation
-        "environment_variables": {
-            "PROJECT_ROOT": "/workspace",
-            "CUSTOM_VAR": "value"
-        },
-        "additional_read_dirs": ["/host/data"],
-        "additional_write_dirs": ["/host/output"]
+        "dockerfile_content": builder.generate_dockerfile(),
+        "docker_image": builder.get_image_tag(),
+        "build_image": True,
+        "working_directory": "/my/project",
+        "enable_network": True,
+        "memory_limit": "2g",
+        "cpu_limit": "2.0"
     }
 )
 
-# Advanced Docker configuration
-advanced_agent = TinyCodeAgent(
+# 📝 Inline Dockerfile
+custom_dockerfile = """
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y git nodejs npm
+RUN pip install fastapi uvicorn pandas
+ENV NODE_ENV=development
+USER 1000:1000
+WORKDIR /workspace
+"""
+
+agent = TinyCodeAgent(
     model="gpt-4o-mini",
     provider="docker",
     provider_config={
-        "docker_image": "python:3.11-slim",  # Custom base image
-        "auto_pull_image": True,             # Auto-pull if missing
-        "container_name_prefix": "myapp",    # Custom naming
-        "working_directory": "/app",         # Container working dir
-        "volumes": {                          # Custom volume mounts
-            "/host/data": "/container/data",
-            "/host/config": "/container/config"
-        },
-        "docker_args": {                      # Additional Docker options
-            "user": "1000:1000",               # Run as specific user
-            "security_opt": ["no-new-privileges:true"],
-            "cap_drop": ["ALL"],              # Drop all capabilities
-            "read_only": True                 # Read-only filesystem
-        }
+        "dockerfile_content": custom_dockerfile,
+        "build_image": True
     }
 )
 ```
 
-**Security Features:**
-- ✅ Container isolation (process, filesystem, network)
-- ✅ Non-root execution (UID 1000)
-- ✅ Capability dropping and security hardening
-- ✅ Resource limits (memory, CPU, processes)
-- ✅ Read-only filesystem with controlled mounts
-- ✅ Configurable network access
+**🎯 Key Enhanced Features:**
 
-**Testing:**
+1. **🔄 Dynamic System Context**
+   ```python
+   # Container info is automatically injected:
+   # 🐳 Container Environment: /workspace  
+   # 🖥️ Platform: Linux x86_64
+   # 🐍 Python: 3.11.5
+   # 👤 User: tinyagent
+   ```
+
+2. **🗂️ Unified File Operations**
+   ```python
+   # Same API across all providers
+   await agent.execute_python([
+       "with open('data.txt', 'w') as f:",      # Works in container
+       "    f.write('Hello!')",
+       "print('File written to:', os.getcwd())" # Shows container context
+   ])
+   
+   # Host paths automatically mapped
+   await agent.execute_python([
+       f"with open('{host_project_path}/file.txt', 'r') as f:",  # Auto-resolved
+       "    content = f.read()"
+   ])
+   ```
+
+3. **⚙️ Configuration Templates**
+   ```python
+   from tinyagent.code_agent.providers.docker_image_builder import DockerConfigBuilder
+   
+   # Fluent configuration API
+   config = (DockerConfigBuilder()
+       .for_machine_learning()
+       .with_resources(memory="4g", cpus="4.0")
+       .with_network_access(True)
+       .with_custom_packages(
+           system_packages=["git", "vim"],
+           python_packages=["torch", "transformers"]
+       )
+       .build_config())
+   
+   agent = TinyCodeAgent(provider="docker", provider_config=config)
+   ```
+
+**🛡️ Enhanced Security Features:**
+- ✅ Container isolation (process, filesystem, network)
+- ✅ Non-root execution (UID 1000) with capability dropping
+- ✅ Dynamic resource limits (memory, CPU, processes)
+- ✅ Read-only filesystem with controlled mounts
+- ✅ Network isolation (configurable)
+- ✅ **NEW**: Working directory sandboxing with transparent path mapping
+- ✅ **NEW**: Custom image building with security hardening
+
+**🧪 Testing:**
 ```bash
 # Verify Docker installation
 docker --version
 docker info
 
-# Test basic container
-docker run --rm hello-world
+# Test enhanced provider
+python -c "
+from tinyagent.code_agent.providers.docker_provider import DockerProvider
+print('✅ DockerProvider available:', DockerProvider.is_supported())
+"
 
-# Test Python environment
-docker run --rm python:3.11-slim python -c "print('Docker works!')"
+# Test with actual execution (requires Docker)
+python -c "
+import asyncio
+from tinyagent import TinyCodeAgent
+
+async def test():
+    agent = TinyCodeAgent(provider='docker', working_directory='.')
+    result = await agent.execute_python(['print(\"🐳 Docker container working!\")'])
+    print(result.get('printed_output', ''))
+
+asyncio.run(test())
+"
 ```
+
+**📚 Comprehensive Documentation:**
+- [Enhanced DockerProvider Guide](docs/docker_provider_enhanced.md)
+- Dynamic system context and unified API examples
+- Custom image building and configuration templates
+- Migration guide from basic DockerProvider usage
 
 ### ☁️ Cloud - ModalProvider (Production)
 
@@ -2411,7 +2982,7 @@ class MyHook:
             event_kwargs = kwargs
         
         if event_name == "llm_start":
-            # ✅ CORRECT: Modify event_kwargs["messages"] (what goes to LLM)
+            # ✅  Modify event_kwargs["messages"] (what goes to LLM)
             messages = event_kwargs.get("messages", [])
             
             # Example: Add cache control, clean up fields, etc.
