@@ -111,6 +111,51 @@ uv pip install tinyagent-py[all]
 
 ## Developer Boilerplate & Quick Start
 
+### OpenAI Responses API (optional)
+
+TinyAgent supports OpenAI's Responses API alongside the default Chat Completions flow. To opt in without changing your code, set an environment variable:
+
+```bash
+export TINYAGENT_LLM_API=responses
+```
+
+Your existing TinyAgent code continues to work. Under the hood, TinyAgent translates your chat `messages`/`tools` to a Responses request and maps the Responses result back to the same structure it already uses (including `tool_calls` and usage accounting). To switch back, unset or set `TINYAGENT_LLM_API=chat`.
+
+Example with explicit toggle:
+
+```python
+import os
+import asyncio
+from tinyagent import TinyAgent
+
+async def main():
+    # Option A: via environment variable
+    os.environ["TINYAGENT_LLM_API"] = "responses"  # or "chat" (default)
+    agent = await TinyAgent.create(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        # Option B: programmatic preference via model_kwargs
+        model_kwargs={"llm_api": "responses"},  # or {"use_responses_api": True}
+    )
+    print(await agent.run("List three safe git commands for a repo"))
+
+asyncio.run(main())
+```
+
+Notes:
+- The adapter preserves TinyAgent hooks, storage schema, and tool-calling behavior.
+- Streaming and semantic events can be added later without changing your code.
+- Optional tracing: set `RESPONSES_TRACE_FILE=./responses_trace.jsonl` to capture raw request/response JSON for debugging. Set `DEBUG_RESPONSES=1` to print pairing details.
+
+Examples you can run:
+- `examples/openai_sdk_responses_multiturn.py` — baseline SDK multi-turn chaining
+- `examples/openai_sdk_responses_extended_tools.py` — SDK multi-turn with function calls
+- `examples/litellm_responses_extended_tools.py` — LiteLLM multi-turn with function calls
+- `examples/litellm_responses_three_tools.py` — LiteLLM three-tool demo
+- `examples/tinyagent_responses_three_tools.py` — TinyAgent three-tool demo (Responses)
+- `examples/seatbelt_verbose_tools.py` — TinyCodeAgent + seatbelt, verbose hook stream
+- `examples/seatbelt_responses_three_tools.py` — TinyCodeAgent + seatbelt three-tool demo
+
 ### 🚀 TinyAgent with New Tools
 
 ```python

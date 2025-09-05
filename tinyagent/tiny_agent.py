@@ -15,6 +15,8 @@ import time  # Add time import for Unix timestamps
 from pathlib import Path
 import random  # Add random for jitter in retry backoff
 from .core.custom_instructions import CustomInstructionLoader, CustomInstructionError
+import os
+from .core.openai_responses_adapter import OpenAIResponsesAdapter, ChatResponse
 
 # Module-level logger; configuration is handled externally.
 logger = logging.getLogger(__name__)
@@ -469,6 +471,32 @@ class TinyAgent:
         
         self.model_kwargs = model_kwargs
         self.encoder = tiktoken.get_encoding("o200k_base")
+        # LLM API selection: chat (default) or responses (OpenAI-only)
+        self.llm_api = os.getenv("TINYAGENT_LLM_API", "chat").lower()
+        # Allow override via model_kwargs for programmatic preference
+        try:
+            mk = self.model_kwargs or {}
+            if isinstance(mk.get("llm_api"), str):
+                self.llm_api = str(mk.get("llm_api")).lower()
+            elif mk.get("use_responses_api") is True:
+                self.llm_api = "responses"
+            # Pop TinyAgent-only keys so they don't leak into provider calls
+            if "llm_api" in self.model_kwargs:
+                self.model_kwargs.pop("llm_api", None)
+            if "use_responses_api" in self.model_kwargs:
+                self.model_kwargs.pop("use_responses_api", None)
+        except Exception:
+            # If anything goes wrong, ensure we still remove these keys defensively
+            try:
+                self.model_kwargs.pop("llm_api", None)
+                self.model_kwargs.pop("use_responses_api", None)
+            except Exception:
+                pass
+        # Responses API chaining state
+        self._responses_prev_id: Optional[str] = None
+        self._responses_submitted_tool_ids: set[str] = set()
+        # Track which transport produced the last Responses id: 'litellm' or 'openai'
+        self._responses_transport: Optional[str] = None
         
         # Set up retry configuration
         self.retry_config = DEFAULT_RETRY_CONFIG.copy()
@@ -1159,16 +1187,25 @@ class TinyAgent:
                 self.logger.info(f"Using parallel tool calls: {use_parallel_tool_calls}")
                 
                 # Use our retry wrapper with the potentially modified messages from hooks
-                response = await self._litellm_with_retry(
-                    model=self.model,
-                    api_key=self.api_key,
-                    messages=final_messages_for_llm,  # Use the messages modified by hooks
-                    tools=all_tools,
-                    tool_choice="auto",
-                    parallel_tool_calls=use_parallel_tool_calls,
-                    temperature=self.temperature,
-                    **self.model_kwargs
-                )
+                if self.llm_api == "responses":
+                    response = await self._call_openai_responses(
+                        final_messages_for_llm,
+                        all_tools,
+                        temperature=self.temperature,
+                        parallel_tool_calls=use_parallel_tool_calls,
+                        **self.model_kwargs,
+                    )
+                else:
+                    response = await self._litellm_with_retry(
+                        model=self.model,
+                        api_key=self.api_key,
+                        messages=final_messages_for_llm,  # Use the messages modified by hooks
+                        tools=all_tools,
+                        tool_choice="auto",
+                        parallel_tool_calls=use_parallel_tool_calls,
+                        temperature=self.temperature,
+                        **self.model_kwargs
+                    )
                 
                 # Notify LLM end
                 await self._run_callbacks("llm_end", response=response)
@@ -1685,6 +1722,201 @@ class TinyAgent:
         
         # This should not be reached due to the raise in the loop, but just in case:
         raise last_exception
+
+    async def _call_openai_responses(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], **kwargs) -> ChatResponse:
+        """
+        Call OpenAI Responses API and normalize to Chat-like response.
+
+        Notes:
+        - Designed to be easily mocked in tests. When available, uses the
+          official OpenAI SDK. Network/API usage should be disabled in unit tests.
+        - Keeps storage and hooks integration unchanged by returning a Chat-like
+          response object compatible with the rest of TinyAgent.
+        """
+        # Build request via adapter
+        # Collect unsubmitted tool results for the latest assistant tool_call ids
+        pending_tool_results: List[Dict[str, Any]] = []
+        # Find the last assistant message that has tool_calls
+        last_tool_call_ids: List[str] = []
+        for m in reversed(messages):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                try:
+                    tcs = m.get("tool_calls") or []
+                    ids: List[str] = []
+                    for tc in tcs:
+                        # Support both dataclass-like and dict shapes
+                        if hasattr(tc, "id"):
+                            ids.append(getattr(tc, "id"))
+                        elif isinstance(tc, dict) and tc.get("id"):
+                            ids.append(tc.get("id"))
+                    last_tool_call_ids = ids
+                except Exception:
+                    last_tool_call_ids = []
+                break
+
+        # Filter tool messages to only those matching the last tool_call ids and not yet submitted
+        for m in messages:
+            if m.get("role") == "tool":
+                tcid = m.get("tool_call_id")
+                if tcid and tcid in last_tool_call_ids and tcid not in self._responses_submitted_tool_ids:
+                    pending_tool_results.append(m)
+
+        if os.getenv("DEBUG_RESPONSES") == "1":
+            self.logger.info(f"[responses] previous_response_id={self._responses_prev_id} last_tool_call_ids={last_tool_call_ids} pending={ [r.get('tool_call_id') for r in pending_tool_results] }")
+
+        # Prepare two flavors of previous_response_id:
+        # - LiteLLM can handle long ids (e.g., proxy-generated). Use as-is.
+        # - OpenAI SDK requires <= 64 chars. Guard for the fallback path.
+        prev_id_litellm = self._responses_prev_id if isinstance(self._responses_prev_id, str) else None
+        if isinstance(self._responses_prev_id, str) and len(self._responses_prev_id) > 64:
+            prev_id_sdk = None
+        else:
+            prev_id_sdk = self._responses_prev_id if isinstance(self._responses_prev_id, str) else None
+
+        # Build request for LiteLLM path
+        req = OpenAIResponsesAdapter.to_responses_request(
+            messages=messages,
+            tools=tools,
+            model=self.model,
+            temperature=kwargs.pop("temperature", None),
+            previous_response_id=prev_id_litellm,
+            tool_results=pending_tool_results,
+            **kwargs,
+        )
+
+        # Prefer LiteLLM Responses; fall back to OpenAI SDK
+        # Optional debug of payload keys
+        if os.getenv("DEBUG_RESPONSES") == "1":
+            try:
+                import json as _json
+                dbg = {k: ("<omitted>" if k in ("input", "tools", "instructions") else v) for k, v in req.items()}
+                self.logger.info(f"[responses] payload={_json.dumps(dbg)}")
+            except Exception:
+                pass
+
+        # Optional JSONL trace of raw requests/responses
+        def _maybe_trace(direction: str, payload: Any) -> None:
+            try:
+                trace_path = os.getenv("RESPONSES_TRACE_FILE")
+                if not trace_path:
+                    return
+                import json as _json, datetime as _dt
+                record = {
+                    "ts": _dt.datetime.utcnow().isoformat() + "Z",
+                    "direction": direction,
+                    "payload": payload,
+                }
+                with open(trace_path, "a", encoding="utf-8") as f:
+                    f.write(_json.dumps(record))
+                    f.write("\n")
+            except Exception:
+                # Tracing must never break the agent loop
+                pass
+
+        _maybe_trace("request", req)
+
+        try:
+            import litellm  # type: ignore
+            resp_payload: Any = None
+            if hasattr(litellm, "aresponses"):
+                resp_payload = await getattr(litellm, "aresponses")(**req)
+            elif hasattr(litellm, "responses") and hasattr(litellm.responses, "create"):
+                import asyncio as _asyncio
+                loop = _asyncio.get_event_loop()
+                resp_payload = await loop.run_in_executor(None, lambda: litellm.responses.create(**req))
+            else:
+                raise ImportError("LiteLLM Responses API not found")
+
+            # Prefer response.id attribute when available
+            resp_id = getattr(resp_payload, "id", None)
+            if isinstance(resp_payload, dict):
+                resp_dict = resp_payload
+                if not isinstance(resp_id, str):
+                    resp_id = resp_dict.get("id") or resp_dict.get("response", {}).get("id")
+            else:
+                if hasattr(resp_payload, "to_dict"):
+                    resp_dict = resp_payload.to_dict()
+                elif hasattr(resp_payload, "model_dump"):
+                    resp_dict = resp_payload.model_dump()
+                else:
+                    try:
+                        import json as _json
+                        resp_dict = _json.loads(str(resp_payload))
+                    except Exception:
+                        resp_dict = dict(getattr(resp_payload, "__dict__", {}))
+                if not isinstance(resp_id, str):
+                    resp_id = resp_dict.get("id") or resp_dict.get("response", {}).get("id")
+
+            self._responses_prev_id = resp_id if isinstance(resp_id, str) else None
+            _maybe_trace("response", resp_dict)
+            # Mark that LiteLLM Responses path was used
+            try:
+                setattr(self, "_used_litellm_responses", True)
+            except Exception:
+                pass
+            self._responses_transport = "litellm"
+            # Only mark tool outputs as submitted if we actually chained with previous_response_id
+            if prev_id_litellm and pending_tool_results:
+                for m in pending_tool_results:
+                    tcid = m.get("tool_call_id")
+                    if tcid:
+                        self._responses_submitted_tool_ids.add(tcid)
+            return OpenAIResponsesAdapter.from_responses_result(resp_dict)
+        except Exception as e_litellm:
+            try:
+                from openai import OpenAI  # type: ignore
+                client = OpenAI(api_key=self.api_key)
+                # Rebuild request with SDK-guarded previous_response_id
+                req_sdk = OpenAIResponsesAdapter.to_responses_request(
+                    messages=messages,
+                    tools=tools,
+                    model=self.model,
+                    temperature=kwargs.get("temperature", None),
+                    previous_response_id=prev_id_sdk,
+                    tool_results=pending_tool_results,
+                    **kwargs,
+                )
+                _maybe_trace("request", req_sdk)
+                sdk_resp = await self._call_openai_sdk_async(client, req_sdk)
+                # Prefer response.id attribute when available
+                resp_id = getattr(sdk_resp, "id", None)
+                if hasattr(sdk_resp, "to_dict"):
+                    resp_dict = sdk_resp.to_dict()
+                elif hasattr(sdk_resp, "model_dump"):
+                    resp_dict = sdk_resp.model_dump()
+                else:
+                    try:
+                        import json as _json
+                        resp_dict = _json.loads(str(sdk_resp))
+                    except Exception:
+                        resp_dict = dict(getattr(sdk_resp, "__dict__", {}))
+                if not isinstance(resp_id, str):
+                    resp_id = resp_dict.get("id") or resp_dict.get("response", {}).get("id")
+                self._responses_prev_id = resp_id if isinstance(resp_id, str) else None
+                _maybe_trace("response", resp_dict)
+                # Only mark tool outputs as submitted if we actually chained with previous_response_id on SDK
+                if prev_id_sdk and pending_tool_results:
+                    for m in pending_tool_results:
+                        tcid = m.get("tool_call_id")
+                        if tcid:
+                            self._responses_submitted_tool_ids.add(tcid)
+                self._responses_transport = "openai"
+                return OpenAIResponsesAdapter.from_responses_result(resp_dict)
+            except Exception as e_sdk:
+                raise RuntimeError(f"OpenAI Responses call failed or SDK not available: {e_sdk}") from e_litellm
+
+    async def _call_openai_sdk_async(self, client: Any, payload: Dict[str, Any]) -> Any:
+        """Isolated coroutine to call the SDK; split for easier monkeypatching in tests."""
+        # Some SDKs are sync-only; wrap in thread if necessary.
+        # Prefer async if available.
+        create = getattr(client.responses, "create", None)
+        if create is None:
+            raise RuntimeError("OpenAI client missing responses.create")
+        # Assume sync SDK and run in thread to avoid blocking event loop
+        import asyncio as _asyncio
+
+        loop = _asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: create(**payload))
 
     @classmethod
     async def create(

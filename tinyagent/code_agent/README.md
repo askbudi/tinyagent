@@ -45,6 +45,44 @@ async def main():
 asyncio.run(main())
 ```
 
+### OpenAI Responses API (optional)
+
+TinyCodeAgent inherits TinyAgent’s support for OpenAI’s Responses API. You can switch between classic Chat Completions and Responses without code changes by setting an environment variable:
+
+```bash
+export TINYAGENT_LLM_API=responses  # or "chat" (default)
+```
+
+When set to `responses`, TinyCodeAgent uses the Responses adapter under the hood and preserves existing hooks, tool-calling, and storage semantics. For deeper debugging, you can enable tracing:
+
+```bash
+export RESPONSES_TRACE_FILE=./responses_trace.jsonl  # JSONL of raw requests/responses
+export DEBUG_RESPONSES=1                             # Print pairing info in logs
+```
+
+Runnable examples:
+- `examples/seatbelt_verbose_tools.py` — verbose hook stream, TinyCodeAgent + seatbelt
+- `examples/seatbelt_responses_three_tools.py` — three custom tools with Responses
+- `examples/tinyagent_responses_three_tools.py` — TinyAgent three-tools demo
+
+Programmatic preference (within Python):
+
+```python
+import os
+os.environ["TINYAGENT_LLM_API"] = "responses"  # or "chat"
+
+# Or pass via model_kwargs to TinyAgent/TinyCodeAgent constructors/factories
+# model_kwargs overrides the environment variable when set
+agent = TinyCodeAgent(
+    model="gpt-5-mini",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    provider="seatbelt",
+    local_execution=True,
+    # Prefer Responses API explicitly
+    model_kwargs={"llm_api": "responses"}  # or {"use_responses_api": True}
+)
+```
+
 ### 🏠 Break Free with Local Models (Ollama)
 
 **Your code, your hardware, your privacy.** Run cutting-edge AI models locally and never worry about data leaving your machine again. This is true digital sovereignty.
