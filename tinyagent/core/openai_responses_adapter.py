@@ -34,6 +34,20 @@ class ToolFunction:
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "arguments": self.arguments}
 
+    # Provide dict-like access for downstream hooks expecting Chat-style dicts
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == "name":
+            return self.name
+        if key == "arguments":
+            return self.arguments
+        return default
+
+    def __getitem__(self, key: str) -> Any:
+        val = self.get(key)
+        if val is None:
+            raise KeyError(key)
+        return val
+
 
 class ToolCall:
     """Represents a single tool call with id + function field."""
@@ -44,6 +58,20 @@ class ToolCall:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"id": self.id, "function": self.function.to_dict()}
+
+    # Provide dict-like access for downstream hooks expecting Chat-style dicts
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == "id":
+            return self.id
+        if key == "function":
+            return self.function
+        return default
+
+    def __getitem__(self, key: str) -> Any:
+        val = self.get(key)
+        if val is None:
+            raise KeyError(key)
+        return val
 
 
 class OpenAIResponsesAdapter:
@@ -140,9 +168,15 @@ class OpenAIResponsesAdapter:
                         "output": str(output),
                     })
 
-        # Now set input: for chaining send only tool outputs; for initial turn send the last user string
+        # Now set input:
+        # - If chaining and we have tool results, send only function_call_output items
+        # - If chaining but no tool results, pass the last user string to continue the thread
+        # - If initial turn, pass the last user string
         if previous_response_id:
-            req["input"] = results_items if results_items else ""
+            if results_items:
+                req["input"] = results_items
+            else:
+                req["input"] = (user_messages[-1] if user_messages else "")
         else:
             # Prefer last user message content as a simple string to avoid noisy history
             if user_messages:
