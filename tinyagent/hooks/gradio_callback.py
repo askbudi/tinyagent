@@ -858,8 +858,7 @@ class GradioCallback:
                     # Footer
                     gr.Markdown(
                          "<div style='text-align: center; margin-top: 20px;'>"
-                        "Built with ❤️ by <a href='https://github.com/askbudi/tinyagent' target='_blank'>TinyAgent</a>"
-                        "<br>Start building your own AI agents with TinyAgent"
+                        "Build your own AI Agent Today"
                         "</div>"
                     )
 
