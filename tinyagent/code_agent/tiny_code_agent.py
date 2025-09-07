@@ -200,6 +200,7 @@ class TinyCodeAgent(TinyAgent):
         enable_shell_tool: bool = True,
         enable_file_tools: bool = True,
         enable_todo_write: bool = True,
+        debug_mode: bool = False,
         # Custom instruction parameters
         custom_instructions: Optional[Union[str, Path]] = None,
         enable_custom_instructions: bool = True,
@@ -240,6 +241,8 @@ class TinyCodeAgent(TinyAgent):
             enable_shell_tool: If True (default), enable the bash tool for shell command execution
             enable_file_tools: If True (default), enable sandbox-constrained file tools (read_file, write_file, update_file, glob_tool, grep_tool)
             enable_todo_write: If True (default), enable the TodoWrite tool for task management
+            debug_mode: If True, print executed Python code for debugging purposes (default: False).
+                       Can also be enabled by setting TINYAGENT_DEBUG_MODE environment variable to '1', 'true', 'yes', or 'on'
             custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
             enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
             custom_instruction_config: Configuration for custom instruction loader.
@@ -341,6 +344,9 @@ class TinyCodeAgent(TinyAgent):
         self._shell_tool_enabled = enable_shell_tool
         self._file_tools_enabled = enable_file_tools
         self._todo_write_enabled = enable_todo_write
+        # Check environment variable first, then parameter
+        env_debug = os.environ.get('TINYAGENT_DEBUG_MODE', '').lower() in ('1', 'true', 'yes', 'on')
+        self._debug_mode = env_debug or debug_mode
         
         # Set up truncation configuration with defaults
         default_truncation = {
@@ -933,7 +939,7 @@ class TinyCodeAgent(TinyAgent):
                     if self.user_variables:
                         self.code_provider.set_user_variables(self.user_variables)
                         
-                    result = await self.code_provider.execute_python(code_lines, timeout)
+                    result = await self.code_provider.execute_python(code_lines, timeout, debug_mode=self._debug_mode)
                     
                     # After execution, update TinyCodeAgent's user_variables from the provider
                     # This ensures they stay in sync

@@ -73,7 +73,8 @@ class CodeExecutionProvider(ABC):
     async def execute_python(
         self, 
         code_lines: List[str], 
-        timeout: int = 120
+        timeout: int = 120,
+        debug_mode: bool = False
     ) -> Dict[str, Any]:
         """
         Execute Python code and return the result.
@@ -81,6 +82,7 @@ class CodeExecutionProvider(ABC):
         Args:
             code_lines: List of Python code lines to execute
             timeout: Maximum execution time in seconds
+            debug_mode: Whether to print the executed code (useful for debugging)
             
         Returns:
             Dictionary containing execution results with keys:

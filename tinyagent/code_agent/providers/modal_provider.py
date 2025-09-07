@@ -163,13 +163,14 @@ class ModalProvider(CodeExecutionProvider):
         if self.code_tools:
             self.add_tools(self.code_tools)
     
-    async def execute_python(self, code_lines: List[str], timeout: int = 120) -> Dict[str, Any]:
+    async def execute_python(self, code_lines: List[str], timeout: int = 120, debug_mode: bool = False) -> Dict[str, Any]:
         """
         Execute Python code using Modal's native .local() or .remote() methods.
         
         Args:
             code_lines: List of Python code lines to execute
             timeout: Maximum execution time in seconds
+            debug_mode: Whether to print the executed code (useful for debugging)
             
         Returns:
             Dictionary containing execution results
@@ -179,10 +180,11 @@ class ModalProvider(CodeExecutionProvider):
         
         full_code = "\n".join(code_lines)
         
-        print("#" * 100)
-        print("##########################################code##########################################")
-        print(full_code)
-        print("#" * 100)
+        if debug_mode:
+            print("#" * 100)
+            print("##########################################code##########################################")
+            print(full_code)
+            print("#" * 100)
 
         
         # Use Modal's native execution methods
@@ -303,7 +305,8 @@ class ModalProvider(CodeExecutionProvider):
         
         # Prepare the full code with default codes if needed
         if self.executed_default_codes:
-            print("✔️ default codes already executed")
+            if debug_mode:
+                print("✔️ default codes already executed")
             full_code = "\n".join(self.code_tools_definitions) +"\n\n"+code
             # Code tools and default code are trusted, user code is not
         else:

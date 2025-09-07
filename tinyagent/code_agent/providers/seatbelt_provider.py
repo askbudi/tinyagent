@@ -375,13 +375,14 @@ class SeatbeltProvider(CodeExecutionProvider):
                 self.logger.error("Failed to write seatbelt profile to temporary file: %s", str(e))
             raise RuntimeError(f"Failed to write seatbelt profile: {str(e)}")
     
-    async def execute_python(self, code_lines: List[str], timeout: int = 120) -> Dict[str, Any]:
+    async def execute_python(self, code_lines: List[str], timeout: int = 120, debug_mode: bool = False) -> Dict[str, Any]:
         """
         Execute Python code within a sandbox and return the result.
         
         Args:
             code_lines: List of Python code lines to execute
             timeout: Maximum execution time in seconds
+            debug_mode: Whether to print the executed code (useful for debugging)
             
         Returns:
             Dictionary containing execution results
@@ -391,14 +392,16 @@ class SeatbeltProvider(CodeExecutionProvider):
         
         full_code = "\n".join(code_lines)
         
-        print("#" * 100)
-        print("##########################################code##########################################")
-        print(full_code)
-        print("#" * 100)
+        if debug_mode:
+            print("#" * 100)
+            print("##########################################code##########################################")
+            print(full_code)
+            print("#" * 100)
         
         # Prepare the full code with tools and default codes if needed
         if self.executed_default_codes:
-            print("✔️ default codes already executed")
+            if debug_mode:
+                print("✔️ default codes already executed")
             complete_code = "\n".join(self.code_tools_definitions) + "\n\n" + full_code
         else:
             complete_code = "\n".join(self.code_tools_definitions) + "\n\n" + "\n".join(self.default_python_codes) + "\n\n" + full_code
@@ -701,7 +704,7 @@ print(json.dumps(cleaned_result))
                     result["error"] = f"Process exited with code {process.returncode}"
                 
                 # Log the response
-                self._log_response(result)
+                self._log_response(result, debug_mode)
                 
                 return clean_response(result)
             
@@ -738,29 +741,30 @@ print(json.dumps(cleaned_result))
             except Exception:
                 pass
     
-    def _log_response(self, response: Dict[str, Any]):
+    def _log_response(self, response: Dict[str, Any], debug_mode: bool = False):
         """Log the response from code execution."""
-        print("######################### SEATBELT EXECUTION #########################")
-        print("#########################<printed_output>#########################")
-        print(response["printed_output"])
-        print("#########################</printed_output>#########################")
-        if response.get("return_value", None) not in [None, ""]:
-            print("#########################<return_value>#########################")
-            print(response["return_value"])
-            print("#########################</return_value>#########################")
-        if response.get("stderr", None) not in [None, ""]:
-            print("#########################<stderr>#########################")
-            print(response["stderr"])
-            print("#########################</stderr>#########################")
-        if response.get("error_traceback", None) not in [None, ""]:
-            print("#########################<traceback>#########################")
-            # Check if this is a security exception and highlight it in red if so
-            error_text = response["error_traceback"]
-            if "SECURITY" in error_text:
-                print(f"{COLOR['RED']}{error_text}{COLOR['ENDC']}")
-            else:
-                print(error_text)
-            print("#########################</traceback>#########################")
+        if debug_mode:
+            print("######################### SEATBELT EXECUTION #########################")
+            print("#########################<printed_output>#########################")
+            print(response["printed_output"])
+            print("#########################</printed_output>#########################")
+            if response.get("return_value", None) not in [None, ""]:
+                print("#########################<return_value>#########################")
+                print(response["return_value"])
+                print("#########################</return_value>#########################")
+            if response.get("stderr", None) not in [None, ""]:
+                print("#########################<stderr>#########################")
+                print(response["stderr"])
+                print("#########################</stderr>#########################")
+            if response.get("error_traceback", None) not in [None, ""]:
+                print("#########################<traceback>#########################")
+                # Check if this is a security exception and highlight it in red if so
+                error_text = response["error_traceback"]
+                if "SECURITY" in error_text:
+                    print(f"{COLOR['RED']}{error_text}{COLOR['ENDC']}")
+                else:
+                    print(error_text)
+                print("#########################</traceback>#########################")
     
     
     def _quote_command_for_shell(self, command: List[str]) -> str:
@@ -915,7 +919,7 @@ REMOTE_URL=$(git remote get-url {remote_name} 2>/dev/null || echo "")
 # Check if it's a GitHub URL
 if [[ "$REMOTE_URL" == *"github.com"* ]]; then
     # Extract the repo path from the URL
-    REPO_PATH=$(echo "$REMOTE_URL" | sed -E 's|https://[^/]*github\.com/||' | sed -E 's|git@github\.com:||' | sed 's|\.git$||')
+    REPO_PATH=$(echo "$REMOTE_URL" | sed -E 's|https://[^/]*github\\.com/||' | sed -E 's|git@github\\.com:||' | sed 's|\\.git$||')
     
     # Set the remote URL with the token
     git remote set-url {remote_name} "https://{github_username}:{github_token}@github.com/$REPO_PATH.git"
