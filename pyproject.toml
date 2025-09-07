@@ -12,7 +12,7 @@ tinyagent = ["prompts/*.yaml"]
 
 [project]
 name = "tinyagent-py"
-version = "0.1.15"
+version = "0.1.16"
 description = "🛠️ Build your own AI coding assistant with any model you want. Revolutionary agent framework with secure sandboxed execution, parallel subagents, and freedom to choose any LLM provider - OpenAI, Anthropic, Ollama, or 100+ others."
 readme = "README.md"
 authors = [
