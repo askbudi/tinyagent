@@ -111,11 +111,11 @@ class MCPClient:
         if self.exit_stack:
             try:
                 await self.exit_stack.aclose()
-            except (RuntimeError, asyncio.CancelledError) as e:
-                # Log the error but don't re-raise it
+            except Exception as e:
+                # Log any cleanup error (including cancel-scope mismatches) but don’t re-raise
                 self.logger.error(f"Error during client cleanup: {e}")
             finally:
-                # Always reset these regardless of success or failure
+                # Reset client state unconditionally
                 self.session = None
                 self.exit_stack = AsyncExitStack()
 
