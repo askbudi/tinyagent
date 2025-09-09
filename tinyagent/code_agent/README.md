@@ -29,7 +29,8 @@ async def main():
         model="gpt-5-mini",
         api_key="your-openai-api-key",
         provider="seatbelt",  # Default provider
-        local_execution=True  # Required for Seatbelt provider
+        local_execution=True,  # Required for Seatbelt provider
+        debug_mode=False       # Clean output (default)
     )
     
     try:
@@ -113,7 +114,8 @@ async def main():
         local_execution=True,  # Required for Seatbelt provider
         enable_python_tool=True,
         enable_shell_tool=True,
-        enable_file_tools=True
+        enable_file_tools=True,
+        debug_mode=False  # Set to True for development debugging
     )
     
     try:
@@ -267,6 +269,112 @@ Create a simple web API:
 4. Add unit tests and documentation
 5. Use file tools to organize the code properly
 """)
+```
+
+### 🐛 Debug Mode Control
+
+Control execution provider debug output for clean production logs or detailed development troubleshooting:
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+
+async def debug_examples():
+    """Debug mode control examples for TinyCodeAgent."""
+    
+    # Production mode: Clean output (default)
+    agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="seatbelt",
+        local_execution=True,
+        debug_mode=False  # Default: No debug prints
+    )
+    
+    # Development mode: Show execution details
+    debug_agent = TinyCodeAgent(
+        model="gpt-5-mini", 
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="seatbelt",
+        local_execution=True,
+        debug_mode=True   # Shows command execution with colors
+    )
+    
+    # Environment variable control (overrides parameter)
+    os.environ['TINYAGENT_DEBUG_MODE'] = '1'
+    env_debug_agent = TinyCodeAgent(
+        model="ollama/codellama",  # Works with local models too
+        provider="seatbelt",
+        local_execution=True
+        # debug_mode automatically True from environment
+    )
+    
+    try:
+        # Clean output for production
+        result1 = await agent.run("Create a simple Python function")
+        
+        # Detailed output for development  
+        result2 = await debug_agent.run("Run: ls -la")
+        
+        # Environment-controlled debugging
+        result3 = await env_debug_agent.run("Write a test file and run it")
+        
+    finally:
+        await agent.close()
+        await debug_agent.close()
+        await env_debug_agent.close()
+
+asyncio.run(debug_examples())
+```
+
+**What Debug Mode Shows:**
+- 🔍 **Shell Commands**: `#########################<Bash>#########################` markers
+- 🎨 **Color Output**: Blue commands, green success, red errors
+- 📝 **Python Execution**: Detailed code execution traces  
+- ⚙️ **Provider Info**: Sandbox and execution environment details
+
+**Environment Variable Control:**
+```bash
+# Enable debug globally
+export TINYAGENT_DEBUG_MODE=1     # or 'true', 'yes', 'on'
+
+# Disable debug globally
+export TINYAGENT_DEBUG_MODE=0     # or 'false', 'no', 'off' 
+
+# Let constructor parameter control
+unset TINYAGENT_DEBUG_MODE
+```
+
+**Cross-Platform Debug Support:**
+- ✅ **macOS Seatbelt**: Native sandbox debug output
+- ✅ **Linux Bubblewrap**: Namespace isolation debug info
+- ✅ **Docker**: Container execution traces  
+- ✅ **Modal**: Cloud execution debugging
+
+**Common Patterns:**
+```python
+# Development with all debugging enabled
+dev_agent = TinyCodeAgent(
+    model="ollama/codellama",
+    provider="seatbelt", 
+    local_execution=True,
+    debug_mode=True,           # Show execution details
+    enable_python_tool=True,   # Python debugging 
+    enable_shell_tool=True,    # Shell debugging
+    ui="rich"                  # Enhanced terminal UI
+)
+
+# Production with clean output
+prod_agent = TinyCodeAgent(
+    model="gpt-5-mini",
+    provider="modal",
+    debug_mode=False,          # Clean output
+    truncation_config={
+        "enabled": True,       # Manage long outputs
+        "max_tokens": 5000
+    }
+)
 ```
 
 ### With Custom Tools

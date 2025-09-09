@@ -250,7 +250,9 @@ async def create_enhanced_code_agent():
         # Auto git checkpoints after shell commands
         auto_git_checkpoint=True,
         # Rich UI for better visualization
-        ui="rich"
+        ui="rich",
+        # Debug mode control (default: False)
+        debug_mode=False  # Set to True to see command execution details
     )
     
     return seatbelt_agent
@@ -448,6 +450,93 @@ async def todo_workflow_example():
 
 asyncio.run(todo_workflow_example())
 ```
+
+### 🐛 Debug Mode Control
+
+TinyAgent supports debug mode to control execution provider debug output, helping you troubleshoot issues or keep production output clean:
+
+```python
+import asyncio
+import os
+from tinyagent import TinyCodeAgent
+
+async def debug_mode_examples():
+    """Examples of debug mode control for TinyCodeAgent."""
+    
+    # Production mode: Clean output (default)
+    production_agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="seatbelt",
+        local_execution=True,
+        debug_mode=False  # Default: No debug prints
+    )
+    
+    # Development mode: Show execution details  
+    debug_agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="seatbelt", 
+        local_execution=True,
+        debug_mode=True   # Shows command execution details
+    )
+    
+    # Environment variable control (overrides constructor)
+    os.environ['TINYAGENT_DEBUG_MODE'] = '1'  # Enable globally
+    env_agent = TinyCodeAgent(
+        model="gpt-5-mini",
+        provider="seatbelt",
+        local_execution=True
+        # debug_mode will be True due to environment variable
+    )
+    
+    try:
+        # Production agent: Clean output
+        print("=== Production Mode (Clean Output) ===")
+        await production_agent.run("Run: echo 'Hello Production'")
+        
+        # Debug agent: Detailed output with command traces
+        print("\n=== Debug Mode (Detailed Output) ===") 
+        await debug_agent.run("Run: echo 'Hello Debug'")
+        
+    finally:
+        await production_agent.close()
+        await debug_agent.close()
+        await env_agent.close()
+
+asyncio.run(debug_mode_examples())
+```
+
+**Debug mode shows:**
+- 🔍 Shell command execution markers (`#########################<Bash>#########################`)
+- 🎨 Color-coded command output (blue for commands, green for success, red for errors)
+- 📝 Python code execution details (when `enable_python_tool=True`)
+- ⚙️ Provider-specific execution information across all providers (Seatbelt, Docker, Modal, Bubblewrap)
+
+**Environment Variable Control:**
+```bash
+# Enable debug mode globally
+export TINYAGENT_DEBUG_MODE=1        # or 'true', 'yes', 'on'
+
+# Disable debug mode globally  
+export TINYAGENT_DEBUG_MODE=0        # or 'false', 'no', 'off'
+
+# Unset to use constructor parameter
+unset TINYAGENT_DEBUG_MODE
+```
+
+**Use Cases:**
+- **🚀 Production**: `debug_mode=False` (default) for clean, user-friendly output
+- **🔧 Development**: `debug_mode=True` for troubleshooting execution issues and understanding command flow
+- **🧪 CI/CD**: Environment variable control for flexible debugging in different deployment stages
+- **📊 Monitoring**: Enable selectively to diagnose specific execution problems
+
+**Cross-Platform Support:**
+Debug mode works consistently across all execution providers:
+- **macOS**: Seatbelt provider debug output
+- **Linux**: Bubblewrap provider debug output  
+- **Windows/Universal**: Docker provider debug output
+- **Cloud**: Modal provider debug output
 
 ### 🔒 Universal Tool Control with Hooks
 
