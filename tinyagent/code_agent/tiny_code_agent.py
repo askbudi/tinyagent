@@ -1009,7 +1009,7 @@ class TinyCodeAgent(TinyAgent):
                             "exit_code": 1
                         })
 
-                    result = await self.code_provider.execute_shell(final_command, timeout, effective_workdir)
+                    result = await self.code_provider.execute_shell(final_command, timeout, effective_workdir, debug_mode=self._debug_mode)
 
                     # If provider reports an error or any stderr output, append helpful tip
                     if result and (

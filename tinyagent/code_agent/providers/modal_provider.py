@@ -217,7 +217,8 @@ class ModalProvider(CodeExecutionProvider):
         self,
         command: List[str],
         timeout: int = 30,
-        workdir: Optional[str] = None
+        workdir: Optional[str] = None,
+        debug_mode: bool = False
     ) -> Dict[str, Any]:
         """
         Execute a shell command securely using Modal.
@@ -226,6 +227,7 @@ class ModalProvider(CodeExecutionProvider):
             command: List of command parts to execute
             timeout: Maximum execution time in seconds
             workdir: Working directory for command execution
+            debug_mode: Whether to print the executed command (useful for debugging)
             
         Returns:
             Dictionary containing execution results with keys:
@@ -238,8 +240,9 @@ class ModalProvider(CodeExecutionProvider):
         if type(command) == str:
             command = command.split(" ")
 
-        print("#########################<Bash>#########################")
-        print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
+        if debug_mode:
+            print("#########################<Bash>#########################")
+            print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
         safety_check = self.is_safe_command(command)
         if not safety_check["safe"]:
             
@@ -248,7 +251,8 @@ class ModalProvider(CodeExecutionProvider):
                 "stderr": f"Command rejected for security reasons: {safety_check.get('reason', 'Unsafe command')}",
                 "exit_code": 1
             }
-            print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+            if debug_mode:
+                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
             return response
         #execution_mode = "🏠 LOCALLY" if self.local_execution else "☁️ REMOTELY"
         #print(f"Executing shell command {execution_mode} via Modal: {' '.join(command)}")

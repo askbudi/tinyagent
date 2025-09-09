@@ -952,7 +952,7 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
         
         return sandbox_cmd
     
-    async def execute_shell(self, command: List[str], timeout: int = 10, workdir: Optional[str] = None) -> Dict[str, Any]:
+    async def execute_shell(self, command: List[str], timeout: int = 10, workdir: Optional[str] = None, debug_mode: bool = False) -> Dict[str, Any]:
         """
         Execute a shell command securely within a sandbox and return the result.
         
@@ -960,6 +960,7 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
             command: List of command parts to execute
             timeout: Maximum execution time in seconds
             workdir: Working directory for command execution
+            debug_mode: Whether to print the executed command (useful for debugging)
             
         Returns:
             Dictionary containing execution results
@@ -967,8 +968,9 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
         if self.logger:
             self.logger.debug("Executing shell command in sandbox: %s", " ".join(command))
         
-        print("#########################<Bash>#########################")
-        print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
+        if debug_mode:
+            print("#########################<Bash>#########################")
+            print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
         
         # Check if the command is safe
         safety_check = self.is_safe_command(command)
@@ -978,7 +980,8 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
                 "stderr": f"Command rejected for security reasons: {safety_check['reason']}",
                 "exit_code": 1
             }
-            print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+            if debug_mode:
+                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
             return response
         
         try:
@@ -1061,7 +1064,8 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
                 }
                 
                 # For display purposes, show the original output with colors
-                print(f"{COLOR['GREEN']}{{\"stdout\": \"{stdout_text}\", \"stderr\": \"{stderr_text}\", \"exit_code\": {process.returncode}}}{COLOR['ENDC']}")
+                if debug_mode:
+                    print(f"{COLOR['GREEN']}{{\"stdout\": \"{stdout_text}\", \"stderr\": \"{stderr_text}\", \"exit_code\": {process.returncode}}}{COLOR['ENDC']}")
                 return result
             
             except asyncio.TimeoutError:
@@ -1071,7 +1075,8 @@ exec git -c credential.helper= -c credential.useHttpPath=false {' '.join(command
                     "stderr": f"Command timed out after {timeout} seconds",
                     "exit_code": 124  # 124 is the exit code for timeout in timeout command
                 }
-                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+                if debug_mode:
+                    print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
                 return response
             
             finally:

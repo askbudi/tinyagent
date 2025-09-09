@@ -98,7 +98,8 @@ class CodeExecutionProvider(ABC):
         self,
         command: List[str],
         timeout: int = 10,
-        workdir: Optional[str] = None
+        workdir: Optional[str] = None,
+        debug_mode: bool = False
     ) -> Dict[str, Any]:
         """
         Execute a shell command securely and return the result.
@@ -107,6 +108,7 @@ class CodeExecutionProvider(ABC):
             command: List of command parts to execute
             timeout: Maximum execution time in seconds
             workdir: Working directory for command execution
+            debug_mode: Whether to print the executed command (useful for debugging)
             
         Returns:
             Dictionary containing execution results with keys:

@@ -999,7 +999,7 @@ print(json.dumps(cleaned_result))
         
         return ' '.join(quoted_parts)
     
-    async def execute_shell(self, command: List[str], timeout: int = 10, workdir: Optional[str] = None) -> Dict[str, Any]:
+    async def execute_shell(self, command: List[str], timeout: int = 10, workdir: Optional[str] = None, debug_mode: bool = False) -> Dict[str, Any]:
         """
         Execute a shell command securely within a Docker container and return the result.
         
@@ -1007,6 +1007,7 @@ print(json.dumps(cleaned_result))
             command: List of command parts to execute
             timeout: Maximum execution time in seconds
             workdir: Working directory for command execution (relative to volume_mount_path)
+            debug_mode: Whether to print the executed command (useful for debugging)
             
         Returns:
             Dictionary containing execution results
@@ -1014,8 +1015,9 @@ print(json.dumps(cleaned_result))
         if self.logger:
             self.logger.debug("Executing shell command in Docker container: %s", " ".join(command))
         
-        print("#########################<Bash>#########################")
-        print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
+        if debug_mode:
+            print("#########################<Bash>#########################")
+            print(f"{COLOR['BLUE']}>{command}{COLOR['ENDC']}")
         
         # Check if the command is safe
         safety_check = self.is_safe_command(command)
@@ -1025,7 +1027,8 @@ print(json.dumps(cleaned_result))
                 "stderr": f"Command rejected for security reasons: {safety_check['reason']}",
                 "exit_code": 1
             }
-            print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+            if debug_mode:
+                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
             return response
         
         try:
@@ -1090,7 +1093,8 @@ print(json.dumps(cleaned_result))
                 }
                 
                 # For display purposes, show the original output with colors
-                print(f"{COLOR['GREEN']}{{'stdout': '{stdout_text}', 'stderr': '{stderr_text}', 'exit_code': {process.returncode}}}{COLOR['ENDC']}")
+                if debug_mode:
+                    print(f"{COLOR['GREEN']}{{'stdout': '{stdout_text}', 'stderr': '{stderr_text}', 'exit_code': {process.returncode}}}{COLOR['ENDC']}")
                 return result
             
             except asyncio.TimeoutError:
@@ -1116,7 +1120,8 @@ print(json.dumps(cleaned_result))
                 "stderr": f"Error executing command: {str(e)}",
                 "exit_code": 1
             }
-            print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
+            if debug_mode:
+                print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
             return response
     
     async def _prepare_git_command(self, command: List[str]) -> List[str]:
