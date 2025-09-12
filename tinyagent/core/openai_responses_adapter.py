@@ -197,7 +197,7 @@ class OpenAIResponsesAdapter:
         return req
 
     @staticmethod
-    def from_responses_result(resp: Dict[str, Any]) -> ChatResponse:
+    def from_responses_result(resp: Dict[str, Any], original_response: Any = None) -> ChatResponse:
         """
         Convert a Responses result into a Chat-like response object with:
         - .choices[0].message.content
@@ -206,6 +206,10 @@ class OpenAIResponsesAdapter:
 
         The adapter makes best-effort assumptions based on current Responses API
         shapes, but is tolerant to missing fields in mocked tests.
+        
+        Args:
+            resp: Dictionary representation of the response
+            original_response: Original LiteLLM response object (contains cost metadata)
         """
         output = resp.get("output", []) or []
 
@@ -257,4 +261,34 @@ class OpenAIResponsesAdapter:
         # Map basic usage
         usage = resp.get("usage", {}) or {}
 
-        return ChatResponse([choice], usage=usage)
+        # Extract cost information from the original LiteLLM response if available
+        if original_response is not None:
+            # Method 1: Check for _hidden_params (LiteLLM specific)
+            if hasattr(original_response, '_hidden_params') and isinstance(original_response._hidden_params, dict):
+                response_cost = original_response._hidden_params.get("response_cost")
+                if response_cost is not None and response_cost > 0:
+                    usage['cost'] = response_cost
+            
+            # Method 2: Try to get cost using litellm.completion_cost if not found above
+            if usage.get('cost', 0) == 0:
+                try:
+                    import litellm
+                    if hasattr(litellm, 'completion_cost'):
+                        cost = litellm.completion_cost(completion_response=original_response)
+                        if cost and cost > 0:
+                            usage['cost'] = cost
+                except Exception:
+                    # Ignore errors in cost calculation
+                    pass
+
+        chat_response = ChatResponse([choice], usage=usage)
+        
+        # Preserve the _hidden_params attribute for token tracker compatibility
+        if original_response is not None and hasattr(original_response, '_hidden_params'):
+            try:
+                chat_response._hidden_params = original_response._hidden_params
+            except Exception:
+                # If we can't set the attribute, continue without it
+                pass
+
+        return chat_response

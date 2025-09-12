@@ -1861,7 +1861,7 @@ class TinyAgent:
                     tcid = m.get("tool_call_id")
                     if tcid:
                         self._responses_submitted_tool_ids.add(tcid)
-            return OpenAIResponsesAdapter.from_responses_result(resp_dict)
+            return OpenAIResponsesAdapter.from_responses_result(resp_dict, original_response=resp_payload)
         except Exception as e_litellm:
             try:
                 from openai import OpenAI  # type: ignore
@@ -1901,7 +1901,7 @@ class TinyAgent:
                         if tcid:
                             self._responses_submitted_tool_ids.add(tcid)
                 self._responses_transport = "openai"
-                return OpenAIResponsesAdapter.from_responses_result(resp_dict)
+                return OpenAIResponsesAdapter.from_responses_result(resp_dict, original_response=sdk_resp)
             except Exception as e_sdk:
                 raise RuntimeError(f"OpenAI Responses call failed or SDK not available: {e_sdk}") from e_litellm
 
