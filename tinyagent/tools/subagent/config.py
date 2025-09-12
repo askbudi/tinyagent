@@ -413,11 +413,19 @@ class SubagentConfig:
             'model_kwargs', 'enable_todo_write'
         ]
         
+        # Parameters that need deep copying to avoid mutation
+        deep_copy_attrs = {'model_kwargs', 'provider_config', 'retry_config'}
+        
         for attr in inherit_attrs:
             if hasattr(parent_agent, attr):
                 value = getattr(parent_agent, attr)
                 if value is not None:
-                    inherited_params[attr] = value
+                    # Deep copy parameters that might be mutated by agents
+                    if attr in deep_copy_attrs:
+                        import copy
+                        inherited_params[attr] = copy.deepcopy(value)
+                    else:
+                        inherited_params[attr] = value
         
         # Handle callbacks with inheritance control, including special TokenTracker handling
         # This processes parent callbacks and creates child TokenTracker if needed
@@ -550,10 +558,17 @@ class SubagentConfig:
             all_kwargs = config.to_agent_kwargs(exclude_subagent_params=False)
             agent = custom_factory(**all_kwargs)
         """
+        import copy
+        
         # Parameters that are specific to subagents and should be excluded by default
         subagent_only_params = {
             'max_turns', 'timeout', 'inherit_parent_hooks', 'working_directory', 
             'environment_variables', 'callbacks', 'additional_params', '_parent_agent'
+        }
+        
+        # Parameters that need deep copying to avoid mutation
+        deep_copy_params = {
+            'model_kwargs', 'provider_config', 'retry_config', 'additional_params'
         }
         
         # Get all non-None parameters
@@ -574,11 +589,17 @@ class SubagentConfig:
             if field_name == 'callbacks' and not value:
                 continue  # Skip empty callback list
             
-            kwargs[field_name] = value
+            # Deep copy parameters that might be mutated by agents to prevent cross-agent pollution
+            if field_name in deep_copy_params and value:
+                kwargs[field_name] = copy.deepcopy(value)
+            else:
+                kwargs[field_name] = value
         
         # Add additional_params only if not excluding subagent params
         if not exclude_subagent_params:
-            kwargs.update(self.additional_params)
+            # Deep copy additional_params to prevent mutation
+            if self.additional_params:
+                kwargs.update(copy.deepcopy(self.additional_params))
         
         return kwargs
     

@@ -469,7 +469,9 @@ class TinyAgent:
             self.temperature = 1.0
 
         
-        self.model_kwargs = model_kwargs
+        # Deep copy model_kwargs to avoid mutating the original input
+        import copy
+        self.model_kwargs = copy.deepcopy(model_kwargs) if model_kwargs else {}
         self.encoder = tiktoken.get_encoding("o200k_base")
         # LLM API selection: chat (default) or responses (OpenAI-only)
         self.llm_api = os.getenv("TINYAGENT_LLM_API", "chat").lower()
