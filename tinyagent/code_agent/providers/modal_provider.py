@@ -188,9 +188,10 @@ class ModalProvider(CodeExecutionProvider):
 
         
         # Use Modal's native execution methods
-        response = self._python_executor(full_code, self._globals_dict, self._locals_dict)
+        response = self._python_executor(full_code, self._globals_dict, self._locals_dict, debug_mode)
         
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!<response>!!!!!!!!!!!!!!!!!!!!!!!!!")
+        if debug_mode:
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!<response>!!!!!!!!!!!!!!!!!!!!!!!!!")
         
         # Always update globals and locals dictionaries, regardless of whether there was an error
         # This ensures variables are preserved even when code execution fails
@@ -302,7 +303,7 @@ class ModalProvider(CodeExecutionProvider):
                 print(f"{COLOR['RED']}{response['stderr']}{COLOR['ENDC']}")
                 return response
     
-    def _python_executor(self, code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dict[str, Any] = None):
+    def _python_executor(self, code: str, globals_dict: Dict[str, Any] = None, locals_dict: Dict[str, Any] = None, debug_mode: bool = False):
         """Execute Python code using Modal's native .local() or .remote() methods."""
         execution_mode = "🏠 LOCALLY" if self.local_execution else "☁️ REMOTELY"
         print(f"Executing code {execution_mode} via Modal")

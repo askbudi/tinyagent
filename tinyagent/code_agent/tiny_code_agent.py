@@ -189,7 +189,7 @@ class TinyCodeAgent(TinyAgent):
         provider_config: Optional[Dict[str, Any]] = None,
         user_variables: Optional[Dict[str, Any]] = None,
         pip_packages: Optional[List[str]] = None,
-        local_execution: bool = False,
+        local_execution: bool = True,
         check_string_obfuscation: bool = True,
         default_workdir: Optional[str] = None,
         summary_config: Optional[Dict[str, Any]] = None,
@@ -228,8 +228,8 @@ class TinyCodeAgent(TinyAgent):
             provider_config: Configuration for the code execution provider
             user_variables: Dictionary of variables to make available in Python environment
             pip_packages: List of additional Python packages to install in Modal environment
-            local_execution: If True, uses Modal's .local() method for local execution. 
-                                If False, uses Modal's .remote() method for cloud execution (default: False)
+            local_execution: If True (default), uses local execution with sandboxed providers.
+                                If False, uses Modal's .remote() method for cloud execution
             check_string_obfuscation: If True (default), check for string obfuscation techniques. Set to False to allow 
                                 legitimate use of base64 encoding and other string manipulations.
             default_workdir: Default working directory for shell commands. If None, the current working directory is used.
@@ -1715,7 +1715,7 @@ async def run_example():
             "sample_data": [1, 2, 3, 4, 5, 10, 15, 20]
         },
         authorized_imports=["tinyagent", "gradio", "requests", "numpy", "pandas"],  # Explicitly specify authorized imports
-        local_execution=False,  # Remote execution via Modal (default)
+        local_execution=False,  # Remote execution via Modal (overriding default)
         check_string_obfuscation=True,
         default_workdir=os.path.join(os.getcwd(), "examples"),  # Set a default working directory for shell commands
         truncation_config={
