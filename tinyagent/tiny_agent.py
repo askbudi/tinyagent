@@ -398,6 +398,7 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
+        tool_call_timeout: float = 300.0,  # 5 minutes default timeout for tool calls
     ):
         """
         Initialize the Tiny Agent.
@@ -429,6 +430,7 @@ class TinyAgent:
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is True.
             enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
+            tool_call_timeout: Maximum time in seconds to wait for a tool call to complete. Default is 300.0 (5 minutes).
             custom_instruction: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
             enable_custom_instruction: Whether to enable custom instruction processing. Default is True.
             custom_instruction_file: Custom filename to search for (default: "AGENTS.md").
@@ -507,6 +509,9 @@ class TinyAgent:
         
         # Set parallel tool calls preference
         self.parallel_tool_calls = parallel_tool_calls
+
+        # Set tool call timeout
+        self.tool_call_timeout = tool_call_timeout
             
         # Load and apply custom instructions to system prompt
         try:
@@ -1033,23 +1038,37 @@ class TinyAgent:
     
     async def _execute_custom_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
         """
-        Execute a custom tool and return its result.
-        
+        Execute a custom tool and return its result with timeout and thread pool support.
+
         Args:
             tool_name: Name of the tool to execute
             tool_args: Arguments for the tool
-            
+
         Returns:
             String result from the tool
         """
         handler = self.custom_tool_handlers.get(tool_name)
         if not handler:
             return f"Error: Tool '{tool_name}' not found"
-        
+
         try:
             # Check if it's a class or function
             metadata = handler._tool_metadata
-            
+
+            def _execute_sync():
+                """Synchronous execution wrapper for thread pool."""
+                if metadata["is_class"]:
+                    # Instantiate the class and call it
+                    instance = handler(**tool_args)
+                    if hasattr(instance, "__call__"):
+                        return instance()
+                    else:
+                        return instance
+                else:
+                    # Call the function directly
+                    return handler(**tool_args)
+
+            # First try to execute and check if it's async
             if metadata["is_class"]:
                 # Instantiate the class and call it
                 instance = handler(**tool_args)
@@ -1060,16 +1079,65 @@ class TinyAgent:
             else:
                 # Call the function directly
                 result = handler(**tool_args)
-            
+
             # Handle async functions
             if asyncio.iscoroutine(result):
-                result = await result
-                
+                # For async functions, apply timeout directly
+                result = await asyncio.wait_for(result, timeout=self.tool_call_timeout)
+            else:
+                # For sync functions, run in thread pool with timeout
+                loop = asyncio.get_event_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _execute_sync),
+                    timeout=self.tool_call_timeout
+                )
+
             return str(result)
+        except asyncio.TimeoutError:
+            self.logger.error(f"Tool {tool_name} timed out after {self.tool_call_timeout} seconds")
+            return f"Error: Tool {tool_name} timed out after {self.tool_call_timeout} seconds"
         except Exception as e:
             self.logger.error(f"Error executing custom tool {tool_name}: {str(e)}")
             self.logger.error(f"Error: {traceback.format_exc()}")
             return f"Error executing tool {tool_name}: {str(e)}"
+
+    async def _execute_tool_with_timeout(self, tool_call, process_func):
+        """
+        Execute a tool call with timeout protection.
+
+        Args:
+            tool_call: The tool call object
+            process_func: The async function to execute the tool call
+
+        Returns:
+            Tool message result
+        """
+        try:
+            return await asyncio.wait_for(process_func(tool_call), timeout=self.tool_call_timeout)
+        except asyncio.TimeoutError:
+            tool_call_id = tool_call.id
+            tool_name = tool_call.function.name
+            self.logger.error(f"Tool call {tool_name} timed out after {self.tool_call_timeout} seconds")
+
+            return {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": f"Error: Tool {tool_name} timed out after {self.tool_call_timeout} seconds",
+                "created_at": int(time.time())
+            }
+        except Exception as e:
+            tool_call_id = tool_call.id
+            tool_name = tool_call.function.name
+            self.logger.error(f"Tool call {tool_name} failed with exception: {str(e)}")
+
+            return {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": f"Error executing tool {tool_name}: {str(e)}",
+                "created_at": int(time.time())
+            }
     
     async def run(self, user_input: str, max_turns: int = 10) -> str:
         # ----------------------------------------------------------------
@@ -1314,7 +1382,11 @@ class TinyAgent:
                                         try:
                                             self.logger.debug(f"Calling tool {tool_name} with args: {tool_args}")
                                             self.logger.debug(f"Client: {client}")
-                                            content_list = await client.call_tool(tool_name, tool_args)
+                                            # Apply timeout to MCP tool calls as well
+                                            content_list = await asyncio.wait_for(
+                                                client.call_tool(tool_name, tool_args),
+                                                timeout=self.tool_call_timeout
+                                            )
                                             self.logger.debug(f"Tool {tool_name} returned: {content_list}")
                                             # Safely extract text from the content
                                             if content_list:
@@ -1327,6 +1399,9 @@ class TinyAgent:
                                                     tool_result_content = str(content_list)
                                             else:
                                                 tool_result_content = "Tool returned no content"
+                                        except asyncio.TimeoutError:
+                                            self.logger.error(f"MCP tool {tool_name} timed out after {self.tool_call_timeout} seconds")
+                                            tool_result_content = f"Error: Tool {tool_name} timed out after {self.tool_call_timeout} seconds"
                                         except Exception as e:
                                             self.logger.error(f"Error calling tool {tool_name}: {str(e)}")
                                             tool_result_content = f"Error executing tool {tool_name}: {str(e)}"
@@ -1345,12 +1420,34 @@ class TinyAgent:
                             await self._run_callbacks("tool_end", tool_call=tool_call, result=tool_result_content)
                             return tool_message
                     
-                    # Create tasks for all tool calls
+                    # Create tasks for all tool calls with timeout protection
                     for tool_call in tool_calls:
-                        tool_tasks.append(process_tool_call(tool_call))
-                    
-                    # Execute all tool calls concurrently
-                    tool_messages = await asyncio.gather(*tool_tasks)
+                        tool_tasks.append(self._execute_tool_with_timeout(tool_call, process_tool_call))
+
+                    # Execute all tool calls concurrently with exception isolation
+                    tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+
+                    # Process results and handle any exceptions
+                    tool_messages = []
+                    for i, result in enumerate(tool_results):
+                        if isinstance(result, Exception):
+                            # Handle exception from tool call
+                            tool_call = tool_calls[i]
+                            tool_call_id = tool_call.id
+                            tool_name = tool_call.function.name
+
+                            error_message = {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": f"Error executing tool {tool_name}: {str(result)}",
+                                "created_at": int(time.time())
+                            }
+                            tool_messages.append(error_message)
+                            self.logger.error(f"Tool call {tool_name} failed with exception: {str(result)}")
+                        else:
+                            # Normal successful result
+                            tool_messages.append(result)
                     
                     # Process results of tool calls
                     for tool_message in tool_messages:
@@ -1945,6 +2042,7 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
+        tool_call_timeout: float = 300.0,
     ) -> "TinyAgent":
         """
         Async factory: constructs the agent, then loads an existing session
@@ -1976,6 +2074,7 @@ class TinyAgent:
                                 to execute multiple tool calls in parallel when possible. Some models like GPT-4
                                 and Claude 3 support this feature. Default is None (disabled).
             enable_todo_write: Whether to enable the TodoWrite tool for task management. Default is True.
+            tool_call_timeout: Maximum time in seconds to wait for a tool call to complete. Default is 300.0 (5 minutes).
             custom_instruction: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
             enable_custom_instruction: Whether to enable custom instruction processing. Default is True.
             custom_instruction_file: Custom filename to search for (default: "AGENTS.md").
@@ -1998,6 +2097,7 @@ class TinyAgent:
             retry_config=retry_config,
             parallel_tool_calls=parallel_tool_calls,
             enable_todo_write=enable_todo_write,
+            tool_call_timeout=tool_call_timeout,
             custom_instruction=custom_instruction,
             enable_custom_instruction=enable_custom_instruction,
             custom_instruction_file=custom_instruction_file,
