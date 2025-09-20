@@ -1,186 +1,365 @@
+"""
+Agno-style MCP integration for TinyAgent.
+
+This module implements MCP connection management inspired by Agno's approach,
+providing better async context management, multi-transport support, and
+improved error handling.
+"""
+
 import asyncio
-import json
 import logging
-import traceback
-from typing import Dict, List, Optional, Any, Tuple, Callable
-
-# Keep your MCPClient implementation unchanged
-import asyncio
 from contextlib import AsyncExitStack
+from typing import Dict, List, Optional, Any, Union
+from datetime import timedelta
+from dataclasses import dataclass
 
-# MCP core imports
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# Set up logging
-logger = logging.getLogger(__name__)
+try:
+    from mcp.client.sse import sse_client, SSEClientParams
+    SSE_AVAILABLE = True
+except ImportError:
+    SSE_AVAILABLE = False
+    # Create dummy for type hints
+    class SSEClientParams:
+        pass
+    def sse_client(*args, **kwargs):
+        raise NotImplementedError("SSE client not available")
 
-class MCPClient:
-    def __init__(self, logger: Optional[logging.Logger] = None):
-        self.session = None
-        self.exit_stack = AsyncExitStack()
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server connection."""
+    name: str
+    transport: str = "stdio"  # "stdio", "sse", or "streamable-http"
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    url: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    timeout: float = 30.0
+    include_tools: Optional[List[str]] = None
+    exclude_tools: Optional[List[str]] = None
+
+class TinyMCPTools:
+    """
+    Agno-style MCP tools manager with async context management.
+
+    Supports multiple transport types and proper resource cleanup.
+    """
+
+    def __init__(self,
+                 config: MCPServerConfig,
+                 logger: Optional[logging.Logger] = None):
+        self.config = config
         self.logger = logger or logging.getLogger(__name__)
-        
-        # Simplified callback system
-        self.callbacks: List[callable] = []
-        
-        self.logger.debug("MCPClient initialized")
 
-    def add_callback(self, callback: callable) -> None:
-        """
-        Add a callback function to the client.
-        
-        Args:
-            callback: A function that accepts (event_name, client, **kwargs)
-        """
-        self.callbacks.append(callback)
-    
-    async def _run_callbacks(self, event_name: str, **kwargs) -> None:
-        """
-        Run all registered callbacks for an event.
-        
-        Args:
-            event_name: The name of the event
-            **kwargs: Additional data for the event
-        """
-        for callback in self.callbacks:
-            try:
-                logger.debug(f"Running callback: {callback}")
-                if asyncio.iscoroutinefunction(callback):
-                    logger.debug(f"Callback is a coroutine function")
-                    await callback(event_name, self, **kwargs)
-                else:
-                    # Check if the callback is a class with an async __call__ method
-                    if hasattr(callback, '__call__') and asyncio.iscoroutinefunction(callback.__call__):
-                        logger.debug(f"Callback is a class with an async __call__ method")  
-                        await callback(event_name, self, **kwargs)
-                    else:
-                        logger.debug(f"Callback is a regular function")
-                        callback(event_name, self, **kwargs)
-            except Exception as e:
-                logger.error(f"Error in callback for {event_name}: {str(e)} {traceback.format_exc()}")
+        # Connection state
+        self.session: Optional[ClientSession] = None
+        self._context = None
+        self._session_context = None
+        self._initialized = False
 
-    async def connect(self, command: str, args: list[str], env: dict[str, str] = None):
-        """
-        Launches the MCP server subprocess and initializes the client session.
-        :param command: e.g. "python" or "node"
-        :param args: list of args to pass, e.g. ["my_server.py"] or ["build/index.js"]
-        :param env: dictionary of environment variables to pass to the subprocess
-        """
-        # Prepare stdio transport parameters
-        params = StdioServerParameters(command=command, args=args, env=env)
-        # Open the stdio client transport
-        self.stdio, self.sock_write = await self.exit_stack.enter_async_context(
-            stdio_client(params)
-        )
-        # Create and initialize the MCP client session
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.sock_write)
-        )
-        await self.session.initialize()
+        # Tool management
+        self.tools: List[Any] = []
+        self.tool_schemas: Dict[str, Any] = {}
 
-    async def list_tools(self):
-        resp = await self.session.list_tools()
-        print("Available tools:")
-        for tool in resp.tools:
-            print(f" • {tool.name}: {tool.description}")
+    async def __aenter__(self) -> "TinyMCPTools":
+        """Async context manager entry - establish MCP connection."""
+        if self.session is not None:
+            if not self._initialized:
+                await self.initialize()
+            return self
 
-    async def call_tool(self, name: str, arguments: dict):
-        """
-        Invokes a named tool and returns its raw content list.
-        """
-        # Notify tool start
-        await self._run_callbacks("tool_start", tool_name=name, arguments=arguments)
-        
         try:
-            resp = await self.session.call_tool(name, arguments)
-            
-            # Notify tool end
-            await self._run_callbacks("tool_end", tool_name=name, arguments=arguments, 
-                                    result=resp.content, success=True)
-            
-            return resp.content
-        except Exception as e:
-            # Notify tool end with error
-            await self._run_callbacks("tool_end", tool_name=name, arguments=arguments, 
-                                    error=str(e), success=False)
-            raise
+            # Create transport-specific client context
+            if self.config.transport == "sse":
+                if not SSE_AVAILABLE:
+                    raise RuntimeError("SSE client not available - install required dependencies")
+                if not self.config.url:
+                    raise ValueError("SSE transport requires URL")
 
-    async def close(self):
-        """Clean up subprocess and streams."""
-        if self.exit_stack:
-            try:
-                await self.exit_stack.aclose()
-            except (RuntimeError, asyncio.CancelledError) as e:
-                # Log the error but don't re-raise it
-                self.logger.error(f"Error during client cleanup: {e}")
-            finally:
-                # Always reset these regardless of success or failure
-                self.session = None
-                self.exit_stack = AsyncExitStack()
+                sse_params = SSEClientParams(
+                    url=self.config.url,
+                    headers=self.config.headers or {}
+                )
+                self._context = sse_client(**sse_params.__dict__)
 
-async def run_example():
-    """Example usage of MCPClient with proper logging."""
-    import sys
-    from tinyagent.hooks.logging_manager import LoggingManager
-    
-    # Create and configure logging manager
-    log_manager = LoggingManager(default_level=logging.INFO)
-    log_manager.set_levels({
-        'tinyagent.mcp_client': logging.DEBUG,  # Debug for this module
-        'tinyagent.tiny_agent': logging.INFO,
-    })
-    
-    # Configure a console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    log_manager.configure_handler(
-        console_handler,
-        format_string='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.DEBUG
-    )
-    
-    # Get module-specific logger
-    mcp_logger = log_manager.get_logger('tinyagent.mcp_client')
-    
-    mcp_logger.debug("Starting MCPClient example")
-    
-    # Create client with our logger
-    client = MCPClient(logger=mcp_logger)
-    
-    try:
-        # Connect to a simple echo server
-        await client.connect("python", ["-m", "mcp.examples.echo_server"])
-        
-        # List available tools
-        await client.list_tools()
-        
-        # Call the echo tool
-        result = await client.call_tool("echo", {"message": "Hello, MCP!"})
-        mcp_logger.info(f"Echo result: {result}")
-        
-        # Example with environment variables
-        mcp_logger.info("Testing with environment variables...")
-        client_with_env = MCPClient(logger=mcp_logger)
-        
-        # Example: connecting with environment variables
-        env_vars = {
-            "DEBUG": "true",
-            "LOG_LEVEL": "info",
-            "CUSTOM_VAR": "example_value"
-        }
-        
-        try:
-            await client_with_env.connect(
-                "python", 
-                ["-m", "mcp.examples.echo_server"], 
-                env=env_vars
+            elif self.config.transport == "streamable-http":
+                # TODO: Implement streamable-http support when needed
+                raise NotImplementedError("streamable-http transport not yet implemented")
+
+            else:  # Default to stdio
+                if not self.config.command:
+                    raise ValueError("stdio transport requires command")
+
+                server_params = StdioServerParameters(
+                    command=self.config.command,
+                    args=self.config.args or [],
+                    env=self.config.env
+                )
+                self._context = stdio_client(server_params)
+
+            # Enter the client context
+            session_params = await self._context.__aenter__()
+            read, write = session_params[0:2]
+
+            # Create and enter session context with timeout
+            timeout_seconds = timedelta(seconds=self.config.timeout)
+            self._session_context = ClientSession(
+                read, write,
+                read_timeout_seconds=timeout_seconds
             )
-            mcp_logger.info("Successfully connected with environment variables")
-            await client_with_env.close()
+            self.session = await self._session_context.__aenter__()
+
+            # Initialize tools
+            await self.initialize()
+
+            self.logger.debug(f"Connected to MCP server '{self.config.name}' via {self.config.transport}")
+            return self
+
         except Exception as e:
-            mcp_logger.warning(f"Environment variable example failed (expected): {e}")
-        
-    finally:
-        # Clean up
-        await client.close()
-        mcp_logger.debug("Example completed")
+            # Cleanup on error
+            await self._cleanup_on_error()
+            raise RuntimeError(f"Failed to connect to MCP server '{self.config.name}': {e}")
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - cleanup connections."""
+        # Cleanup in reverse order: session first, then client context
+        if self._session_context is not None:
+            try:
+                await self._session_context.__aexit__(exc_type, exc_val, exc_tb)
+            except Exception as e:
+                self.logger.warning(f"Error closing session context: {e}")
+            finally:
+                self.session = None
+                self._session_context = None
+
+        if self._context is not None:
+            try:
+                await self._context.__aexit__(exc_type, exc_val, exc_tb)
+            except Exception as e:
+                self.logger.warning(f"Error closing client context: {e}")
+            finally:
+                self._context = None
+
+        self._initialized = False
+        self.logger.debug(f"Disconnected from MCP server '{self.config.name}'")
+
+    async def _cleanup_on_error(self):
+        """Cleanup connections when an error occurs during initialization."""
+        if self._session_context:
+            try:
+                await self._session_context.__aexit__(None, None, None)
+            except:
+                pass
+            self._session_context = None
+            self.session = None
+
+        if self._context:
+            try:
+                await self._context.__aexit__(None, None, None)
+            except:
+                pass
+            self._context = None
+
+    async def initialize(self):
+        """Initialize tools from the MCP server."""
+        if not self.session:
+            raise RuntimeError("Session not established")
+
+        try:
+            # Initialize the session
+            await self.session.initialize()
+
+            # List available tools
+            resp = await self.session.list_tools()
+            available_tools = resp.tools
+
+            # Apply filtering
+            filtered_tools = self._filter_tools(available_tools)
+
+            # Store tools and schemas
+            self.tools = filtered_tools
+            for tool in filtered_tools:
+                self.tool_schemas[tool.name] = {
+                    'name': tool.name,
+                    'description': tool.description,
+                    'inputSchema': tool.inputSchema
+                }
+
+            self._initialized = True
+            self.logger.debug(f"Initialized {len(filtered_tools)} tools from server '{self.config.name}'")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize MCP server '{self.config.name}': {e}")
+
+    def _filter_tools(self, available_tools: List[Any]) -> List[Any]:
+        """Filter tools based on include/exclude lists."""
+        filtered = []
+
+        for tool in available_tools:
+            # Apply exclude filter
+            if self.config.exclude_tools and tool.name in self.config.exclude_tools:
+                self.logger.debug(f"Excluding tool '{tool.name}' from server '{self.config.name}'")
+                continue
+
+            # Apply include filter
+            if self.config.include_tools is None or tool.name in self.config.include_tools:
+                filtered.append(tool)
+            else:
+                self.logger.debug(f"Tool '{tool.name}' not in include list for server '{self.config.name}'")
+
+        return filtered
+
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Call a tool with error handling and content processing."""
+        if not self.session:
+            raise RuntimeError("Session not established")
+
+        if tool_name not in self.tool_schemas:
+            raise ValueError(f"Tool '{tool_name}' not available on server '{self.config.name}'")
+
+        try:
+            self.logger.debug(f"Calling MCP tool '{tool_name}' with args: {arguments}")
+            result = await self.session.call_tool(tool_name, arguments)
+
+            # Process response content (similar to Agno's approach)
+            response_parts = []
+            for content_item in result.content:
+                if hasattr(content_item, 'text'):
+                    response_parts.append(content_item.text)
+                elif hasattr(content_item, 'type'):
+                    # Handle other content types as needed
+                    response_parts.append(f"[{content_item.type}: {str(content_item)}]")
+                else:
+                    response_parts.append(str(content_item))
+
+            response = "\n".join(response_parts).strip()
+            self.logger.debug(f"MCP tool '{tool_name}' completed successfully")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error calling MCP tool '{tool_name}' on server '{self.config.name}': {e}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+class TinyMultiMCPTools:
+    """
+    Agno-style multi-server MCP manager.
+
+    Manages multiple MCP servers simultaneously with proper resource cleanup.
+    """
+
+    def __init__(self,
+                 server_configs: List[MCPServerConfig],
+                 logger: Optional[logging.Logger] = None):
+        self.server_configs = server_configs
+        self.logger = logger or logging.getLogger(__name__)
+
+        # Connection management
+        self._async_exit_stack = AsyncExitStack()
+        self.mcp_tools: Dict[str, TinyMCPTools] = {}
+
+        # Tool registry
+        self.all_tools: Dict[str, Any] = {}
+        self.tool_to_server: Dict[str, str] = {}
+
+    async def __aenter__(self) -> "TinyMultiMCPTools":
+        """Connect to all MCP servers."""
+        try:
+            for config in self.server_configs:
+                # Create and connect to each server
+                mcp_tools = TinyMCPTools(config, self.logger)
+
+                # Enter the context and add to exit stack
+                await self._async_exit_stack.enter_async_context(mcp_tools)
+                self.mcp_tools[config.name] = mcp_tools
+
+                # Register tools with conflict detection
+                for tool in mcp_tools.tools:
+                    if tool.name in self.all_tools:
+                        self.logger.warning(
+                            f"Tool '{tool.name}' from server '{config.name}' "
+                            f"overrides tool from server '{self.tool_to_server[tool.name]}'"
+                        )
+
+                    self.all_tools[tool.name] = tool
+                    self.tool_to_server[tool.name] = config.name
+
+            total_tools = len(self.all_tools)
+            total_servers = len(self.mcp_tools)
+            self.logger.info(f"Connected to {total_servers} MCP servers with {total_tools} total tools")
+            return self
+
+        except Exception as e:
+            # Cleanup on error
+            await self._async_exit_stack.aclose()
+            raise RuntimeError(f"Failed to initialize multi-MCP tools: {e}")
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Cleanup all MCP connections."""
+        try:
+            await self._async_exit_stack.aclose()
+        except Exception as e:
+            self.logger.error(f"Error during multi-MCP cleanup: {e}")
+
+        self.mcp_tools.clear()
+        self.all_tools.clear()
+        self.tool_to_server.clear()
+        self.logger.debug("All MCP connections closed")
+
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Call a tool on the appropriate server."""
+        server_name = self.tool_to_server.get(tool_name)
+        if not server_name:
+            raise ValueError(f"Tool '{tool_name}' not found in any connected server")
+
+        mcp_tools = self.mcp_tools.get(server_name)
+        if not mcp_tools:
+            raise RuntimeError(f"Server '{server_name}' not connected")
+
+        return await mcp_tools.call_tool(tool_name, arguments)
+
+    async def call_tools_parallel(self, tool_calls: List[Dict[str, Any]]) -> List[Any]:
+        """
+        Execute multiple tools in parallel with error isolation.
+
+        Args:
+            tool_calls: List of dicts with 'name' and 'arguments' keys
+
+        Returns:
+            List of results (or exceptions for failed calls)
+        """
+        async def call_single_tool(call):
+            try:
+                return await self.call_tool(call['name'], call['arguments'])
+            except Exception as e:
+                self.logger.error(f"Tool call failed: {call['name']} - {e}")
+                return e
+
+        # Execute all tools in parallel with error isolation
+        results = await asyncio.gather(
+            *(call_single_tool(call) for call in tool_calls),
+            return_exceptions=True
+        )
+
+        return results
+
+    def get_tool_schemas(self) -> Dict[str, Any]:
+        """Get schemas for all available tools."""
+        schemas = {}
+        for server_name, mcp_tools in self.mcp_tools.items():
+            for tool_name, schema in mcp_tools.tool_schemas.items():
+                schemas[tool_name] = {
+                    **schema,
+                    'server': server_name
+                }
+        return schemas
+
+    def get_tools_by_server(self) -> Dict[str, List[str]]:
+        """Get tools grouped by server."""
+        server_tools = {}
+        for server_name, mcp_tools in self.mcp_tools.items():
+            server_tools[server_name] = list(mcp_tools.tool_schemas.keys())
+        return server_tools

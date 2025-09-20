@@ -1,5 +1,6 @@
 from .tiny_agent import TinyAgent, tool
-from .mcp_client import MCPClient
+from .legacy_mcp_client import MCPClient  # Deprecated, use new MCP classes below
+from .mcp_client import TinyMCPTools, TinyMultiMCPTools, MCPServerConfig
 from .core import CustomInstructionLoader
 
 # Optional import: TinyCodeAgent may require extra dependencies (modal, docker, etc.)
@@ -30,7 +31,10 @@ except Exception:
 
 __all__ = [
     "TinyAgent",
-    "MCPClient",
+    "MCPClient",  # Deprecated - will be removed in v0.2.0
+    "TinyMCPTools",  # New Agno-style MCP client
+    "TinyMultiMCPTools",  # Multi-server MCP manager
+    "MCPServerConfig",  # Server configuration class
     "tool",
     "CustomInstructionLoader",
 ]

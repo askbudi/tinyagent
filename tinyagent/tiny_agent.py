@@ -3,7 +3,9 @@ import litellm
 import json
 import logging
 from typing import Dict, List, Optional, Any, Tuple, Callable, Union, Type, get_type_hints
-from .mcp_client import MCPClient
+from .legacy_mcp_client import MCPClient
+# Removed imports for obsolete MCP clients - now using Agno-style only
+from .mcp_client import TinyMCPTools, TinyMultiMCPTools, MCPServerConfig
 import asyncio
 import tiktoken  # Add tiktoken import for token counting
 import inspect
@@ -362,12 +364,13 @@ class TinyAgent:
     """
     A minimal implementation of an agent powered by MCP and LiteLLM,
     now with session/state persistence and robust error handling.
-    
+
     Features:
     - Automatic retry mechanism for LLM API calls with exponential backoff
     - Configurable retry parameters (max retries, backoff times, etc.)
     - Session persistence
-    - Tool integration via MCP protocol
+    - Tool integration via MCP protocol using Agno-style approach for optimal reliability
+    - Simplified, maintainable codebase with single MCP integration path
     """
     session_state: Dict[str, Any] = {}
     user_id: Optional[str] = None
@@ -453,6 +456,12 @@ class TinyAgent:
         self.mcp_clients: List[MCPClient] = []
         # Map from tool_name -> MCPClient instance
         self.tool_to_client: Dict[str, MCPClient] = {}
+
+        # Agno-style MCP integration (now the default and only MCP approach)
+        # Internal flag for debugging - not exposed to users
+        self._use_legacy_mcp = False  # Can be set internally if needed
+        self.agno_multi_mcp: Optional[TinyMultiMCPTools] = None
+        self.agno_server_configs: List[MCPServerConfig] = []
         
         # Simplified hook system - single list of callbacks
         self.callbacks: List[callable] = []
@@ -512,7 +521,9 @@ class TinyAgent:
 
         # Set tool call timeout
         self.tool_call_timeout = tool_call_timeout
-            
+
+        # MCP now always uses Agno-style approach for optimal reliability
+
         # Load and apply custom instructions to system prompt
         try:
             # Load custom instructions
@@ -936,13 +947,13 @@ class TinyAgent:
         
         return None
     
-    async def connect_to_server(self, command: str, args: List[str], 
-                               include_tools: Optional[List[str]] = None, 
+    async def connect_to_server(self, command: str, args: List[str],
+                               include_tools: Optional[List[str]] = None,
                                exclude_tools: Optional[List[str]] = None,
                                env: Optional[Dict[str, str]] = None) -> None:
         """
         Connect to an MCP server and fetch available tools.
-        
+
         Args:
             command: The command to run the server
             args: List of arguments for the server
@@ -950,49 +961,124 @@ class TinyAgent:
             exclude_tools: Optional list of tool name patterns to exclude (matching tools will be skipped)
             env: Optional dictionary of environment variables to pass to the subprocess
         """
-        # 1) Create and connect a brand-new client
-        client = MCPClient()
-        
-        # Pass our callbacks to the client
-        for callback in self.callbacks:
-            client.add_callback(callback)
-        
-        await client.connect(command, args, env)
-        self.mcp_clients.append(client)
-        
-        # 2) List tools on *this* server
-        resp = await client.session.list_tools()
-        
-        # 3) For each tool, record its schema + map name->client
-        added_tools = 0
-        for tool in resp.tools:
-            # Apply filtering logic
-            tool_name = tool.name
-            
-            # Skip if not in include list (when include list is provided)
-            if include_tools and not any(pattern in tool_name for pattern in include_tools):
-                self.logger.debug(f"Skipping tool {tool_name} - not in include list")
-                continue
-                
-            # Skip if in exclude list
-            if exclude_tools and any(pattern in tool_name for pattern in exclude_tools):
-                self.logger.debug(f"Skipping tool {tool_name} - matched exclude pattern")
-                continue
-            
-            fn_meta = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.inputSchema
+        # Use Agno-style MCP (now the default and only approach)
+        if not self._use_legacy_mcp:
+            self.logger.debug("Using Agno-style MCP integration with async context managers")
+
+            # Create server config
+            server_name = f"{command}_{len(self.agno_server_configs)}"
+            config = MCPServerConfig(
+                name=server_name,
+                transport="stdio",
+                command=command,
+                args=args,
+                env=env,
+                include_tools=include_tools,
+                exclude_tools=exclude_tools
+            )
+
+            self.agno_server_configs.append(config)
+
+            # If this is the first server, initialize the multi-MCP manager
+            if self.agno_multi_mcp is None:
+                self.agno_multi_mcp = TinyMultiMCPTools(
+                    server_configs=self.agno_server_configs,
+                    logger=self.logger
+                )
+
+                # Enter the async context
+                await self.agno_multi_mcp.__aenter__()
+
+                # Map tools for legacy compatibility
+                schemas = self.agno_multi_mcp.get_tool_schemas()
+                for tool_name, schema in schemas.items():
+                    # Create a tool dict for compatibility
+                    tool_dict = {
+                        'type': 'function',
+                        'function': {
+                            'name': tool_name,
+                            'description': schema['description'],
+                            'parameters': schema['inputSchema']
+                        }
+                    }
+
+                    self.available_tools.append(tool_dict)
+            else:
+                # Re-initialize with updated configs
+                await self.agno_multi_mcp.__aexit__(None, None, None)
+                self.agno_multi_mcp = TinyMultiMCPTools(
+                    server_configs=self.agno_server_configs,
+                    logger=self.logger
+                )
+                await self.agno_multi_mcp.__aenter__()
+
+                # Update tool mappings
+                self.available_tools.clear()
+                schemas = self.agno_multi_mcp.get_tool_schemas()
+                for tool_name, schema in schemas.items():
+                    tool_dict = {
+                        'type': 'function',
+                        'function': {
+                            'name': tool_name,
+                            'description': schema['description'],
+                            'parameters': schema['inputSchema']
+                        }
+                    }
+
+                    self.available_tools.append(tool_dict)
+
+            self.logger.info(f"Connected to MCP server using Agno-style approach: {len(self.available_tools)} tools available")
+            return
+
+        # Internal fallback to legacy MCP client (for debugging only - not exposed to users)
+        else:
+            self.logger.debug("Using legacy MCP client (internal debugging mode)")
+            client = MCPClient()
+
+            # Pass our callbacks to the client
+            for callback in self.callbacks:
+                client.add_callback(callback)
+
+            await client.connect(command, args, env)
+            self.mcp_clients.append(client)
+
+            # List tools
+            resp = await client.session.list_tools()
+            tools = resp.tools
+
+            # Map tools to individual client
+            for tool in tools:
+                self.tool_to_client[tool.name] = client
+
+            # For each tool, record its schema with filtering
+            added_tools = 0
+            for tool in tools:
+                # Apply filtering logic
+                tool_name = tool.name
+
+                # Skip if not in include list (when include list is provided)
+                if include_tools and not any(pattern in tool_name for pattern in include_tools):
+                    self.logger.debug(f"Skipping tool {tool_name} - not in include list")
+                    continue
+
+                # Skip if in exclude list
+                if exclude_tools and any(pattern in tool_name for pattern in exclude_tools):
+                    self.logger.debug(f"Skipping tool {tool_name} - matched exclude pattern")
+                    continue
+
+                fn_meta = {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.inputSchema
+                    }
                 }
-            }
-            self.available_tools.append(fn_meta)
-            self.tool_to_client[tool.name] = client
-            added_tools += 1
-        
-        self.logger.info(f"Connected to {command} {args!r}, added {added_tools} tools (filtered from {len(resp.tools)} available)")
-        self.logger.debug(f"{command} {args!r} Available tools: {self.available_tools}")
+                self.available_tools.append(fn_meta)
+                added_tools += 1
+
+            self.logger.info(f"Connected to {command} {args!r}, added {added_tools} tools (filtered from {len(tools)} available)")
+            self.logger.debug(f"{command} {args!r} Available tools: {self.available_tools}")
     
     def add_tool(self, tool_func_or_class: Any) -> None:
         """
@@ -1373,20 +1459,34 @@ class TinyAgent:
                                 # Check if it's a custom tool first
                                 if tool_name in self.custom_tool_handlers:
                                     tool_result_content = await self._execute_custom_tool(tool_name, tool_args)
+                                elif not self._use_legacy_mcp and self.agno_multi_mcp:
+                                    # Use Agno-style MCP execution
+                                    try:
+                                        self.logger.debug(f"Calling tool {tool_name} with Agno-style MCP, args: {tool_args}")
+                                        tool_result_content = await asyncio.wait_for(
+                                            self.agno_multi_mcp.call_tool(tool_name, tool_args),
+                                            timeout=self.tool_call_timeout
+                                        )
+                                        self.logger.debug(f"Agno-style tool {tool_name} returned: {tool_result_content}")
+                                    except Exception as e:
+                                        tool_result_content = f"Error calling tool {tool_name}: {str(e)}"
+                                        self.logger.error(f"Tool {tool_name} failed: {e}")
                                 else:
-                                    # Dispatch to the proper MCPClient
-                                    client = self.tool_to_client.get(tool_name)
-                                    if not client:
+                                    # Dispatch to the proper MCP client or connection manager
+                                    client_or_manager = self.tool_to_client.get(tool_name)
+                                    if not client_or_manager:
                                         tool_result_content = f"No MCP server registered for tool '{tool_name}'"
                                     else:
                                         try:
                                             self.logger.debug(f"Calling tool {tool_name} with args: {tool_args}")
-                                            self.logger.debug(f"Client: {client}")
-                                            # Apply timeout to MCP tool calls as well
+                                            self.logger.debug(f"Client/Manager: {client_or_manager}")
+
+                                            # Use legacy MCP client (simplified approach)
                                             content_list = await asyncio.wait_for(
-                                                client.call_tool(tool_name, tool_args),
+                                                client_or_manager.call_tool(tool_name, tool_args),
                                                 timeout=self.tool_call_timeout
                                             )
+
                                             self.logger.debug(f"Tool {tool_name} returned: {content_list}")
                                             # Safely extract text from the content
                                             if content_list:
@@ -1507,7 +1607,21 @@ class TinyAgent:
                 self.logger.error(error_msg)
                 cleanup_errors.append(error_msg)
         
-        # 2. Close all MCP clients
+        # 2. Close Agno-style MCP connections if present
+        if self.agno_multi_mcp:
+            try:
+                self.logger.debug("Closing Agno-style MCP connections")
+                await self.agno_multi_mcp.__aexit__(None, None, None)
+                self.agno_multi_mcp = None
+            except Exception as e:
+                error_msg = f"Error closing Agno-style MCP connections: {str(e)}"
+                self.logger.error(error_msg)
+                cleanup_errors.append(error_msg)
+
+        # 3. Close MCP connection (now handled by Agno-style context managers)
+        # Note: MCP connections are automatically cleaned up by async context managers
+
+        # 3. Close all individual MCP clients
         for client in self.mcp_clients:
             try:
                 self.logger.debug(f"Closing MCP client: {client}")
@@ -1517,7 +1631,7 @@ class TinyAgent:
                 self.logger.error(error_msg)
                 cleanup_errors.append(error_msg)
         
-        # 3. Close storage connection if available
+        # 4. Close storage connection if available
         if self.storage:
             try:
                 self.logger.debug("Closing storage connection")
@@ -1527,7 +1641,7 @@ class TinyAgent:
                 self.logger.error(error_msg)
                 cleanup_errors.append(error_msg)
         
-        # 4. Run any cleanup callbacks
+        # 5. Run any cleanup callbacks
         try:
             await self._run_callbacks("agent_cleanup")
         except Exception as e:
