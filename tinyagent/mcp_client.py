@@ -37,7 +37,7 @@ class MCPServerConfig:
     env: Optional[Dict[str, str]] = None
     url: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
-    timeout: float = 30.0
+    timeout: float = 300.0
     include_tools: Optional[List[str]] = None
     exclude_tools: Optional[List[str]] = None
 
@@ -212,7 +212,7 @@ class TinyMCPTools:
 
         return filtered
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any],read_timeout_seconds: timedelta | None = None) -> Any:
         """Call a tool with error handling and content processing."""
         if not self.session:
             raise RuntimeError("Session not established")
@@ -222,7 +222,7 @@ class TinyMCPTools:
 
         try:
             self.logger.debug(f"Calling MCP tool '{tool_name}' with args: {arguments}")
-            result = await self.session.call_tool(tool_name, arguments)
+            result = await self.session.call_tool(tool_name, arguments, read_timeout_seconds=read_timeout_seconds)
 
             # Process response content (similar to Agno's approach)
             response_parts = []
@@ -309,7 +309,7 @@ class TinyMultiMCPTools:
         self.tool_to_server.clear()
         self.logger.debug("All MCP connections closed")
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any],read_timeout_seconds: timedelta | None = None) -> Any:
         """Call a tool on the appropriate server."""
         server_name = self.tool_to_server.get(tool_name)
         if not server_name:
@@ -319,7 +319,7 @@ class TinyMultiMCPTools:
         if not mcp_tools:
             raise RuntimeError(f"Server '{server_name}' not connected")
 
-        return await mcp_tools.call_tool(tool_name, arguments)
+        return await mcp_tools.call_tool(tool_name, arguments, read_timeout_seconds=read_timeout_seconds)
 
     async def call_tools_parallel(self, tool_calls: List[Dict[str, Any]]) -> List[Any]:
         """

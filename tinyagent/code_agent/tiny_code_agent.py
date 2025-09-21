@@ -201,6 +201,7 @@ class TinyCodeAgent(TinyAgent):
         enable_file_tools: bool = True,
         enable_todo_write: bool = True,
         debug_mode: bool = False,
+        tool_call_timeout: float = 300.0,
         # Custom instruction parameters
         custom_instructions: Optional[Union[str, Path]] = None,
         enable_custom_instructions: bool = True,
@@ -243,6 +244,7 @@ class TinyCodeAgent(TinyAgent):
             enable_todo_write: If True (default), enable the TodoWrite tool for task management
             debug_mode: If True, print executed Python code for debugging purposes (default: False).
                        Can also be enabled by setting TINYAGENT_DEBUG_MODE environment variable to '1', 'true', 'yes', or 'on'
+            tool_call_timeout: Timeout in seconds for tool calls, including MCP calls (default: 300.0 seconds)
             custom_instructions: Custom instructions as string content or file path. Can also auto-detect AGENTS.md.
             enable_custom_instructions: Whether to enable custom instruction processing. Default is True.
             custom_instruction_config: Configuration for custom instruction loader.
@@ -387,6 +389,7 @@ class TinyCodeAgent(TinyAgent):
             logger=log_manager.get_logger('tinyagent.tiny_agent') if log_manager else None,
             summary_config=summary_config,
             enable_todo_write=enable_todo_write,
+            tool_call_timeout=tool_call_timeout,
             enable_custom_instruction=False,  # We handle custom instructions in _build_system_prompt
             **agent_kwargs
         )

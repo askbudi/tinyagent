@@ -16,6 +16,7 @@ import traceback
 import time  # Add time import for Unix timestamps
 from pathlib import Path
 import random  # Add random for jitter in retry backoff
+from datetime import timedelta
 from .core.custom_instructions import CustomInstructionLoader, CustomInstructionError
 import os
 from .core.openai_responses_adapter import OpenAIResponsesAdapter, ChatResponse
@@ -378,7 +379,7 @@ class TinyAgent:
 
     def __init__(
         self,
-        model: str = "gpt-5-mini",
+        model: str = "gpt-5",
         api_key: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
@@ -401,7 +402,7 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
-        tool_call_timeout: float = 300.0,  # 5 minutes default timeout for tool calls
+        tool_call_timeout: float = 900.0,  # 15 minutes default timeout for tool calls
     ):
         """
         Initialize the Tiny Agent.
@@ -1167,15 +1168,18 @@ class TinyAgent:
                 result = handler(**tool_args)
 
             # Handle async functions
+            timeout = timedelta(seconds=self.tool_call_timeout) if self.tool_call_timeout else None
+            timeout_seconds = timeout.total_seconds() if timeout else None
+
             if asyncio.iscoroutine(result):
                 # For async functions, apply timeout directly
-                result = await asyncio.wait_for(result, timeout=self.tool_call_timeout)
+                result = await asyncio.wait_for(result, timeout=timeout_seconds)
             else:
                 # For sync functions, run in thread pool with timeout
                 loop = asyncio.get_event_loop()
                 result = await asyncio.wait_for(
                     loop.run_in_executor(None, _execute_sync),
-                    timeout=self.tool_call_timeout
+                    timeout=timeout_seconds
                 )
 
             return str(result)
@@ -1199,7 +1203,8 @@ class TinyAgent:
             Tool message result
         """
         try:
-            return await asyncio.wait_for(process_func(tool_call), timeout=self.tool_call_timeout)
+            timeout = timedelta(seconds=self.tool_call_timeout) if self.tool_call_timeout else None
+            return await asyncio.wait_for(process_func(tool_call), timeout=timeout.total_seconds() if timeout else None)
         except asyncio.TimeoutError:
             tool_call_id = tool_call.id
             tool_name = tool_call.function.name
@@ -1462,10 +1467,12 @@ class TinyAgent:
                                 elif not self._use_legacy_mcp and self.agno_multi_mcp:
                                     # Use Agno-style MCP execution
                                     try:
-                                        self.logger.debug(f"Calling tool {tool_name} with Agno-style MCP, args: {tool_args}")
+                                        
+                                        timeout = timedelta(seconds=self.tool_call_timeout) if self.tool_call_timeout else None
+                                        self.logger.debug(f"Calling tool {tool_name} with Agno-style MCP, args: {tool_args} with timeout: {timeout.total_seconds() if timeout else None}")
                                         tool_result_content = await asyncio.wait_for(
-                                            self.agno_multi_mcp.call_tool(tool_name, tool_args),
-                                            timeout=self.tool_call_timeout
+                                            self.agno_multi_mcp.call_tool(tool_name, tool_args,read_timeout_seconds=timeout),
+                                            timeout=timeout.total_seconds() if timeout else None
                                         )
                                         self.logger.debug(f"Agno-style tool {tool_name} returned: {tool_result_content}")
                                     except Exception as e:
@@ -1482,9 +1489,10 @@ class TinyAgent:
                                             self.logger.debug(f"Client/Manager: {client_or_manager}")
 
                                             # Use legacy MCP client (simplified approach)
+                                            timeout = timedelta(seconds=self.tool_call_timeout) if self.tool_call_timeout else None
                                             content_list = await asyncio.wait_for(
                                                 client_or_manager.call_tool(tool_name, tool_args),
-                                                timeout=self.tool_call_timeout
+                                                timeout=timeout.total_seconds() if timeout else None
                                             )
 
                                             self.logger.debug(f"Tool {tool_name} returned: {content_list}")
