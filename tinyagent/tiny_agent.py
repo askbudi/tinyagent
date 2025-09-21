@@ -2,7 +2,7 @@
 import litellm
 import json
 import logging
-from typing import Dict, List, Optional, Any, Tuple, Callable, Union, Type, get_type_hints
+from typing import Dict, List, Optional, Any, Tuple, Callable, Union, Type, get_type_hints, Awaitable
 from .legacy_mcp_client import MCPClient
 # Removed imports for obsolete MCP clients - now using Agno-style only
 from .mcp_client import TinyMCPTools, TinyMultiMCPTools, MCPServerConfig
@@ -402,7 +402,8 @@ class TinyAgent:
         retry_config: Optional[Dict[str, Any]] = None,
         parallel_tool_calls: Optional[bool] = True,
         enable_todo_write: bool = True,
-        tool_call_timeout: float = 900.0,  # 15 minutes default timeout for tool calls
+        tool_call_timeout: float = 120.0,  # 2 minutes default timeout for tool calls
+        log_manager = None,  # LoggingManager instance for proper logging integration
     ):
         """
         Initialize the Tiny Agent.
@@ -442,6 +443,9 @@ class TinyAgent:
             custom_instruction_placeholder: Placeholder text to replace in system prompt (default: "<user_specified_instruction></user_specified_instruction>").
             custom_instruction_subagent_inheritance: Whether subagents inherit instructions (default: True).
                     """
+        # Store log_manager for use by MCP components
+        self.log_manager = log_manager
+
         # Set up logger
         self.logger = logger or logging.getLogger(__name__)
         
@@ -951,7 +955,9 @@ class TinyAgent:
     async def connect_to_server(self, command: str, args: List[str],
                                include_tools: Optional[List[str]] = None,
                                exclude_tools: Optional[List[str]] = None,
-                               env: Optional[Dict[str, str]] = None) -> None:
+                               env: Optional[Dict[str, str]] = None,
+                               progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+                               enable_default_progress_callback: bool = False) -> None:
         """
         Connect to an MCP server and fetch available tools.
 
@@ -961,6 +967,8 @@ class TinyAgent:
             include_tools: Optional list of tool name patterns to include (if provided, only matching tools will be added)
             exclude_tools: Optional list of tool name patterns to exclude (matching tools will be skipped)
             env: Optional dictionary of environment variables to pass to the subprocess
+            progress_callback: Optional custom progress callback function
+            enable_default_progress_callback: Whether to enable the default progress callback
         """
         # Use Agno-style MCP (now the default and only approach)
         if not self._use_legacy_mcp:
@@ -975,7 +983,9 @@ class TinyAgent:
                 args=args,
                 env=env,
                 include_tools=include_tools,
-                exclude_tools=exclude_tools
+                exclude_tools=exclude_tools,
+                progress_callback=progress_callback,
+                enable_default_progress_callback=enable_default_progress_callback
             )
 
             self.agno_server_configs.append(config)
@@ -984,7 +994,7 @@ class TinyAgent:
             if self.agno_multi_mcp is None:
                 self.agno_multi_mcp = TinyMultiMCPTools(
                     server_configs=self.agno_server_configs,
-                    logger=self.logger
+                    logger=self.log_manager.get_logger('tinyagent.mcp_client') if self.log_manager else None
                 )
 
                 # Enter the async context
@@ -1009,7 +1019,7 @@ class TinyAgent:
                 await self.agno_multi_mcp.__aexit__(None, None, None)
                 self.agno_multi_mcp = TinyMultiMCPTools(
                     server_configs=self.agno_server_configs,
-                    logger=self.logger
+                    logger=self.log_manager.get_logger('tinyagent.mcp_client') if self.log_manager else None
                 )
                 await self.agno_multi_mcp.__aenter__()
 

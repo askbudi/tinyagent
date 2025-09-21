@@ -9,12 +9,13 @@ improved error handling.
 import asyncio
 import logging
 from contextlib import AsyncExitStack
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Callable, Awaitable
 from datetime import timedelta
 from dataclasses import dataclass
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+logger = logging.getLogger(__name__)
 
 try:
     from mcp.client.sse import sse_client, SSEClientParams
@@ -26,6 +27,35 @@ except ImportError:
         pass
     def sse_client(*args, **kwargs):
         raise NotImplementedError("SSE client not available")
+
+async def default_progress_callback(
+    progress: float,
+    total: Optional[float] = None,
+    message: Optional[str] = None,
+    logger: Optional[logging.Logger] = None
+) -> None:
+    """
+    Default progress callback that logs to both logger and stdout.
+
+    Args:
+        progress: Current progress value
+        total: Total expected value (optional)
+        message: Progress message (optional)
+        logger: Logger instance (optional)
+    """
+    logger = logger or logging.getLogger(__name__)
+    if total and total > 0:
+        percentage = (progress / total) * 100
+        progress_msg = f"[{percentage:5.1f}%] {message or 'Processing...'}"
+    else:
+        progress_msg = f"[Step {progress}] {message or 'Processing...'}"
+
+    # Log to logger if provided
+    
+    logger.debug(progress_msg)
+
+    # Print to stdout
+    #print(progress_msg)
 
 @dataclass
 class MCPServerConfig:
@@ -40,6 +70,8 @@ class MCPServerConfig:
     timeout: float = 300.0
     include_tools: Optional[List[str]] = None
     exclude_tools: Optional[List[str]] = None
+    progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None
+    enable_default_progress_callback: bool = False
 
 class TinyMCPTools:
     """
@@ -63,6 +95,12 @@ class TinyMCPTools:
         # Tool management
         self.tools: List[Any] = []
         self.tool_schemas: Dict[str, Any] = {}
+
+        # Progress callback setup
+        self.progress_callback = config.progress_callback
+        if self.progress_callback is None and config.enable_default_progress_callback:
+            # Use default progress callback with bound logger
+            self.progress_callback = lambda p, t, m: default_progress_callback(p, t, m, self.logger)
 
     async def __aenter__(self) -> "TinyMCPTools":
         """Async context manager entry - establish MCP connection."""
@@ -212,7 +250,7 @@ class TinyMCPTools:
 
         return filtered
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any],read_timeout_seconds: timedelta | None = None) -> Any:
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any], read_timeout_seconds: timedelta | None = None, progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None) -> Any:
         """Call a tool with error handling and content processing."""
         if not self.session:
             raise RuntimeError("Session not established")
@@ -222,7 +260,16 @@ class TinyMCPTools:
 
         try:
             self.logger.debug(f"Calling MCP tool '{tool_name}' with args: {arguments}")
-            result = await self.session.call_tool(tool_name, arguments, read_timeout_seconds=read_timeout_seconds)
+
+            # Use provided progress_callback, or fall back to instance callback
+            final_progress_callback = progress_callback or self.progress_callback
+
+            result = await self.session.call_tool(
+                tool_name,
+                arguments,
+                read_timeout_seconds=read_timeout_seconds,
+                progress_callback=final_progress_callback
+            )
 
             # Process response content (similar to Agno's approach)
             response_parts = []
@@ -256,6 +303,7 @@ class TinyMultiMCPTools:
                  logger: Optional[logging.Logger] = None):
         self.server_configs = server_configs
         self.logger = logger or logging.getLogger(__name__)
+        self.logger.debug(f"TinyMultiMCPTools initialized with {len(server_configs)} server configs")
 
         # Connection management
         self._async_exit_stack = AsyncExitStack()
@@ -309,7 +357,7 @@ class TinyMultiMCPTools:
         self.tool_to_server.clear()
         self.logger.debug("All MCP connections closed")
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any],read_timeout_seconds: timedelta | None = None) -> Any:
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any], read_timeout_seconds: timedelta | None = None, progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None) -> Any:
         """Call a tool on the appropriate server."""
         server_name = self.tool_to_server.get(tool_name)
         if not server_name:
@@ -319,21 +367,24 @@ class TinyMultiMCPTools:
         if not mcp_tools:
             raise RuntimeError(f"Server '{server_name}' not connected")
 
-        return await mcp_tools.call_tool(tool_name, arguments, read_timeout_seconds=read_timeout_seconds)
+        return await mcp_tools.call_tool(tool_name, arguments, read_timeout_seconds=read_timeout_seconds, progress_callback=progress_callback)
 
-    async def call_tools_parallel(self, tool_calls: List[Dict[str, Any]]) -> List[Any]:
+    async def call_tools_parallel(self, tool_calls: List[Dict[str, Any]], progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None) -> List[Any]:
         """
         Execute multiple tools in parallel with error isolation.
 
         Args:
-            tool_calls: List of dicts with 'name' and 'arguments' keys
+            tool_calls: List of dicts with 'name', 'arguments', and optionally 'progress_callback' keys
+            progress_callback: Default progress callback for all tools (can be overridden per tool)
 
         Returns:
             List of results (or exceptions for failed calls)
         """
         async def call_single_tool(call):
             try:
-                return await self.call_tool(call['name'], call['arguments'])
+                # Use tool-specific progress callback if provided, otherwise use the default
+                tool_progress_callback = call.get('progress_callback', progress_callback)
+                return await self.call_tool(call['name'], call['arguments'], progress_callback=tool_progress_callback)
             except Exception as e:
                 self.logger.error(f"Tool call failed: {call['name']} - {e}")
                 return e

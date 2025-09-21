@@ -391,6 +391,7 @@ class TinyCodeAgent(TinyAgent):
             enable_todo_write=enable_todo_write,
             tool_call_timeout=tool_call_timeout,
             enable_custom_instruction=False,  # We handle custom instructions in _build_system_prompt
+            log_manager=log_manager,  # Pass log_manager to parent TinyAgent
             **agent_kwargs
         )
         
