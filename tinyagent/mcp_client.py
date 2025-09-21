@@ -71,7 +71,7 @@ class MCPServerConfig:
     include_tools: Optional[List[str]] = None
     exclude_tools: Optional[List[str]] = None
     progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None
-    enable_default_progress_callback: bool = False
+    enable_default_progress_callback: bool = True
 
 class TinyMCPTools:
     """

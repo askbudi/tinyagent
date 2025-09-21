@@ -957,7 +957,7 @@ class TinyAgent:
                                exclude_tools: Optional[List[str]] = None,
                                env: Optional[Dict[str, str]] = None,
                                progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
-                               enable_default_progress_callback: bool = False) -> None:
+                               enable_default_progress_callback: bool = True) -> None:
         """
         Connect to an MCP server and fetch available tools.
 
