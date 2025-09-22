@@ -978,7 +978,6 @@ class TinyAgent:
             server_name = f"{command}_{len(self.agno_server_configs)}"
             config = MCPServerConfig(
                 name=server_name,
-                transport="stdio",
                 command=command,
                 args=args,
                 env=env,
