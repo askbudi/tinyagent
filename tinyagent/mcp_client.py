@@ -10,6 +10,8 @@ This module implements lightweight MCP connection management with:
 
 import asyncio
 import logging
+import sys
+import os
 from contextlib import AsyncExitStack
 from typing import Dict, List, Optional, Any, Union, Callable, Awaitable
 from datetime import timedelta
@@ -57,6 +59,7 @@ class MCPServerConfig:
     exclude_tools: Optional[List[str]] = None
     progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None
     enable_default_progress_callback: bool = True
+    suppress_subprocess_logs: bool = False  # Suppress MCP server subprocess output
 
 class TinyMCPTools:
     """
@@ -95,13 +98,35 @@ class TinyMCPTools:
             return self
 
         try:
-            # Create stdio client context
+            # Prepare environment with optional log suppression
+            server_env = self.config.env.copy() if self.config.env else {}
+
+            # Handle stderr redirection for log suppression
+            if self.config.suppress_subprocess_logs:
+                # Inject environment variables to suppress verbose logging (fallback)
+                server_env.update({
+                    'PYTHONWARNINGS': 'ignore',  # Suppress Python warnings
+                    'MCP_LOG_LEVEL': 'ERROR',    # Set MCP logging to ERROR level only
+                    'LOGGING_LEVEL': 'ERROR',    # Generic logging level
+                    'PYTHONUNBUFFERED': '0',     # Allow buffering to reduce output frequency
+                })
+
+                # Primary fix: Redirect stderr to devnull to suppress subprocess output
+                errlog = open(os.devnull, 'w')
+                self._devnull_file = errlog  # Store for cleanup in __aexit__
+                self.logger.debug(f"Suppressing subprocess logs for server '{self.config.name}' via stderr redirection")
+            else:
+                # Use default stderr for normal operation
+                errlog = sys.stderr
+                self.logger.debug(f"Using default stderr for server '{self.config.name}'")
+
+            # Create stdio client context with custom errlog
             server_params = StdioServerParameters(
                 command=self.config.command,
                 args=self.config.args or [],
-                env=self.config.env
+                env=server_env
             )
-            self._context = stdio_client(server_params)
+            self._context = stdio_client(server_params, errlog=errlog)
 
             # Enter the client context
             session_params = await self._context.__aenter__()
@@ -146,6 +171,16 @@ class TinyMCPTools:
             finally:
                 self._context = None
 
+        # Clean up devnull file if used for log suppression
+        if hasattr(self, '_devnull_file'):
+            try:
+                self._devnull_file.close()
+                self.logger.debug(f"Closed devnull file for server '{self.config.name}'")
+            except Exception as e:
+                self.logger.warning(f"Error closing devnull file: {e}")
+            finally:
+                delattr(self, '_devnull_file')
+
         self._initialized = False
         self.logger.debug(f"Disconnected from MCP server '{self.config.name}'")
 
@@ -165,6 +200,14 @@ class TinyMCPTools:
             except:
                 pass
             self._context = None
+
+        # Clean up devnull file if used for log suppression
+        if hasattr(self, '_devnull_file'):
+            try:
+                self._devnull_file.close()
+            except:
+                pass
+            delattr(self, '_devnull_file')
 
     async def initialize(self):
         """Initialize tools from the MCP server."""

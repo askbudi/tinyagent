@@ -957,7 +957,8 @@ class TinyAgent:
                                exclude_tools: Optional[List[str]] = None,
                                env: Optional[Dict[str, str]] = None,
                                progress_callback: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
-                               enable_default_progress_callback: bool = True) -> None:
+                               enable_default_progress_callback: bool = True,
+                               suppress_subprocess_logs: bool = False) -> None:
         """
         Connect to an MCP server and fetch available tools.
 
@@ -969,6 +970,7 @@ class TinyAgent:
             env: Optional dictionary of environment variables to pass to the subprocess
             progress_callback: Optional custom progress callback function
             enable_default_progress_callback: Whether to enable the default progress callback
+            suppress_subprocess_logs: Whether to suppress MCP server subprocess output (default: False)
         """
         # Use Agno-style MCP (now the default and only approach)
         if not self._use_legacy_mcp:
@@ -984,7 +986,8 @@ class TinyAgent:
                 include_tools=include_tools,
                 exclude_tools=exclude_tools,
                 progress_callback=progress_callback,
-                enable_default_progress_callback=enable_default_progress_callback
+                enable_default_progress_callback=enable_default_progress_callback,
+                suppress_subprocess_logs=suppress_subprocess_logs
             )
 
             self.agno_server_configs.append(config)

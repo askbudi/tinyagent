@@ -1858,6 +1858,339 @@ I need accommodation in Toronto between 15th to 20th of May. Give me 5 options f
 await test_agent(task, model="gpt-5-mini")
 ```
 
+## 🔌 MCP (Model Context Protocol) Integration
+
+TinyAgent provides comprehensive support for connecting to MCP servers with multiple transport types, progress tracking, and robust error handling. MCP allows agents to connect to external tools and services seamlessly.
+
+### 🚀 Quick MCP Connection
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+
+async def basic_mcp_example():
+    agent = TinyAgent(model="gpt-5-mini")
+
+    try:
+        # Connect to an MCP server (STDIO transport)
+        await agent.connect_to_server(
+            command="npx",
+            args=["@openbnb/mcp-server-airbnb", "--ignore-robots-txt"]
+        )
+
+        result = await agent.run("Find me hotels in Tokyo for 2 adults")
+        print(result)
+    finally:
+        await agent.close()
+
+asyncio.run(basic_mcp_example())
+```
+
+### 🎯 Progress Callback Support
+
+Track progress from long-running MCP tools with real-time updates:
+
+#### Default Progress Callback (Recommended)
+```python
+import asyncio
+from tinyagent import TinyAgent
+
+async def progress_example():
+    agent = TinyAgent(model="gpt-5-mini")
+
+    try:
+        # Enable default progress callback (logs to agent's logger + stdout)
+        await agent.connect_to_server(
+            command="python",
+            args=["my_slow_mcp_server.py"],
+            enable_default_progress_callback=True
+        )
+
+        # Progress updates will be automatically logged during tool execution
+        result = await agent.run("Process this large dataset")
+        print(result)
+    finally:
+        await agent.close()
+
+asyncio.run(progress_example())
+```
+
+#### Custom Progress Callback
+```python
+import asyncio
+from tinyagent import TinyAgent
+
+class ProgressTracker:
+    def __init__(self, name: str):
+        self.name = name
+        self.updates = []
+
+    async def __call__(self, progress: float, total: float = None, message: str = None):
+        """Custom progress callback function."""
+        self.updates.append({"progress": progress, "total": total, "message": message})
+
+        if total and total > 0:
+            percentage = (progress / total) * 100
+            print(f"🔄 {self.name}: [{percentage:5.1f}%] {message}")
+        else:
+            print(f"🔄 {self.name}: [Step {progress}] {message}")
+
+async def custom_progress_example():
+    agent = TinyAgent(model="gpt-5-mini")
+    tracker = ProgressTracker("Data Processing")
+
+    try:
+        # Use custom progress callback
+        await agent.connect_to_server(
+            command="python",
+            args=["my_mcp_server.py"],
+            progress_callback=tracker
+        )
+
+        result = await agent.run("Analyze this complex dataset")
+        print(f"Completed with {len(tracker.updates)} progress updates")
+    finally:
+        await agent.close()
+
+asyncio.run(custom_progress_example())
+```
+
+### 🌐 MCP Transport Types
+
+TinyAgent supports multiple MCP transport protocols for different deployment scenarios:
+
+#### 1. STDIO Transport (Default)
+Best for local development and command-line tools:
+
+```python
+# STDIO transport (default)
+await agent.connect_to_server(
+    command="python",
+    args=["mcp_server.py"],
+    env={"API_KEY": "your-key"}  # Optional environment variables
+)
+
+# Node.js MCP server
+await agent.connect_to_server(
+    command="npx",
+    args=["@modelcontextprotocol/server-filesystem", "/tmp"]
+)
+
+# Python MCP server with arguments
+await agent.connect_to_server(
+    command="python",
+    args=["-m", "my_mcp_package", "--config", "production.yaml"]
+)
+```
+
+#### 2. SSE (Server-Sent Events) Transport
+For web-based MCP servers with HTTP streaming:
+
+```python
+from tinyagent.mcp_client import MCPServerConfig
+
+# SSE transport configuration
+config = MCPServerConfig(
+    name="web_mcp_server",
+    transport="sse",
+    sse_url="http://localhost:3000/mcp",
+    headers={"Authorization": "Bearer your-token"},
+    timeout=120.0
+)
+
+# Connect using TinyMultiMCPTools directly for SSE
+from tinyagent.mcp_client import TinyMultiMCPTools
+
+async def sse_example():
+    agent = TinyAgent(model="gpt-5-mini")
+
+    async with TinyMultiMCPTools([config], agent.logger) as multi_mcp:
+        # Use SSE-connected tools
+        result = await multi_mcp.call_tool(
+            tool_name="web_search",
+            arguments={"query": "latest AI news"}
+        )
+        print(result)
+
+asyncio.run(sse_example())
+```
+
+#### 3. HTTP Transport
+For RESTful MCP servers:
+
+```python
+# HTTP transport configuration
+config = MCPServerConfig(
+    name="rest_mcp_server",
+    transport="http",
+    http_base_url="https://api.example.com/mcp",
+    headers={
+        "Authorization": "Bearer your-api-token",
+        "Content-Type": "application/json"
+    },
+    timeout=60.0
+)
+
+async def http_example():
+    agent = TinyAgent(model="gpt-5-mini")
+
+    async with TinyMultiMCPTools([config], agent.logger) as multi_mcp:
+        result = await multi_mcp.call_tool(
+            tool_name="process_data",
+            arguments={"input": "user data"}
+        )
+        print(result)
+
+asyncio.run(http_example())
+```
+
+### 🔄 Multiple MCP Servers
+
+Connect to multiple MCP servers simultaneously:
+
+```python
+import asyncio
+from tinyagent import TinyAgent
+
+async def multi_server_example():
+    agent = TinyAgent(model="gpt-5-mini")
+
+    try:
+        # Connect to multiple servers
+        await agent.connect_to_server(
+            command="npx",
+            args=["@openbnb/mcp-server-airbnb"],
+            enable_default_progress_callback=True
+        )
+
+        await agent.connect_to_server(
+            command="python",
+            args=["weather_mcp_server.py"],
+            progress_callback=custom_tracker
+        )
+
+        await agent.connect_to_server(
+            command="node",
+            args=["travel_mcp_server.js"]
+        )
+
+        # All servers' tools are now available
+        result = await agent.run("""
+        Plan a trip to Tokyo:
+        1. Check the weather forecast
+        2. Find accommodation options
+        3. Suggest travel routes
+        """)
+
+        print(result)
+    finally:
+        await agent.close()
+
+asyncio.run(multi_server_example())
+```
+
+### 🛠️ Advanced MCP Configuration
+
+#### Tool Filtering
+Control which MCP tools are available:
+
+```python
+# Include only specific tools
+await agent.connect_to_server(
+    command="python",
+    args=["comprehensive_mcp_server.py"],
+    include_tools=["search", "analyze", "export"],  # Only these tools
+    enable_default_progress_callback=True
+)
+
+# Exclude specific tools
+await agent.connect_to_server(
+    command="python",
+    args=["mcp_server.py"],
+    exclude_tools=["delete", "admin"],  # Skip these tools
+    progress_callback=tracker
+)
+```
+
+#### Environment Variables
+Pass configuration to MCP servers:
+
+```python
+await agent.connect_to_server(
+    command="python",
+    args=["configurable_mcp_server.py"],
+    env={
+        "API_BASE_URL": "https://api.production.com",
+        "API_KEY": os.getenv("PRODUCTION_API_KEY"),
+        "LOG_LEVEL": "INFO",
+        "RATE_LIMIT": "1000"
+    },
+    enable_default_progress_callback=True
+)
+```
+
+### 📊 Progress Callback Features
+
+Progress callbacks provide detailed insights into long-running operations:
+
+**Default Progress Callback Features:**
+- ✅ Automatic logging to TinyAgent's logger
+- ✅ Console output with progress bars
+- ✅ Consistent formatting
+- ✅ Error handling
+
+**Custom Progress Callback Capabilities:**
+- 🎯 Custom progress tracking and storage
+- 📈 Real-time progress visualization
+- 🔔 Progress-based notifications
+- 📊 Performance metrics collection
+- 🎨 Custom UI integration
+
+### 🚨 Error Handling & Best Practices
+
+```python
+import asyncio
+import logging
+from tinyagent import TinyAgent
+
+async def robust_mcp_example():
+    agent = TinyAgent(model="gpt-5-mini")
+
+    try:
+        # Configure with timeouts and error handling
+        await agent.connect_to_server(
+            command="python",
+            args=["reliable_mcp_server.py"],
+            enable_default_progress_callback=True,
+            env={"TIMEOUT": "300"}  # 5 minute timeout
+        )
+
+        # Handle potential tool failures gracefully
+        result = await agent.run("""
+        Process this data with error handling:
+        1. Validate input data
+        2. Process with retry logic
+        3. Export results with verification
+        """)
+
+    except Exception as e:
+        logging.error(f"MCP operation failed: {e}")
+        # Implement fallback logic
+        result = "Operation failed, using fallback approach"
+    finally:
+        await agent.close()
+
+asyncio.run(robust_mcp_example())
+```
+
+**Best Practices:**
+1. 🕐 **Set appropriate timeouts** for long-running operations
+2. 🔄 **Use progress callbacks** to monitor MCP tool execution
+3. 🛡️ **Implement error handling** for network and server failures
+4. 📝 **Filter tools** to expose only what's needed
+5. 🔐 **Secure credentials** using environment variables
+6. 🧹 **Always close agents** to clean up MCP connections
+
 ## 🔒 Cross-Platform Sandboxing & Security
 
 TinyAgent provides comprehensive cross-platform sandboxing with multiple provider options for secure code execution. Choose the best sandbox for your platform and requirements:
